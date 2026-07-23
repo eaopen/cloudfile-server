@@ -1,4 +1,4 @@
-// CloudFile directory ACL, as seen by the Go fileserver.
+// CloudFile extension seam in the Go fileserver.
 //
 // The desktop sync client is the one entry point that reaches file data
 // without going through Seahub or the check_permission_by_path RPC: it
@@ -8,8 +8,11 @@
 //
 // The only safe moment to say no is therefore before the sync starts, and the
 // question to ask is "does this library contain anything this user may not
-// read". Rather than reimplement the ACL a fourth time in Go, this asks
-// seaf-server over RPC, so cf-acl.c stays the single authority.
+// read". Rather than reimplement any capability's rules a second time in Go,
+// this asks seaf-server over RPC, so the C side stays the single authority.
+//
+// With no capability registered the RPC reports nothing restricted, so this
+// is a no-op on a baseline build.
 //
 // Seahub asks the same question via is_repo_syncable so it can show a useful
 // error. This check exists because a modified client can simply skip that.
@@ -35,10 +38,10 @@ var cfRestrictedCache sync.Map
 // cfFindRestrictedPath asks seaf-server for the first path in repoID that user
 // cannot access at all. It returns "" when the library is fully reachable.
 //
-// A server without the RPC registered -- an upstream CE build, or CloudFile
-// with the feature switched off -- makes the call fail, which is treated as
-// "nothing restricted" so that sync keeps working exactly as it does on stock
-// CE. Enforcement is only ever added by an ACL that actually exists.
+// A server without the RPC registered -- an upstream CE build -- makes the
+// call fail, which is treated as "nothing restricted" so that sync keeps
+// working exactly as it does on stock CE. Enforcement is only ever added by a
+// capability that is actually enabled.
 func cfFindRestrictedPath(repoID, user string) string {
 	key := fmt.Sprintf("%s:%s", repoID, user)
 	now := time.Now().Unix()

@@ -19,9 +19,10 @@
 
 #ifdef SEAFILE_SERVER
 #include "web-accesstoken-mgr.h"
-/* CloudFile directory ACL. Server-only: it reaches seaf->db, seaf->group_mgr
- * and seaf->cfg_mgr, none of which exist in a non-server build. */
-#include "cf-acl.h"
+/* CloudFile extension points. Server-only: capabilities behind them reach
+ * seaf->db, seaf->group_mgr and seaf->cfg_mgr, none of which exist in a
+ * non-server build. */
+#include "cf-ext.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -4067,24 +4068,23 @@ seafile_check_permission_by_path (const char *repo_id, const char *path,
 {
     /*
      * CloudFile: upstream CE discards @path here and answers with the
-     * repo-level share permission, which is why directory ACL is a Pro
-     * feature. Resolving the path is the whole point of the extension.
+     * repo-level share permission. Path-aware permission is what capabilities
+     * like directory ACL need, so this is one of the extension seams.
      *
      * Every caller that matters passes through here: Seahub's
      * check_folder_permission, and seafdav's write paths (beginWrite, delete,
      * move, copy, createCollection all gate on this RPC). The desktop sync
-     * client takes a different route and is handled in the Go fileserver.
+     * client takes a different route, handled in the Go fileserver.
      *
-     * cf_acl_apply is a plain copy of @perm while the feature is off, so a
-     * CloudFile build with [cloudfile] dir_acl_enabled unset behaves exactly
-     * like stock CE.
+     * With no capability registered cf_ext_check_permission is a plain copy of
+     * @perm, so a baseline build behaves exactly like stock CE.
      */
     char *perm = seafile_check_permission (repo_id, user, error);
 #ifdef SEAFILE_SERVER
     if (!perm)
         return NULL;
 
-    char *narrowed = cf_acl_apply (repo_id, path, user, perm);
+    char *narrowed = cf_ext_check_permission (repo_id, path, user, perm);
     g_free (perm);
     return narrowed;
 #else
@@ -4112,7 +4112,7 @@ seafile_cf_find_restricted_path (const char *repo_id, const char *path,
         return g_strdup ("/");
     }
 
-    char *restricted = cf_acl_find_restricted_path (repo_id, path, user, perm);
+    char *restricted = cf_ext_find_restricted_path (repo_id, path, user, perm);
     g_free (perm);
     return restricted;
 #else
@@ -4162,18 +4162,17 @@ seafile_list_dir_with_perm (const char *repo_id,
 
 #ifdef SEAFILE_SERVER
     /*
-     * CloudFile: apply the directory ACL per entry.
+     * CloudFile: let capabilities filter the listing per entry.
      *
      * seaf_repo_manager_list_dir_with_perm resolves the permission once, at
      * repo level, and stamps the same value on every entry -- it never looks
-     * at the child paths. Without this pass an `invisible` folder would still
-     * be listed (merely unopenable), and a read-only one would still advertise
-     * `rw`, which is exactly what acl-semantics.md section 6 forbids.
+     * at child paths. A capability that hides a folder therefore has to filter
+     * here, or the folder would still be listed (merely unopenable).
      *
-     * Filtering here rather than in seahub covers every caller of this RPC at
-     * once, and keeps the patched-file list from growing.
+     * Filtering at the RPC covers every caller at once, and keeps the
+     * patched-file list from growing as capabilities are added.
      */
-    ret = cf_acl_filter_dirents (repo_id, rpath, user, ret);
+    ret = cf_ext_filter_dirents (repo_id, rpath, user, ret);
 #endif
 
     g_free (rpath);

@@ -23,7 +23,7 @@
 #include "mq-mgr.h"
 #include "seaf-db.h"
 #include "seaf-utils.h"
-#include "cf-acl.h"
+#include "cf-ext.h"
 
 #include "log.h"
 
@@ -485,9 +485,10 @@ seafile_session_init (SeafileSession *session)
 int
 seafile_session_start (SeafileSession *session)
 {
-    /* CloudFile: read [cloudfile] dir_acl_enabled once, now that the config
-     * manager exists. Leaving it unset keeps every ACL call a no-op. */
-    cf_acl_init ();
+    /* CloudFile: let capabilities register now that the config manager
+     * exists. The baseline registers none, which keeps every extension hook a
+     * pass-through. */
+    cf_ext_init ();
 
     if (seaf_share_manager_start (session->share_mgr) < 0) {
         seaf_warning ("Failed to start share manager.\n");

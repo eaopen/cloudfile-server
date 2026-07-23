@@ -687,9 +687,9 @@ class SeafileAPI(object):
     def _cf_find_restricted_path(self, repo_id, path, user):
         """CloudFile: first path at or below `path` that `user` cannot access.
 
-        Returns None when the whole subtree is reachable, or when the server
-        predates the RPC (an upstream CE build), which keeps this module
-        working against a stock seaf-server.
+        Returns None when the whole subtree is reachable, when no capability
+        is enabled, or when the server predates the RPC (an upstream CE
+        build) -- so this keeps working against a stock seaf-server.
         """
         try:
             restricted = seafserv_threaded_rpc.cf_find_restricted_path(
@@ -707,6 +707,9 @@ class SeafileAPI(object):
         transfers commits and blocks rather than paths, so there is no
         per-file authorization point once a sync is under way, and the only
         safe moment to say no is before it starts.
+
+        With no capability enabled nothing is ever restricted, so this answers
+        true exactly like stock CE.
         """
         forbidden = self._cf_find_restricted_path(repo_id, '/', user)
         if forbidden:

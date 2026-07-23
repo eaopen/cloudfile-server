@@ -6,6 +6,9 @@
 
 `haiwen/seafile-server` 的 fork，CloudFile（Seafile CE 企业扩展版）的**权限终判层**。
 
+`dev` 上是**扩展基线**：只有扩展点，没有任何具体能力。目录 ACL 等能力活在
+各自的长期特性分支上（`feature/dir-acl`）。
+
 CloudFile 由三个仓库组成，通常并排 checkout：
 
 ```
@@ -17,7 +20,7 @@ workspace/
 
 跨仓规格与部署说明在 `cloudfile-docker/`：
 [BRANCHING.md](../cloudfile-docker/BRANCHING.md)、
-[docs/acl-semantics.md](../cloudfile-docker/docs/acl-semantics.md)。
+[docs/BRANCHES.md](../cloudfile-docker/docs/BRANCHES.md)。
 
 ## 本仓库的职责边界
 
@@ -46,47 +49,63 @@ workspace/
 
 | 文件 | 改了什么 |
 |---|---|
-| `common/rpc-service.c` | 实现 `check_permission_by_path`，新增 `cf_find_restricted_path` |
+| `common/rpc-service.c` | `check_permission_by_path` 与目录列举接入扩展点，新增 `cf_find_restricted_path` RPC |
 | `include/seafile-rpc.h` | 新 RPC 声明 |
 | `server/seaf-server.c` | 新 RPC 注册 |
-| `server/seafile-session.c` | 启动时 `cf_acl_init()` |
+| `server/seafile-session.c` | 启动时 `cf_ext_init()` |
 | `server/Makefile.am` | 新增源文件 |
 | `fileserver/sync_api.go` | 同步前的子树校验（两处） |
-| `python/seaserv/api.py` | `is_repo_syncable` / `is_dir_downloadable` |
+| `python/seaserv/api.py` | `is_repo_syncable` / `is_dir_downloadable` 透传 RPC |
 | `python/seafile/rpcclient.py` | 新 RPC 客户端声明 |
+
+**这 8 个是基线一次性付掉的代价，能力分支不应再增加。**
 
 改动这份清单时，同步更新 `cloudfile-docker/BRANCHING.md`——那是同步上游时的
 检查依据，失真就会漏掉冲突点。
 
-**建表刻意放在新文件** `scripts/sql/{mysql,sqlite}/cloudfile.sql`，没有动上游的
-`seafile.sql`，所以这块永远不会冲突。别把新表加回 `seafile.sql`。
+能力需要建表时，**放进新文件** `scripts/sql/{mysql,sqlite}/cloudfile.sql`，
+不要动上游的 `seafile.sql`——那样永远不会冲突。基线本身不建任何表；
+docker 仓的 bootstrap 找不到该文件时会跳过并告警。
 
-## ACL 代码结构
+## 扩展点：cf-ext
 
 ```
-common/cf-acl-resolve.{c,h}   纯策略，只依赖 glib
-common/cf-acl.{c,h}           配置、数据库、群组查询
-fileserver/cf_acl.go          同步客户端网关，走 RPC 问 seaf-server
-tests/cf-acl/                 用共享用例集驱动的测试
+common/cf-ext.{c,h}     扩展点本身：配置读取 + 能力注册表 + 三个分发钩子
+fileserver/cf_ext.go    同步客户端网关，走 RPC 问 seaf-server
 ```
 
-**这个拆分是有意的**：`cf-acl-resolve.c` 不依赖 seaf session、数据库或 searpc，
-因此可以脱离整个 seafile 构建单独编译测试。往里面加 `#include "seafile-session.h"`
-就毁掉了这个性质——需要 I/O 就加在 `cf-acl.c`。
+`cf_ext_init()` 里没有注册任何能力，所以基线上每个钩子都是透传，行为与原生 CE
+完全一致。
 
-`fileserver/cf_acl.go` **不实现第三份求解逻辑**，只通过 RPC 问 seaf-server。
-同步协议交换的是 commit、fs 对象和 block，不带路径，能做的只有在同步开始前
-判断"这个库里是否存在该用户不可读的内容"。少一份实现 = 少一处漂移。
+**为什么用注册表而不是直接调用某个能力：**
+
+能力活在长期特性分支上。如果每个能力都要自己去改 `rpc-service.c`、
+`seaf-server.c`、`seafile-session.c`，那么每次同步上游的代价要按分支数翻倍，
+而且各分支会在同样的行上互相冲突，永远解不完。
+
+所以**基线把这些上游文件一次性改好**，全部调进 `cf-ext.c`。能力分支只需要：
+
+- 新增 `common/cf-<能力>.c`（新文件，零成本）
+- 在 `cf_ext_init()` 里加一行注册（`cf-ext.c` 是 CloudFile 自己的文件，零成本）
+- 在 `server/Makefile.am` 加一行（**已在登记清单里，边际成本为零**）
+
+**能力分支不应该新增任何上游改动文件。** 如果你发现必须新增，说明扩展点缺了
+一个钩子——先把钩子加进 `cf-ext.h`（基线），而不是在能力分支上改上游文件。
+
+这条约束正是让 ACL 能够长期独立演进的原因：基线怎么同步上游，都不会增加
+特性分支的负担。
+
+### 能力实现的组织方式（见 feature/dir-acl）
+
+能力自身建议拆成纯策略 + I/O 两半，例如 ACL 的
+`cf-acl-resolve.c`（只依赖 glib）与 `cf-acl.c`（配置、数据库、群组查询）。
+前者可以脱离整个 seafile 构建单独编译测试——往里面加
+`#include "seafile-session.h"` 就毁掉了这个性质。
 
 ## 测试
 
-```bash
-./tests/cf-acl/run.sh
-```
-
-只需要 glib，不需要完整构建。用例集来自 `cloudfile-docker/docs/acl-cases.json`，
-三仓并排 checkout 时自动找到，否则用 `CF_ACL_CASES` 指定。
-**同一份用例集也驱动 cloudfile-hub 的 Python 实现**，两边必须给出相同结果。
+基线没有能力实现，因此没有能力级测试；`tests/` 下的测试随能力分支一起走
+（例如 `feature/dir-acl` 的 `tests/cf-acl/run.sh`）。
 
 Go 部分：
 
@@ -96,30 +115,31 @@ cd fileserver && go build ./... && go vet ./...
 
 完整构建需要 Linux + autotools + searpc + glib，见
 `cloudfile-docker/build/cloudfile_14.0/cloudfile-build.sh`。
-**在 macOS 上无法完整构建**——只能验证 `cf-acl-resolve.c` 和 Go 部分。
-改了 C 代码而没能编译，请在汇报时明确说出来。
+**在 macOS 上无法完整构建**——本地只能验证 Go 部分和不依赖 seafile 的纯策略
+文件。真正的 C 编译由 CI 的 `build-c` job 完成（它把本仓库 checkout 成
+`seafile-server` 以满足上游 `ci/run.py` 的目录名假设）。改了 C 代码而没能编译，
+请在汇报时明确说出来。
 
 ## 铁律
 
-**1. 开关关闭 = 原生 CE 行为。**
+**1. 没有能力注册 = 原生 CE 行为。**
 
-`seafile.conf` 的 `[cloudfile] dir_acl_enabled` 未开启时，所有 CloudFile 代码
-路径必须是透传。`cf_acl_apply()` 在关闭时就是一次 `g_strdup`。
+基线的 `cf_ext_init()` 不注册任何能力，此时每个钩子都是透传。能力自身还要再
+受 `seafile.conf` 里 `[cloudfile]` 的开关控制，关闭时不注册。
 
 **2. 扩展只能收紧权限，不能放宽。**
 
-`tests/cf-acl/test-cf-acl.c::test_never_widens` 会穷举验证。
+`cf_ext_check_permission` 把各能力串起来，每个都拿到上一个的结果。任何能力
+返回的权限都不得高于入参，能力自身要有穷举验证这条不变量的测试。
 
 **3. 读不到规则时 fail closed。**
 
-数据库查询失败时拒绝访问，而不是放行。理由：正好在"限制规则读不出来"的时候
-放行，是最糟糕的失败模式。注意区分"没有规则"（放行）和"读不出规则"（拒绝）——
-`load_repo_rules()` 用 `db_error` 出参区分这两者。
+能力的数据读取失败时应拒绝访问，而不是放行——正好在"限制读不出来"的时候放行，
+是最糟糕的失败模式。注意区分"没有规则"（放行）和"读不出规则"（拒绝）。
 
 **4. 无法解释的数据不能当作允许。**
 
-`load_rule_cb` 遇到无法识别的 `subject_type` 或 `permission` 时跳过并告警，
-不猜测。
+遇到无法识别的枚举值时跳过并告警，不猜测。
 
 ## 约定
 

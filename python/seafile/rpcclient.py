@@ -504,8 +504,9 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def check_permission_by_path(repo_id, path, user):
         pass
 
-    # CloudFile directory ACL: first path at or below `path` that `user`
+    # CloudFile extension seam: first path at or below `path` that `user`
     # cannot access at all, or None when the whole subtree is reachable.
+    # Answers None when no capability is enabled.
     @searpc_func("string", ["string", "string", "string"])
     def cf_find_restricted_path(repo_id, path, user):
         pass
