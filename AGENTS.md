@@ -6,8 +6,9 @@
 
 `haiwen/seafile-server` 的 fork，CloudFile（Seafile CE 企业扩展版）的**权限终判层**。
 
-`dev` 上是**扩展基线**：只有扩展点，没有任何具体能力。目录 ACL 等能力活在
-各自的长期特性分支上（`feature/dir-acl`）。
+`dev` = **扩展基线 + 已验收能力**，全部开关默认关闭。开发中的能力在
+`feature/<耦合簇>`（例如 `feature/dir-acl`），**验收后合回 `dev` 并删除分支**——
+不长期分叉，理由见 `cloudfile-docker/docs/BRANCHES.md` 第一节。
 
 CloudFile 由三个仓库组成，通常并排 checkout：
 
@@ -79,11 +80,11 @@ fileserver/cf_ext.go    同步客户端网关，走 RPC 问 seaf-server
 
 **为什么用注册表而不是直接调用某个能力：**
 
-能力活在长期特性分支上。如果每个能力都要自己去改 `rpc-service.c`、
-`seaf-server.c`、`seafile-session.c`，那么每次同步上游的代价要按分支数翻倍，
-而且各分支会在同样的行上互相冲突，永远解不完。
+如果每个能力都要自己去改 `rpc-service.c`、`seaf-server.c`、
+`seafile-session.c`，那么它们会在同样的行上互相冲突——开发期分支之间冲突，
+合进 `dev` 之后彼此的改动纠缠在一起，每次同步上游都要重新分辨谁改了什么。
 
-所以**基线把这些上游文件一次性改好**，全部调进 `cf-ext.c`。能力分支只需要：
+所以**基线把这些上游文件一次性改好**，全部调进 `cf-ext.c`。一个能力只需要：
 
 - 新增 `common/cf-<能力>.c`（新文件，零成本）
 - 在 `cf_ext_init()` 里加一行注册（`cf-ext.c` 是 CloudFile 自己的文件，零成本）
