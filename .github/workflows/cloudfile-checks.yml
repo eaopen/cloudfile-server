@@ -53,3 +53,31 @@ jobs:
 
       - name: 运行检查
         run: ./cloudfile-docker/tools/run-checks.sh
+
+  # 真正编译 C 代码。
+  #
+  # tools/run-checks.sh 只编译 cf-acl-resolve.c（纯策略，只依赖 glib），
+  # cf-acl.c 与 rpc-service.c 的改动在那里是编译不到的——它们需要 searpc、
+  # vala、完整的 seafile 构建链。这个 job 是唯一会真正编译它们的地方。
+  #
+  # 复用上游的 ci/install-deps.sh 与 ci/run.py，不做任何修改：ci/run.py 里
+  # TOPDIR/'seafile-server' 是写死的，只要把本仓库 checkout 成那个目录名，
+  # 它就会直接用我们的代码构建（目录已存在时它只 fetch，不会去 clone 上游）。
+  # 靠布局迁就上游脚本，而不是改上游脚本——省下一个登记项。
+  build-c:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: seafile-server
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖并构建
+        working-directory: seafile-server
+        run: |
+          ./ci/install-deps.sh
+          ./ci/run.py
