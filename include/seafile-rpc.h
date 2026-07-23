@@ -956,6 +956,18 @@ char *
 seafile_check_permission_by_path (const char *repo_id, const char *path,
                                   const char *user, GError **error);
 
+/*
+ * CloudFile: first path at or below @path that @user cannot access at all,
+ * or NULL when the whole subtree is reachable.
+ *
+ * Backs is_repo_syncable and is_dir_downloadable, which upstream CE stubs out
+ * as always-true. Both operations ship a whole subtree in one go, so a single
+ * unreadable descendant has to block them up front.
+ */
+char *
+seafile_cf_find_restricted_path (const char *repo_id, const char *path,
+                                 const char *user, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,

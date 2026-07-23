@@ -19,6 +19,9 @@
 
 #ifdef SEAFILE_SERVER
 #include "web-accesstoken-mgr.h"
+/* CloudFile directory ACL. Server-only: it reaches seaf->db, seaf->group_mgr
+ * and seaf->cfg_mgr, none of which exist in a non-server build. */
+#include "cf-acl.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -4062,7 +4065,59 @@ char *
 seafile_check_permission_by_path (const char *repo_id, const char *path,
                                   const char *user, GError **error)
 {
-    return seafile_check_permission (repo_id, user, error);
+    /*
+     * CloudFile: upstream CE discards @path here and answers with the
+     * repo-level share permission, which is why directory ACL is a Pro
+     * feature. Resolving the path is the whole point of the extension.
+     *
+     * Every caller that matters passes through here: Seahub's
+     * check_folder_permission, and seafdav's write paths (beginWrite, delete,
+     * move, copy, createCollection all gate on this RPC). The desktop sync
+     * client takes a different route and is handled in the Go fileserver.
+     *
+     * cf_acl_apply is a plain copy of @perm while the feature is off, so a
+     * CloudFile build with [cloudfile] dir_acl_enabled unset behaves exactly
+     * like stock CE.
+     */
+    char *perm = seafile_check_permission (repo_id, user, error);
+#ifdef SEAFILE_SERVER
+    if (!perm)
+        return NULL;
+
+    char *narrowed = cf_acl_apply (repo_id, path, user, perm);
+    g_free (perm);
+    return narrowed;
+#else
+    return perm;
+#endif
+}
+
+char *
+seafile_cf_find_restricted_path (const char *repo_id, const char *path,
+                                 const char *user, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!repo_id || !path || !user) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Arguments should not be empty");
+        return NULL;
+    }
+
+    /* Deliberately not propagating @error out of this inner call: "the user
+     * has no permission" is a normal answer here, not an RPC failure, and
+     * surfacing it as one would turn a plain denial into a 500. */
+    char *perm = seafile_check_permission (repo_id, user, NULL);
+    if (!perm) {
+        /* No access to the library at all: the root is restricted. */
+        return g_strdup ("/");
+    }
+
+    char *restricted = cf_acl_find_restricted_path (repo_id, path, user, perm);
+    g_free (perm);
+    return restricted;
+#else
+    return NULL;
+#endif
 }
 
 GList *

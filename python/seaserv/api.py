@@ -684,10 +684,34 @@ class SeafileAPI(object):
         """
         return seafserv_threaded_rpc.check_permission_by_path(repo_id, path, user)
 
+    def _cf_find_restricted_path(self, repo_id, path, user):
+        """CloudFile: first path at or below `path` that `user` cannot access.
+
+        Returns None when the whole subtree is reachable, or when the server
+        predates the RPC (an upstream CE build), which keeps this module
+        working against a stock seaf-server.
+        """
+        try:
+            restricted = seafserv_threaded_rpc.cf_find_restricted_path(
+                repo_id, path, user)
+        except Exception:
+            return None
+        return restricted or None
+
     def is_repo_syncable(self, repo_id, user, repo_perm, client=None):
         """
         Check if the permission of the repo is syncable.
+
+        Upstream CE answers true unconditionally. CloudFile refuses to sync a
+        library containing anything the user cannot read: the sync protocol
+        transfers commits and blocks rather than paths, so there is no
+        per-file authorization point once a sync is under way, and the only
+        safe moment to say no is before it starts.
         """
+        forbidden = self._cf_find_restricted_path(repo_id, '/', user)
+        if forbidden:
+            return json.dumps({'is_syncable': False,
+                               'forbidden_path': forbidden})
         return '{"is_syncable":true}'
 
     def is_dir_downloadable(self, repo_id, dir_path, user, repo_perm):
@@ -696,7 +720,21 @@ class SeafileAPI(object):
         {"is_downloadable": false, "undownloadable_path":"path"}
         - is_downloadable: true if the dir is downloadable, false if not.
         - undownloadable_path: the undownloadable path of the repo if the path is not downloadable.
+
+        `dir_path` is a JSON list of paths. A zip download packs the whole
+        subtree in one go, so a single unreadable descendant blocks it.
         """
+        try:
+            paths = json.loads(dir_path)
+        except (TypeError, ValueError):
+            paths = [dir_path]
+
+        for path in paths:
+            forbidden = self._cf_find_restricted_path(repo_id, path, user)
+            if forbidden:
+                return json.dumps({'is_downloadable': False,
+                                   'undownloadable_path': forbidden})
+
         return '{"is_downloadable":true}'
 
     # token

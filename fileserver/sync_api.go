@@ -1292,6 +1292,14 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 		if perm == "r" && op == "upload" {
 			return &appError{nil, "", http.StatusForbidden}
 		}
+		// CloudFile: share.CheckPerm only answers at library level. If the
+		// directory ACL hides anything inside, refuse the sync outright --
+		// the sync protocol trades commits and blocks rather than paths, so
+		// there is nowhere later to enforce it per file. Returns "" when no
+		// ACL applies, which is every stock CE deployment.
+		if cfFindRestrictedPath(repoID, user) != "" {
+			return &appError{nil, "", http.StatusForbidden}
+		}
 		info = new(permInfo)
 		info.perm = perm
 		info.expireTime = time.Now().Unix() + permExpireTime
@@ -1476,6 +1484,7 @@ func removeSyncAPIExpireCache() {
 	tokenCache.Range(deleteTokens)
 	permCache.Range(deletePerms)
 	virtualRepoInfoCache.Range(deleteVirtualRepoInfo)
+	cfClearRestrictedCache()
 }
 
 type collectFsInfo struct {
