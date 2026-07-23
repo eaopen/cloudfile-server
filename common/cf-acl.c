@@ -168,6 +168,68 @@ cf_acl_apply (const char *repo_id,
     return result;
 }
 
+GList *
+cf_acl_filter_dirents (const char *repo_id,
+                       const char *dir_path,
+                       const char *user,
+                       GList *dirents)
+{
+    if (!cf_acl_on || !dirents)
+        return dirents;
+
+    if (!repo_id || !user || *user == '\0')
+        return dirents;
+
+    gboolean db_error = FALSE;
+    GList *rules = load_repo_rules (repo_id, &db_error);
+    if (db_error) {
+        /* Fail closed: show nothing rather than risk listing what an
+         * unreadable rule set was meant to hide. */
+        g_list_free_full (dirents, g_object_unref);
+        return NULL;
+    }
+    if (!rules)
+        return dirents;
+
+    GHashTable *subjects = build_subject_set (user);
+    char *norm_dir = cf_acl_normalize_path (dir_path);
+
+    GList *kept = NULL, *ptr;
+    for (ptr = dirents; ptr; ptr = ptr->next) {
+        GObject *dirent = ptr->data;
+        char *name = NULL, *native_perm = NULL;
+        g_object_get (dirent, "obj_name", &name,
+                      "permission", &native_perm, NULL);
+
+        char *child_path;
+        if (strcmp (norm_dir, "/") == 0)
+            child_path = g_strdup_printf ("/%s", name ? name : "");
+        else
+            child_path = g_strdup_printf ("%s/%s", norm_dir, name ? name : "");
+
+        char *perm = cf_acl_resolve (rules, subjects, child_path,
+                                     native_perm);
+        if (perm) {
+            g_object_set (dirent, "permission", perm, NULL);
+            kept = g_list_prepend (kept, dirent);
+            g_free (perm);
+        } else {
+            g_object_unref (dirent);
+        }
+
+        g_free (child_path);
+        g_free (name);
+        g_free (native_perm);
+    }
+
+    g_list_free (dirents);
+    g_free (norm_dir);
+    g_hash_table_destroy (subjects);
+    g_list_free_full (rules, (GDestroyNotify)cf_acl_rule_free);
+
+    return g_list_reverse (kept);
+}
+
 char *
 cf_acl_find_restricted_path (const char *repo_id,
                              const char *path,

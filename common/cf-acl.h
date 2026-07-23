@@ -58,4 +58,20 @@ char *cf_acl_find_restricted_path (const char *repo_id,
                                    const char *user,
                                    const char *native_perm);
 
+/*
+ * Apply the directory ACL to a listing of @dir_path.
+ *
+ * Drops entries resolving to no access, and rewrites the `permission`
+ * property of the rest. Upstream resolves the permission once at repo level
+ * and stamps it on every entry, so without this an `invisible` folder would
+ * still be listed and a read-only one would still advertise `rw`.
+ *
+ * Consumes @dirents and returns the filtered list; entries that are dropped
+ * are unreffed. Returns @dirents unchanged when the feature is off.
+ */
+GList *cf_acl_filter_dirents (const char *repo_id,
+                              const char *dir_path,
+                              const char *user,
+                              GList *dirents);
+
 #endif /* CF_ACL_H */

@@ -4159,6 +4159,23 @@ seafile_list_dir_with_perm (const char *repo_id,
                                                        offset,
                                                        limit,
                                                        error);
+
+#ifdef SEAFILE_SERVER
+    /*
+     * CloudFile: apply the directory ACL per entry.
+     *
+     * seaf_repo_manager_list_dir_with_perm resolves the permission once, at
+     * repo level, and stamps the same value on every entry -- it never looks
+     * at the child paths. Without this pass an `invisible` folder would still
+     * be listed (merely unopenable), and a read-only one would still advertise
+     * `rw`, which is exactly what acl-semantics.md section 6 forbids.
+     *
+     * Filtering here rather than in seahub covers every caller of this RPC at
+     * once, and keeps the patched-file list from growing.
+     */
+    ret = cf_acl_filter_dirents (repo_id, rpath, user, ret);
+#endif
+
     g_free (rpath);
 
     return ret;
