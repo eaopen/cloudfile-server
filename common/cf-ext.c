@@ -7,6 +7,7 @@
 #include "log.h"
 #include "seafile-session.h"
 #include "cf-ext.h"
+#include "cf-acl.h"
 
 typedef struct CfProvider {
     char *name;
@@ -53,14 +54,13 @@ cf_ext_init (void)
     /*
      * Capabilities register themselves here.
      *
-     * The baseline registers none, which is the point: with an empty table
-     * every hook below is a pass-through and the server behaves exactly like
-     * stock CE. A capability branch adds its own cf-*.c and one call here --
+     * Each cf_*_init() reads its own CF switch and registers only when it is
+     * on, so a build with every switch off leaves this table empty and every
+     * hook below is a pass-through -- the server then behaves exactly like
+     * stock CE. Adding a capability is one line here plus its own cf-*.c;
      * this file is CloudFile's own, so editing it costs nothing at sync time.
-     *
-     * e.g. on feature/dir-acl:
-     *     cf_acl_init ();
      */
+    cf_acl_init ();
 }
 
 char *

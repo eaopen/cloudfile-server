@@ -36,6 +36,8 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/group-mgr.h \
 	../common/org-mgr.h \
 	../common/cf-ext.h \
+	../common/cf-acl.h \
+	../common/cf-acl-resolve.h \
 	index-blocks-mgr.h \
 	http-tx-mgr.h \
 	notif-mgr.h \
@@ -82,6 +84,8 @@ seaf_server_SOURCES = \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
 	../common/cf-ext.c \
+	../common/cf-acl.c \
+	../common/cf-acl-resolve.c \
 	../common/block-mgr.c \
 	../common/block-backend.c \
 	../common/block-backend-fs.c \
