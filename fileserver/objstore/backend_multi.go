@@ -23,9 +23,10 @@ type storageClass struct {
 }
 
 type multiBackend struct {
-	backends  map[string]storageBackend
-	defaultID string
-	db        *sql.DB
+	backends         map[string]storageBackend
+	defaultID        string
+	storageIDForRepo func(context.Context, string) (string, error)
+	db               *sql.DB
 }
 
 func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiBackend, error) {
@@ -85,6 +86,11 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 	if err != nil {
 		return nil, err
 	}
+	m.storageIDForRepo = func(ctx context.Context, repoID string) (string, error) {
+		var storageID string
+		err := m.db.QueryRowContext(ctx, "SELECT storage_id FROM RepoStorageId WHERE repo_id = ? LIMIT 1", repoID).Scan(&storageID)
+		return storageID, err
+	}
 	return m, nil
 }
 
@@ -114,9 +120,12 @@ func backendFromClassSpec(spec map[string]interface{}, objType string) (storageB
 
 func (m *multiBackend) backend(repoID string) (storageBackend, error) {
 	storageID := m.defaultID
-	err := m.db.QueryRowContext(context.Background(), "SELECT storage_id FROM RepoStorageId WHERE repo_id = ? LIMIT 1", repoID).Scan(&storageID)
+	mappedStorageID, err := m.storageIDForRepo(context.Background(), repoID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
+	}
+	if err == nil {
+		storageID = mappedStorageID
 	}
 	backend, ok := m.backends[storageID]
 	if !ok {
