@@ -5,6 +5,7 @@ package objstore
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"gopkg.in/ini.v1"
 )
@@ -45,7 +46,10 @@ func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectS
 func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
 	config, err := ini.Load(seafileConfPath)
 	if err != nil {
-		return newFSBackend(seafileDataDir, objType)
+		if info, statErr := os.Stat(seafileConfPath); os.IsNotExist(err) || (statErr == nil && info.IsDir()) {
+			return newFSBackend(seafileDataDir, objType)
+		}
+		return nil, err
 	}
 
 	sectionName := map[string]string{
