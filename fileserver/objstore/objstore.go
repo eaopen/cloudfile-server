@@ -3,7 +3,10 @@
 package objstore
 
 import (
+	"fmt"
 	"io"
+
+	"gopkg.in/ini.v1"
 )
 
 // ObjectStore is a container to access storage backend
@@ -31,8 +34,36 @@ type storageBackend interface {
 func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectStore {
 	obj := new(ObjectStore)
 	obj.ObjType = objType
-	obj.backend, _ = newFSBackend(seafileDataDir, objType)
+	backend, err := newBackend(seafileConfPath, seafileDataDir, objType)
+	if err != nil {
+		panic(fmt.Sprintf("initialize %s object store: %v", objType, err))
+	}
+	obj.backend = backend
 	return obj
+}
+
+func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
+	config, err := ini.Load(seafileConfPath)
+	if err != nil {
+		return newFSBackend(seafileDataDir, objType)
+	}
+
+	sectionName := map[string]string{
+		"commits": "commit_object_backend",
+		"fs":      "fs_object_backend",
+		"blocks":  "block_backend",
+	}[objType]
+	if sectionName == "" {
+		return nil, fmt.Errorf("unknown object type %q", objType)
+	}
+	section, err := config.GetSection(sectionName)
+	if err != nil || section.Key("name").String() == "" || section.Key("name").String() == "filesystem" {
+		return newFSBackend(seafileDataDir, objType)
+	}
+	if section.Key("name").String() != "s3" {
+		return nil, fmt.Errorf("unsupported %s backend %q", objType, section.Key("name").String())
+	}
+	return newS3Backend(section)
 }
 
 // Read data from storage backends.
