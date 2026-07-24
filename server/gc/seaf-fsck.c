@@ -189,7 +189,8 @@ main(int argc, char *argv[])
         options.check_integrity = check_integrity;
         options.check_file_size = check_file_size;
         options.repair = repair;
-        seaf_fsck (repo_id_list, &options);
+        if (seaf_fsck (repo_id_list, &options) < 0)
+            return 1;
     }
 
     return 0;

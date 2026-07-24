@@ -193,7 +193,7 @@ block_backend_fs_commit_block (BlockBackend *bend,
     return 0;
 }
     
-static gboolean
+static int
 block_backend_fs_block_exists (BlockBackend *bend,
                                const char *store_id,
                                int version,
@@ -203,9 +203,9 @@ block_backend_fs_block_exists (BlockBackend *bend,
 
     get_block_path (bend, block_sha1, block_path, store_id, version);
     if (g_access (block_path, F_OK) == 0)
-        return TRUE;
-    else
-        return FALSE;
+        return 1;
+
+    return errno == ENOENT ? 0 : -1;
 }
 
 static int

@@ -103,6 +103,13 @@ seaf_block_manager_block_exists (SeafBlockManager *mgr,
                                  int version,
                                  const char *block_id);
 
+/* Returns 1 if present, 0 if absent, and -1 on backend error. */
+int
+seaf_block_manager_block_exists_checked (SeafBlockManager *mgr,
+                                         const char *store_id,
+                                         int version,
+                                         const char *block_id);
+
 int
 seaf_block_manager_remove_block (SeafBlockManager *mgr,
                                  const char *store_id,
@@ -140,6 +147,23 @@ seaf_block_manager_remove_store (SeafBlockManager *mgr,
                                  const char *store_id,
                                  SeafBlockProgressFunc progress_cb,
                                  void *user_data);
+
+char *
+seaf_block_manager_get_storage_id (SeafBlockManager *mgr,
+                                   const char *store_id);
+
+gboolean
+seaf_block_manager_has_storage_id (SeafBlockManager *mgr,
+                                   const char *storage_id);
+
+int
+seaf_block_manager_copy_store (SeafBlockManager *mgr,
+                               const char *store_id,
+                               int version,
+                               const char *src_storage_id,
+                               const char *dst_storage_id,
+                               SeafBlockProgressFunc progress_cb,
+                               void *user_data);
 
 guint64
 seaf_block_manager_get_block_number (SeafBlockManager *mgr,

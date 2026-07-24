@@ -18,12 +18,16 @@
 #include <glib/gstdio.h>
 
 #include "block-backend.h"
+#include "storage-backend-multi.h"
 
 #define SEAF_BLOCK_DIR "blocks"
 
 
 extern BlockBackend *
 block_backend_fs_new (const char *block_dir, const char *tmp_dir);
+extern BlockBackend *
+block_backend_s3_new (GKeyFile *config, const char *section,
+                      const char *tmp_dir);
 
 
 SeafBlockManager *
@@ -31,11 +35,27 @@ seaf_block_manager_new (struct _SeafileSession *seaf,
                         const char *seaf_dir)
 {
     SeafBlockManager *mgr;
+    char *name;
 
     mgr = g_new0 (SeafBlockManager, 1);
     mgr->seaf = seaf;
 
-    mgr->backend = block_backend_fs_new (seaf_dir, seaf->tmp_file_dir);
+    name = g_key_file_get_string (seaf->config, "block_backend",
+                                  "name", NULL);
+    if (!name || strcmp (name, "filesystem") == 0)
+        mgr->backend = block_backend_fs_new (seaf_dir,
+                                             seaf->tmp_file_dir);
+    else if (strcmp (name, "s3") == 0)
+        mgr->backend = block_backend_s3_new (seaf->config,
+                                             "block_backend",
+                                             seaf->tmp_file_dir);
+    else if (strcmp (name, "multiple") == 0)
+        mgr->backend = block_backend_multi_new (seaf->config, seaf->db,
+                                                seaf_dir,
+                                                seaf->tmp_file_dir);
+    else
+        seaf_warning ("[Block mgr] Unsupported backend %s.\n", name);
+    g_free (name);
     if (!mgr->backend) {
         seaf_warning ("[Block mgr] Failed to load backend.\n");
         goto onerror;
@@ -114,9 +134,19 @@ gboolean seaf_block_manager_block_exists (SeafBlockManager *mgr,
                                           int version,
                                           const char *block_id)
 {
+    return seaf_block_manager_block_exists_checked (mgr, store_id,
+                                                    version, block_id) == 1;
+}
+
+int
+seaf_block_manager_block_exists_checked (SeafBlockManager *mgr,
+                                         const char *store_id,
+                                         int version,
+                                         const char *block_id)
+{
     if (!store_id || !is_uuid_valid(store_id) ||
         !block_id || !is_object_id_valid(block_id))
-        return FALSE;
+        return -1;
 
     return mgr->backend->exists (mgr->backend, store_id, version, block_id);
 }
@@ -271,4 +301,35 @@ seaf_block_manager_remove_store (SeafBlockManager *mgr,
 {
     return mgr->backend->remove_store (mgr->backend, store_id,
                                        progress_cb, user_data);
+}
+
+char *
+seaf_block_manager_get_storage_id (SeafBlockManager *mgr,
+                                   const char *store_id)
+{
+    return mgr->backend->get_storage_id ?
+        mgr->backend->get_storage_id (mgr->backend, store_id) : NULL;
+}
+
+gboolean
+seaf_block_manager_has_storage_id (SeafBlockManager *mgr,
+                                   const char *storage_id)
+{
+    return mgr->backend->has_storage_id ?
+        mgr->backend->has_storage_id (mgr->backend, storage_id) : FALSE;
+}
+
+int
+seaf_block_manager_copy_store (SeafBlockManager *mgr,
+                               const char *store_id,
+                               int version,
+                               const char *src_storage_id,
+                               const char *dst_storage_id,
+                               SeafBlockProgressFunc progress_cb,
+                               void *user_data)
+{
+    return mgr->backend->copy_store ?
+        mgr->backend->copy_store (mgr->backend, store_id, version,
+                                  src_storage_id, dst_storage_id,
+                                  progress_cb, user_data) : -1;
 }

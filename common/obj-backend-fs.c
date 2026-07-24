@@ -318,7 +318,7 @@ obj_backend_fs_write (ObjBackend *bend,
     return 0;
 }
 
-static gboolean
+static int
 obj_backend_fs_exists (ObjBackend *bend,
                        const char *repo_id,
                        int version,
@@ -330,12 +330,12 @@ obj_backend_fs_exists (ObjBackend *bend,
     id_to_path (bend->priv, obj_id, path, repo_id, version);
 
     if (seaf_stat (path, &st) == 0)
-        return TRUE;
+        return 1;
 
-    return FALSE;
+    return errno == ENOENT ? 0 : -1;
 }
 
-static void
+static int
 obj_backend_fs_delete (ObjBackend *bend,
                        const char *repo_id,
                        int version,
@@ -344,7 +344,12 @@ obj_backend_fs_delete (ObjBackend *bend,
     char path[SEAF_PATH_MAX];
 
     id_to_path (bend->priv, obj_id, path, repo_id, version);
-    g_unlink (path);
+    if (g_unlink (path) < 0 && errno != ENOENT) {
+        seaf_warning ("Failed to delete object %s:%s: %s.\n",
+                      repo_id, obj_id, strerror (errno));
+        return -1;
+    }
+    return 0;
 }
 
 static int

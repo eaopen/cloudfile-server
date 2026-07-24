@@ -162,8 +162,7 @@ main(int argc, char *argv[])
     }
 
     if (rm_garbage) {
-        delete_garbaged_repos (dry_run, thread_num, verbose);
-        return 0;
+        return delete_garbaged_repos (dry_run, thread_num, verbose) < 0 ? 1 : 0;
     }
 
     GList *repo_id_list = NULL;
@@ -175,9 +174,10 @@ main(int argc, char *argv[])
         return verify_repos (repo_id_list);
     }
 
-    gc_core_run (repo_id_list, id_prefix, dry_run, verbose, thread_num, rm_fs);
+    int ret = gc_core_run (repo_id_list, id_prefix, dry_run, verbose,
+                           thread_num, rm_fs);
 
     g_free (id_prefix);
 
-    return 0;
+    return ret < 0 ? 1 : 0;
 }

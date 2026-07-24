@@ -22,12 +22,13 @@ struct ObjBackend {
                           int len,
                           gboolean need_sync);
 
-    gboolean    (*exists) (ObjBackend *bend,
+    /* Returns 1 if present, 0 if absent, and -1 on backend error. */
+    int         (*exists) (ObjBackend *bend,
                            const char *repo_id,
                            int version,
                            const char *obj_id);
 
-    void        (*delete) (ObjBackend *bend,
+    int         (*delete) (ObjBackend *bend,
                            const char *repo_id,
                            int version,
                            const char *obj_id);
@@ -49,6 +50,20 @@ struct ObjBackend {
                                 const char *store_id,
                                 SeafObjProgressFunc progress_cb,
                                 void *user_data);
+
+    char *     (*get_storage_id) (ObjBackend *bend,
+                                  const char *repo_id);
+
+    gboolean   (*has_storage_id) (ObjBackend *bend,
+                                  const char *storage_id);
+
+    int        (*copy_store) (ObjBackend *bend,
+                              const char *repo_id,
+                              int version,
+                              const char *src_storage_id,
+                              const char *dst_storage_id,
+                              SeafObjProgressFunc progress_cb,
+                              void *user_data);
 
     void *priv;
 };
