@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,54 @@ func createFile() error {
 	}
 
 	return nil
+}
+
+func TestS3BackendConfig(t *testing.T) {
+	conf, err := os.CreateTemp(t.TempDir(), "seafile.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conf.WriteString(`[commit_object_backend]
+name = s3
+bucket = commits
+key_id = access
+key = secret
+host = minio:9000
+use_https = false
+use_v4_signature = true
+path_style_request = true
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = conf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := newBackend(conf.Name(), t.TempDir(), "commits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := backend.(*s3Backend); !ok {
+		t.Fatalf("backend = %T, want *s3Backend", backend)
+	}
+}
+
+func TestS3BackendRejectsIncompleteConfig(t *testing.T) {
+	conf, err := os.CreateTemp(t.TempDir(), "seafile.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conf.WriteString("[commit_object_backend]\nname = s3\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = conf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newBackend(conf.Name(), t.TempDir(), "commits")
+	if err == nil || !strings.Contains(err.Error(), "is required") {
+		t.Fatalf("error = %v, want missing S3 setting", err)
+	}
 }
 
 func delFile() error {
