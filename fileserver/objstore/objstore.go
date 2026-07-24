@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/ini.v1"
 )
@@ -44,9 +45,15 @@ func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectS
 }
 
 func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
-	config, err := ini.Load(seafileConfPath)
+	configPath := seafileConfPath
+	info, statErr := os.Stat(configPath)
+	if statErr == nil && info.IsDir() {
+		configPath = filepath.Join(configPath, "seafile.conf")
+	}
+
+	config, err := ini.Load(configPath)
 	if err != nil {
-		if info, statErr := os.Stat(seafileConfPath); os.IsNotExist(err) || (statErr == nil && info.IsDir()) {
+		if os.IsNotExist(err) {
 			return newFSBackend(seafileDataDir, objType)
 		}
 		return nil, err
@@ -66,7 +73,7 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 	}
 	if section.Key("name").String() != "s3" {
 		if section.Key("name").String() == "multiple" {
-			return newMultiBackend(config, seafileConfPath, objType)
+			return newMultiBackend(config, configPath, objType)
 		}
 		return nil, fmt.Errorf("unsupported %s backend %q", objType, section.Key("name").String())
 	}

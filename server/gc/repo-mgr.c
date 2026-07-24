@@ -715,12 +715,12 @@ seaf_repo_manager_list_garbage_repos (SeafRepoManager *mgr)
     return repo_ids;
 }
 
-void
+int
 seaf_repo_manager_remove_garbage_repo (SeafRepoManager *mgr, const char *repo_id)
 {
     char sql[256];
 
     snprintf (sql, sizeof(sql), "DELETE FROM GarbageRepos WHERE repo_id='%s'",
               repo_id);
-    seaf_db_query (seaf->db, sql);
+    return seaf_db_query (seaf->db, sql);
 }

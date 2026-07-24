@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/haiwen/seafile-server/fileserver/option"
@@ -34,11 +36,7 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 	if err != nil || !storage.Key("enable_storage_classes").MustBool(false) {
 		return nil, fmt.Errorf("multiple backend requires [storage] enable_storage_classes = true")
 	}
-	classesPath := storage.Key("storage_classes_file").String()
-	if classesPath == "" {
-		return nil, fmt.Errorf("multiple backend requires storage_classes_file")
-	}
-	body, err := os.ReadFile(classesPath)
+	body, err := storageClassesJSON(storage, seafileConfPath)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +49,9 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 	for _, class := range classes {
 		if class.StorageID == "" {
 			return nil, fmt.Errorf("storage class has no storage_id")
+		}
+		if _, exists := m.backends[class.StorageID]; exists {
+			return nil, fmt.Errorf("duplicate storage_id %q", class.StorageID)
 		}
 		if class.Default {
 			if m.defaultID != "" {
@@ -86,12 +87,33 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 	if err != nil {
 		return nil, err
 	}
+	m.db.SetConnMaxLifetime(5 * time.Minute)
+	m.db.SetMaxOpenConns(8)
+	m.db.SetMaxIdleConns(8)
 	m.storageIDForRepo = func(ctx context.Context, repoID string) (string, error) {
 		var storageID string
-		err := m.db.QueryRowContext(ctx, "SELECT storage_id FROM RepoStorageId WHERE repo_id = ? LIMIT 1", repoID).Scan(&storageID)
+		// A virtual repository shares its origin repository's object store. Looking
+		// up only the virtual repository would silently route it to the default
+		// class, splitting metadata and blocks between storage classes.
+		err := m.db.QueryRowContext(ctx, "SELECT storage_id FROM RepoStorageId WHERE repo_id = COALESCE((SELECT origin_repo FROM VirtualRepo WHERE repo_id = ?), ?) LIMIT 1", repoID, repoID).Scan(&storageID)
 		return storageID, err
 	}
 	return m, nil
+}
+
+func storageClassesJSON(storage *ini.Section, seafileConfPath string) ([]byte, error) {
+	if value := strings.TrimSpace(os.Getenv("CF_STORAGE_CLASSES_JSON")); value != "" {
+		return []byte(value), nil
+	}
+
+	classesPath := strings.TrimSpace(storage.Key("storage_classes_file").String())
+	if classesPath == "" {
+		return nil, fmt.Errorf("multiple backend requires storage_classes_file or CF_STORAGE_CLASSES_JSON")
+	}
+	if !filepath.IsAbs(classesPath) {
+		classesPath = filepath.Join(filepath.Dir(seafileConfPath), classesPath)
+	}
+	return os.ReadFile(classesPath)
 }
 
 func backendFromClassSpec(spec map[string]interface{}, objType string) (storageBackend, error) {
@@ -120,7 +142,9 @@ func backendFromClassSpec(spec map[string]interface{}, objType string) (storageB
 
 func (m *multiBackend) backend(repoID string) (storageBackend, error) {
 	storageID := m.defaultID
-	mappedStorageID, err := m.storageIDForRepo(context.Background(), repoID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mappedStorageID, err := m.storageIDForRepo(ctx, repoID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
