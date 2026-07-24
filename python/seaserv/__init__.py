@@ -39,4 +39,8 @@ from .service import \
 
 from .service import send_message
 
-from .api import seafile_api, ccnet_api
+# seafevents imports these from the package root.  They have always lived in
+# api.py, but omitting the re-export makes the event daemon crash during its
+# first import, which in turn leaves metadata initialization without its local
+# task endpoint on port 8889.
+from .api import seafile_api, ccnet_api, REPO_STATUS_NORMAL, REPO_STATUS_READ_ONLY
