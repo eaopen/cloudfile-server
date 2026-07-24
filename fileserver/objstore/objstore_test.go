@@ -79,6 +79,28 @@ func TestS3BackendRejectsIncompleteConfig(t *testing.T) {
 	}
 }
 
+func TestMultipleBackendConfig(t *testing.T) {
+	dir := t.TempDir()
+	classes := path.Join(dir, "classes.json")
+	if err := os.WriteFile(classes, []byte(`[
+  {"storage_id":"local","is_default":true,"commits":{"backend":"fs","dir":"`+dir+`"},"fs":{"backend":"fs","dir":"`+dir+`"},"blocks":{"backend":"fs","dir":"`+dir+`"}}
+]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	conf := path.Join(dir, "seafile.conf")
+	if err := os.WriteFile(conf, []byte("[database]\nhost = db\nuser = user\npassword = pass\ndb_name = seafile_db\n\n[storage]\nenable_storage_classes = true\nstorage_classes_file = "+classes+"\n\n[commit_object_backend]\nname = multiple\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := newBackend(conf, dir, "commits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	multi, ok := backend.(*multiBackend)
+	if !ok || multi.defaultID != "local" {
+		t.Fatalf("backend = %#v, want local multi backend", backend)
+	}
+}
+
 func delFile() error {
 	err := os.Remove(testFile)
 	if err != nil {

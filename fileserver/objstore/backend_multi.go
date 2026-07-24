@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/haiwen/seafile-server/fileserver/option"
 	"gopkg.in/ini.v1"
 )
