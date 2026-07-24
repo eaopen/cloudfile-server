@@ -65,6 +65,9 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 		return newFSBackend(seafileDataDir, objType)
 	}
 	if section.Key("name").String() != "s3" {
+		if section.Key("name").String() == "multiple" {
+			return newMultiBackend(config, seafileConfPath, objType)
+		}
 		return nil, fmt.Errorf("unsupported %s backend %q", objType, section.Key("name").String())
 	}
 	return newS3Backend(section)
