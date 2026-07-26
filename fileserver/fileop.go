@@ -1501,6 +1501,23 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 		parentDirCan = getCanonPath(parentDir)
 	}
 
+	// CloudFile: one PREPARE for the deepest path asked for, matching
+	// seaf_repo_manager_mkdir_with_parents -- the whole thing lands in a
+	// single commit, so it is a single operation.
+	cfFop := &cfFileOp{
+		Op:     cfOpMkdir,
+		RepoID: repoID,
+		Dir:    parentDirCan,
+		Name:   relativeDirCan,
+		User:   user,
+	}
+	if appErr := cfFileOpPrepare(cfFop); appErr != nil {
+		if appErr.Error != nil {
+			return appErr.Error
+		}
+		return fmt.Errorf("%s", appErr.Message)
+	}
+
 	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
 	if err != nil {
 		err := fmt.Errorf("failed to get current gc id: %v", err)
@@ -1509,10 +1526,13 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 
 	absPath, dirID, err := checkAndCreateDir(repo, headCommit.RootID, parentDirCan, subFolders)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to check and create dir: %v", err)
 		return err
 	}
 	if absPath == "" {
+		// Every level already existed: no commit, so no fact -- only the abort.
+		cfFileOpAborted(cfFop)
 		return nil
 	}
 	newRootID := headCommit.RootID
@@ -1523,16 +1543,21 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 	var names []string
 	rootID, _ = doPostMultiFiles(repo, newRootID, filepath.Dir(absPath), []*fsmgr.SeafDirent{dent}, user, false, &names)
 	if rootID == "" {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to put dir")
 		return err
 	}
 
 	buf := fmt.Sprintf("Added directory \"%s\"", relativeDirCan)
-	_, err = genNewCommit(repo, headCommit, rootID, user, buf, true, gcID, true)
+	newCommitID, err := genNewCommit(repo, headCommit, rootID, user, buf, true, gcID, true)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to generate new commit: %v", err)
 		return err
 	}
+
+	cfFop.CommitID = newCommitID
+	cfFileOpCommitted(cfFop)
 
 	go mergeVirtualRepoPool.AddTask(repo.ID, "")
 
@@ -1810,6 +1835,19 @@ func postMultiFiles(rsp http.ResponseWriter, r *http.Request, repoID, parentDir,
 		cryptKey = key
 	}
 
+	// CloudFile: one PREPARE for the batch, before a single block is written.
+	// Asking after indexing would mean a refused upload had already spent the
+	// disk and the CPU.
+	if appErr := cfFileOpPrepare(&cfFileOp{
+		Op:     cfOpCreateFile,
+		RepoID: repoID,
+		Dir:    canonPath,
+		Names:  fileNames,
+		User:   user,
+	}); appErr != nil {
+		return appErr
+	}
+
 	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
 	if err != nil {
 		err := fmt.Errorf("failed to get current gc id for repo %s: %v", repoID, err)
@@ -1848,6 +1886,13 @@ func postMultiFiles(rsp http.ResponseWriter, r *http.Request, repoID, parentDir,
 
 	retStr, err := postFilesAndGenCommit(fileNames, repo.ID, user, canonPath, replace, ids, sizes, lastModify, gcID)
 	if err != nil {
+		cfFileOpAborted(&cfFileOp{
+			Op:     cfOpCreateFile,
+			RepoID: repoID,
+			Dir:    canonPath,
+			Names:  fileNames,
+			User:   user,
+		})
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
@@ -1923,6 +1968,7 @@ func postFilesAndGenCommit(fileNames []string, repoID string, user, canonPath st
 	}
 	var names []string
 	var retryCnt int
+	var newCommitID string
 
 	var dents []*fsmgr.SeafDirent
 	for i, name := range fileNames {
@@ -1952,7 +1998,7 @@ retry:
 		buf = fmt.Sprintf("Added \"%s\".", fileNames[0])
 	}
 
-	_, err = genNewCommit(repo, headCommit, rootID, user, buf, handleConncurrentUpdate, lastGCID, true)
+	newCommitID, err = genNewCommit(repo, headCommit, rootID, user, buf, handleConncurrentUpdate, lastGCID, true)
 	if err != nil {
 		if err != ErrConflict {
 			err := fmt.Errorf("failed to generate new commit: %w", err)
@@ -1975,6 +2021,17 @@ retry:
 		}
 		goto retry
 	}
+
+	// CloudFile: past the retry loop, so one fact however many attempts it
+	// took. `names` is what actually landed after deduplication.
+	cfFileOpCommitted(&cfFileOp{
+		Op:       cfOpCreateFile,
+		RepoID:   repoID,
+		Dir:      canonPath,
+		Names:    names,
+		User:     user,
+		CommitID: newCommitID,
+	})
 
 	go mergeVirtualRepoPool.AddTask(repo.ID, "")
 
@@ -3342,6 +3399,21 @@ func putFile(rsp http.ResponseWriter, r *http.Request, repoID, parentDir, user, 
 		return &appError{nil, msg, seafHTTPResNotExists}
 	}
 
+	// CloudFile: before any block is written. headID is the caller's expected
+	// source version when it supplied one; P1 turns it into the optimistic
+	// concurrency check, here it is only carried.
+	cfFop := &cfFileOp{
+		Op:             cfOpUpdateFile,
+		RepoID:         repoID,
+		Dir:            canonPath,
+		Name:           fileName,
+		User:           user,
+		ExpectCommitID: headID,
+	}
+	if appErr := cfFileOpPrepare(cfFop); appErr != nil {
+		return appErr
+	}
+
 	var cryptKey *seafileCrypt
 	if repo.IsEncrypted {
 		key, err := parseCryptKey(rsp, repoID, user, repo.EncVersion)
@@ -3388,6 +3460,8 @@ func putFile(rsp http.ResponseWriter, r *http.Request, repoID, parentDir, user, 
 	fullPath := filepath.Join(parentDir, fileName)
 	oldFileID, _, _ := fsmgr.GetObjIDByPath(repo.StoreID, headCommit.RootID, fullPath)
 	if fileID == oldFileID {
+		// Identical content: no commit, so no fact -- only the abort.
+		cfFileOpAborted(cfFop)
 		if isAjax {
 			retJSON, err := formatUpdateJSONRet(fileName, fileID, size)
 			if err != nil {
@@ -3411,13 +3485,15 @@ func putFile(rsp http.ResponseWriter, r *http.Request, repoID, parentDir, user, 
 	var names []string
 	rootID, err := doPostMultiFiles(repo, headCommit.RootID, canonPath, []*fsmgr.SeafDirent{newDent}, user, true, &names)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to put file %s to %s in repo %s: %v", fileName, canonPath, repo.ID, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
 	desc := fmt.Sprintf("Modified \"%s\"", fileName)
-	_, err = genNewCommit(repo, headCommit, rootID, user, desc, true, gcID, true)
+	newCommitID, err := genNewCommit(repo, headCommit, rootID, user, desc, true, gcID, true)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
@@ -3425,6 +3501,10 @@ func putFile(rsp http.ResponseWriter, r *http.Request, repoID, parentDir, user, 
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 	}
+
+	cfFop.CommitID = newCommitID
+	cfFop.FileID = fileID
+	cfFileOpCommitted(cfFop)
 
 	if isAjax {
 		retJSON, err := formatUpdateJSONRet(fileName, fileID, size)
@@ -3634,6 +3714,25 @@ func commitFileBlocks(repoID, parentDir, fileName, blockIDsJSON, user string, fi
 		return "", appErr
 	}
 
+	// CloudFile: create vs update reflects the caller's intent (`replace`),
+	// not verified prior existence -- telling them apart would cost a
+	// directory lookup on every chunked upload and no consumer needs it.
+	// Matches seaf_repo_manager_commit_file_blocks on the C side.
+	cfOp := cfOpCreateFile
+	if replace {
+		cfOp = cfOpUpdateFile
+	}
+	cfFop := &cfFileOp{
+		Op:     cfOp,
+		RepoID: repoID,
+		Dir:    canonPath,
+		Name:   fileName,
+		User:   user,
+	}
+	if appErr := cfFileOpPrepare(cfFop); appErr != nil {
+		return "", appErr
+	}
+
 	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
 	if err != nil {
 		err := fmt.Errorf("failed to get current gc id: %v", err)
@@ -3654,13 +3753,15 @@ func commitFileBlocks(repoID, parentDir, fileName, blockIDsJSON, user string, fi
 	var names []string
 	rootID, err := doPostMultiFiles(repo, headCommit.RootID, canonPath, []*fsmgr.SeafDirent{newDent}, user, replace, &names)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to post file %s to %s in repo %s: %v", fileName, canonPath, repo.ID, err)
 		return "", &appError{err, "", http.StatusInternalServerError}
 	}
 
 	desc := fmt.Sprintf("Added \"%s\"", fileName)
-	_, err = genNewCommit(repo, headCommit, rootID, user, desc, true, gcID, true)
+	newCommitID, err := genNewCommit(repo, headCommit, rootID, user, desc, true, gcID, true)
 	if err != nil {
+		cfFileOpAborted(cfFop)
 		if errors.Is(err, ErrGCConflict) {
 			return "", &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
@@ -3668,6 +3769,10 @@ func commitFileBlocks(repoID, parentDir, fileName, blockIDsJSON, user string, fi
 			return "", &appError{err, "", http.StatusInternalServerError}
 		}
 	}
+
+	cfFop.CommitID = newCommitID
+	cfFop.FileID = fileID
+	cfFileOpCommitted(cfFop)
 
 	return fileID, nil
 }
@@ -3797,10 +3902,22 @@ func postBlocks(repoID, user string, fsm *recvData) *appError {
 		return &appError{err, msg, http.StatusInternalServerError}
 	}
 
+	// CloudFile: pathless. These blocks enter the object store without
+	// touching any directory tree, so there is no lock subject; a lock
+	// provider ignores this op and adjudicates the create-file or update-file
+	// that commits the blocks into a path.
+	cfFop := &cfFileOp{Op: cfOpUploadBlocks, RepoID: repoID, User: user}
+	if appErr := cfFileOpPrepare(cfFop); appErr != nil {
+		return appErr
+	}
+
 	if err := indexRawBlocks(repo.StoreID, blockIDs, fileHeaders); err != nil {
+		cfFileOpAborted(cfFop)
 		err := fmt.Errorf("failed to index file blocks")
 		return &appError{err, "", http.StatusInternalServerError}
 	}
+
+	cfFileOpCommitted(cfFop)
 
 	go updateSizePool.AddTask(repo.ID)
 

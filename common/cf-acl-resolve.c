@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cf-acl-resolve.h"
+#include "cf-path.h"
 
 CfAclRule *
 cf_acl_rule_new (const char *path,
@@ -77,36 +78,18 @@ cf_acl_subject_key (int subject_type, const char *subject)
 }
 
 /*
- * Collapse separators, force a leading slash, strip the trailing one.
- * Deliberately leaves case and Unicode composition alone: Seafile paths are
- * byte-sensitive, and folding them here would let two distinct directories
- * share one ACL entry.
+ * Moved to common/cf-path.c when the write lifecycle seam needed the same
+ * rules: the ACL keys rules by path and the lock keys leases by path, and if
+ * the two normalized differently a rule on /a/b and a lock on /a/b/ would be
+ * about different objects. One implementation, so there is nothing to drift.
+ *
+ * Kept as a forwarder rather than renaming the call sites so the ACL's own
+ * tests and case set stayed untouched by a baseline refactor.
  */
 char *
 cf_acl_normalize_path (const char *path)
 {
-    if (!path || *path == '\0')
-        return g_strdup ("/");
-
-    GString *buf = g_string_new ("");
-    const char *p = path;
-
-    while (*p) {
-        while (*p == '/')
-            p++;
-        if (!*p)
-            break;
-        const char *start = p;
-        while (*p && *p != '/')
-            p++;
-        g_string_append_c (buf, '/');
-        g_string_append_len (buf, start, p - start);
-    }
-
-    if (buf->len == 0)
-        g_string_append_c (buf, '/');
-
-    return g_string_free (buf, FALSE);
+    return cf_path_normalize (path);
 }
 
 GList *

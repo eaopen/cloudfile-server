@@ -38,6 +38,9 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/group-mgr.h \
 	../common/org-mgr.h \
 	../common/cf-ext.h \
+	../common/cf-fileop.h \
+	../common/cf-fileop-json.h \
+	../common/cf-path.h \
 	../common/cf-acl.h \
 	../common/cf-acl-resolve.h \
 	../common/cf-s3-client.h \
@@ -91,6 +94,9 @@ seaf_server_SOURCES = \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
 	../common/cf-ext.c \
+	../common/cf-fileop.c \
+	../common/cf-fileop-json.c \
+	../common/cf-path.c \
 	../common/cf-acl.c \
 	../common/cf-acl-resolve.c \
 	../common/block-mgr.c \

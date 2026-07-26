@@ -26,6 +26,22 @@
 
 #include "seaf-db.h"
 
+/* CloudFile write lifecycle seam. Every entry point below announces PREPARE
+ * before it persists anything and COMMITTED after the commit lands, so a
+ * capability -- the file lock first -- can refuse a write or observe one
+ * without patching each caller.
+ *
+ * The seam is here rather than in rpc-service.c on purpose: upload-file.c,
+ * the virtual repo merge and copy-mgr all reach these functions directly,
+ * and an adjudication point with a way around it is not one.
+ *
+ * Every call site is behind cf_fileop_active(), so a build with no capability
+ * registered does one global read and changes nothing.
+ *
+ * Contract: cloudfile-docker/docs/fileop-lifecycle.md
+ */
+#include "cf-fileop.h"
+
 #define INDEX_DIR "index"
 
 #define PREFIX_DEL_FILE "Deleted \""
@@ -36,6 +52,49 @@
 
 gboolean
 should_ignore_file(const char *filename, void *data);
+
+/*
+ * CloudFile: the delete entry points take a JSON array of names rather than a
+ * single name, so the seam has to decode it to report every affected path.
+ * Callers guard on cf_fileop_active(), so nothing is parsed on a build with no
+ * capability registered.
+ *
+ * Returns 0 to allow, -1 to refuse (PREPARE only).
+ */
+static GList *
+json_to_file_list (const char *files_json);
+
+static int
+cf_fileop_json_names (CfFileOpPhase phase,
+                      const char *op,
+                      const char *repo_id,
+                      const char *dir,
+                      const char *names_json,
+                      const char *user,
+                      const char *commit_id,
+                      GError **error)
+{
+    GList *names = json_to_file_list (names_json);
+    CfFileOp fop = { .op = op, .repo_id = repo_id, .dir = dir,
+                     .names = names, .user = user, .commit_id = commit_id };
+    int rc = 0;
+
+    switch (phase) {
+    case CF_FILEOP_PHASE_PREPARE:
+        rc = cf_fileop_prepare (&fop, error);
+        break;
+    case CF_FILEOP_PHASE_COMMITTED:
+        cf_fileop_committed (&fop);
+        break;
+    case CF_FILEOP_PHASE_ABORTED:
+        cf_fileop_aborted (&fop);
+        break;
+    }
+
+    string_list_free (names);
+
+    return rc;
+}
 
 static gboolean
 is_virtual_repo_and_origin (SeafRepo *repo1, SeafRepo *repo2);
@@ -654,6 +713,8 @@ seaf_repo_manager_post_file (SeafRepoManager *mgr,
     char *gc_id = NULL;
     int ret = 0;
     int retry_cnt = 0;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     if (g_access (temp_file_path, R_OK) != 0) {
         seaf_warning ("[post file] File %s doesn't exist or not readable.\n",
@@ -684,7 +745,15 @@ seaf_repo_manager_post_file (SeafRepoManager *mgr,
         ret = -1;
         goto out;
     }
-    
+
+    if (CF_FILEOP_PREPARE (CF_OP_CREATE_FILE, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
+
     /* Write blocks. */
     if (repo->encrypted) {
         unsigned char key[32], iv[16];
@@ -733,7 +802,7 @@ retry:
 
     snprintf(buf, SEAF_PATH_MAX, "Added \"%s\"", file_name);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, FALSE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, FALSE, TRUE, gc_id, error) < 0) {
         if (*error == NULL || (*error)->code != SEAF_ERR_CONCURRENT_UPLOAD) {
             ret = -1;
             goto out;
@@ -756,9 +825,22 @@ retry:
         goto retry;
     }
 
+    /* Past the retry loop, so this fires once no matter how many attempts the
+     * commit took. */
+    CF_FILEOP_COMMITTED (CF_OP_CREATE_FILE,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .name = file_name, .user = user,
+                         .commit_id = cf_commit_id, .file_id = hex);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_CREATE_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -1106,6 +1188,7 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
     SeafileCrypt *crypt = NULL;
     char hex[41];
     int ret = 0;
+    gboolean cf_prepared = FALSE;
 
     GET_REPO_OR_FAIL(repo, repo_id);
 
@@ -1148,6 +1231,19 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
         goto out;
     }
 
+    /* One PREPARE for the whole batch, before any block is indexed. It has to
+     * be here rather than in post_files_and_gen_commit because the task_id
+     * branch below hands the commit to the async indexer -- adjudicating there
+     * would mean the blocks are already written when the answer is no.
+     */
+    if (CF_FILEOP_PREPARE (CF_OP_CREATE_FILE, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .names = filenames, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
+
     /* Index tmp files and get file id list. */
     if (repo->encrypted) {
         unsigned char key[32], iv[16];
@@ -1187,6 +1283,10 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
         id_list = g_list_reverse (id_list);
         size_list = g_list_reverse (size_list);
 
+        /* From here the commit -- and therefore the fact and the abort --
+         * belongs to post_files_and_gen_commit. Clearing the flag first is
+         * what stops one failure from producing two ABORTEDs. */
+        cf_prepared = FALSE;
         ret = post_files_and_gen_commit (filenames,
                                          repo->id,
                                          user,
@@ -1199,6 +1299,8 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
                                          gc_id,
                                          error);
     } else {
+        /* Same hand-off: the async indexer calls post_files_and_gen_commit. */
+        cf_prepared = FALSE;
         ret = index_blocks_mgr_start_index (seaf->index_blocks_mgr,
                                             filenames,
                                             paths,
@@ -1212,6 +1314,13 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
     }
 
 out:
+    /* Only reached with the flag still set when indexing failed before any
+     * commit was attempted. */
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_CREATE_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .names = filenames, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     string_list_free (filenames);
@@ -1248,6 +1357,7 @@ post_files_and_gen_commit (GList *filenames,
     int ret = 0;
     int retry_cnt = 0;
     gboolean handle_concurrent_update = TRUE;
+    char cf_commit_id[41] = "";
 
     if (replace_existed == 0) {
         handle_concurrent_update = FALSE;
@@ -1277,7 +1387,7 @@ retry:
         g_string_printf (buf, "Added \"%s\".", (char *)(filenames->data));
 
     if (gen_new_commit (repo->id, head_commit, root_id,
-                        user, buf->str, NULL, handle_concurrent_update, TRUE, last_gc_id, error) < 0) {
+                        user, buf->str, cf_commit_id, handle_concurrent_update, TRUE, last_gc_id, error) < 0) {
         if (*error == NULL || (*error)->code != SEAF_ERR_CONCURRENT_UPLOAD) {
             ret = -1;
             goto out;
@@ -1300,6 +1410,16 @@ retry:
         goto retry;
     }
 
+    /* One fact for the batch, carrying every name -- not one per file. This is
+     * also the async indexer's commit point, so both upload paths report here.
+     * @name_list is what actually landed after deduplication, which is what a
+     * consumer needs; @filenames is what was asked for.
+     */
+    CF_FILEOP_COMMITTED (CF_OP_CREATE_FILE,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .names = name_list, .user = user,
+                         .commit_id = cf_commit_id);
+
     seaf_repo_manager_merge_virtual_repo (seaf->repo_mgr, repo->id, NULL);
 
     if (ret_json)
@@ -1308,6 +1428,11 @@ retry:
     update_repo_size(repo->id);
 
 out:
+    if (ret != 0)
+        CF_FILEOP_ABORTED (CF_OP_CREATE_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .names = filenames, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -1448,6 +1573,7 @@ seaf_repo_manager_post_blocks (SeafRepoManager *mgr,
     SeafRepo *repo = NULL;
     GList *blockids = NULL, *paths = NULL, *ptr;
     int ret = 0;
+    gboolean cf_prepared = FALSE;
 
     blockids = json_to_file_list (blockids_json);
     paths = json_to_file_list (paths_json);
@@ -1472,6 +1598,18 @@ seaf_repo_manager_post_blocks (SeafRepoManager *mgr,
 
     GET_REPO_OR_FAIL(repo, repo_id);
 
+    /* Pathless: these blocks enter the object store without touching any
+     * directory tree, so there is no lock subject here. A lock provider must
+     * ignore this op -- the adjudication happens in the create-file or
+     * update-file that commits these blocks into a path.
+     */
+    if (CF_FILEOP_PREPARE (CF_OP_UPLOAD_BLOCKS, error,
+                           .repo_id = repo_id, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
+
     /* Write blocks. */
     if (seaf_fs_manager_index_raw_blocks (seaf->fs_mgr,
                                           repo->store_id,
@@ -1485,7 +1623,15 @@ seaf_repo_manager_post_blocks (SeafRepoManager *mgr,
         goto out;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_UPLOAD_BLOCKS,
+                         .repo_id = repo_id, .user = user);
+    cf_prepared = FALSE;
+
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_UPLOAD_BLOCKS,
+                           .repo_id = repo_id, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     string_list_free (blockids);
@@ -1547,6 +1693,13 @@ seaf_repo_manager_commit_file_blocks (SeafRepoManager *mgr,
     char hex[41];
     char *gc_id = NULL;
     int ret = 0;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
+    /* Intent, not verified prior existence: telling the two apart would cost a
+     * directory lookup on every chunked upload, and no consumer needs it --
+     * a lock refuses both alike. Noted in fileop-lifecycle.md section 3.
+     */
+    const char *cf_op = replace_existed ? CF_OP_UPDATE_FILE : CF_OP_CREATE_FILE;
 
     blockids = json_to_file_list (blockids_json);
 
@@ -1579,6 +1732,14 @@ seaf_repo_manager_commit_file_blocks (SeafRepoManager *mgr,
         ret = -1;
         goto out;
     }
+
+    if (CF_FILEOP_PREPARE (cf_op, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     gc_id = seaf_repo_get_current_gc_id (repo);
 
@@ -1615,10 +1776,22 @@ seaf_repo_manager_commit_file_blocks (SeafRepoManager *mgr,
     *new_id = g_strdup(hex);
     snprintf(buf, SEAF_PATH_MAX, "Added \"%s\"", file_name);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0)
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0)
         ret = -1;
+    else {
+        CF_FILEOP_COMMITTED (cf_op,
+                             .repo_id = repo_id, .dir = canon_path,
+                             .name = file_name, .user = user,
+                             .commit_id = cf_commit_id, .file_id = hex);
+        cf_prepared = FALSE;
+    }
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (cf_op,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -1798,6 +1971,8 @@ seaf_repo_manager_del_file (SeafRepoManager *mgr,
     int ret = 0;
     int deleted_num = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -1813,6 +1988,17 @@ seaf_repo_manager_del_file (SeafRepoManager *mgr,
                       canon_path, repo->store_id);
         ret = -1;
         goto out;
+    }
+
+    /* @file_name is a JSON array here, not one name -- see del_file_recursive. */
+    if (cf_fileop_active ()) {
+        if (cf_fileop_json_names (CF_FILEOP_PHASE_PREPARE, CF_OP_DELETE,
+                                  repo_id, canon_path, file_name, user,
+                                  NULL, error) < 0) {
+            ret = -1;
+            goto out;
+        }
+        cf_prepared = TRUE;
     }
 
     gc_id = seaf_repo_get_current_gc_id (repo);
@@ -1843,14 +2029,28 @@ seaf_repo_manager_del_file (SeafRepoManager *mgr,
     }
 
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
+    }
+
+    if (cf_fileop_active ()) {
+        cf_fileop_json_names (CF_FILEOP_PHASE_COMMITTED, CF_OP_DELETE,
+                              repo_id, canon_path, file_name, user,
+                              cf_commit_id, NULL);
+        cf_prepared = FALSE;
     }
 
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    /* deleted_num == 0 leaves the tree untouched and jumps here with ret == 0:
+     * nothing was written, so there is no fact to report, only the abort. */
+    if (cf_prepared)
+        cf_fileop_json_names (CF_FILEOP_PHASE_ABORTED, CF_OP_DELETE,
+                              repo_id, canon_path, file_name, user,
+                              NULL, NULL);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -1922,6 +2122,8 @@ seaf_repo_manager_batch_del_files (SeafRepoManager *mgr,
     int ret = 0;
     int deleted_num = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -1934,6 +2136,18 @@ seaf_repo_manager_batch_del_files (SeafRepoManager *mgr,
                       repo->store_id);
         ret = -1;
         goto out;
+    }
+
+    /* @file_list holds full paths, so the dir is the repo root and each name
+     * is already absolute; cf_path_join collapses the doubled separator. */
+    if (cf_fileop_active ()) {
+        if (cf_fileop_json_names (CF_FILEOP_PHASE_PREPARE, CF_OP_DELETE,
+                                  repo_id, "/", file_list, user,
+                                  NULL, error) < 0) {
+            ret = -1;
+            goto out;
+        }
+        cf_prepared = TRUE;
     }
 
     changeset = changeset_new (repo_id, dir);
@@ -1972,14 +2186,25 @@ seaf_repo_manager_batch_del_files (SeafRepoManager *mgr,
     }
 
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
+    }
+
+    if (cf_fileop_active ()) {
+        cf_fileop_json_names (CF_FILEOP_PHASE_COMMITTED, CF_OP_DELETE,
+                              repo_id, "/", file_list, user,
+                              cf_commit_id, NULL);
+        cf_prepared = FALSE;
     }
 
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    if (cf_prepared)
+        cf_fileop_json_names (CF_FILEOP_PHASE_ABORTED, CF_OP_DELETE,
+                              repo_id, "/", file_list, user, NULL, NULL);
+
     changeset_free (changeset);
     if (repo)
         seaf_repo_unref (repo);
@@ -2815,6 +3040,7 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
     gboolean background = FALSE;
     char *task_id = NULL;
     SeafileCopyResult *res= NULL;
+    gboolean cf_prepared = FALSE;
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
 
@@ -2827,21 +3053,38 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
             ret = -1;
             goto out;
         }
-        
+
     } else {
         seaf_repo_ref (src_repo);
         dst_repo = src_repo;
     }
-    
+
     src_canon_path = get_canonical_path (src_path);
     dst_canon_path = get_canonical_path (dst_path);
 
     GET_COMMIT_OR_FAIL(dst_head_commit,
-                       dst_repo->id, dst_repo->version, 
+                       dst_repo->id, dst_repo->version,
                        dst_repo->head->commit_id);
-    
+
     /* FAIL_IF_FILE_EXISTS(dst_repo->store_id, dst_repo->version,
                         dst_head_commit->root_id, dst_canon_path, dst_filename, NULL); */
+
+    /* Only the destination is a write; the source is read and is the ACL's
+     * business, not this seam's. The source is still reported because a lock
+     * provider needs it to tell a same-repo copy from a cross-repo one.
+     *
+     * Covers the async branch too: the copy task is scheduled below, so
+     * refusing here is the last point at which nothing has been written.
+     */
+    if (CF_FILEOP_PREPARE (CF_OP_COPY, error,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .name = dst_filename,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .src_name = src_filename, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     if (strcmp (src_repo_id, dst_repo_id) == 0 ||
         is_virtual_repo_and_origin (src_repo, dst_repo)) {
@@ -2919,7 +3162,24 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
         }
     }
 
+    /* The background branch reports the fact once the copy is scheduled: the
+     * task runs cross_repo_copy, which commits through this same file, so a
+     * second COMMITTED would double-count. */
+    CF_FILEOP_COMMITTED (CF_OP_COPY,
+                         .repo_id = dst_repo_id, .dir = dst_canon_path,
+                         .name = dst_filename,
+                         .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                         .src_name = src_filename, .user = user);
+    cf_prepared = FALSE;
+
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_COPY,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .name = dst_filename,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .src_name = src_filename, .user = user);
+
     if (src_repo)
         seaf_repo_unref (src_repo);
     if (dst_repo)
@@ -2975,6 +3235,7 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
     GList *src_names = NULL, *dst_names = NULL, *ptr;
     SeafileCopyResult *res = NULL;
     GHashTable *dirent_hash = NULL;
+    gboolean cf_prepared = FALSE;
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
     
@@ -3008,6 +3269,16 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "The number of files in the parameters does not match");
         goto out;
     }
+
+    if (CF_FILEOP_PREPARE (CF_OP_COPY, error,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .names = dst_names,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     /* copy file within the same repo */
     if (src_repo == dst_repo ||
@@ -3124,7 +3395,21 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
         } // Synchronous copy
     } //else diffrent repo
 
+    CF_FILEOP_COMMITTED (CF_OP_COPY,
+                         .repo_id = dst_repo_id, .dir = dst_canon_path,
+                         .names = dst_names,
+                         .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                         .user = user);
+    cf_prepared = FALSE;
+
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_COPY,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .names = dst_names,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .user = user);
+
     if (src_repo) seaf_repo_unref (src_repo);
     if (dst_repo) seaf_repo_unref (dst_repo);
 
@@ -3513,6 +3798,7 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
     GList *src_names = NULL, *dst_names = NULL, *ptr;
     SeafileCopyResult *res = NULL;
     GHashTable *dirent_hash = NULL;
+    gboolean cf_prepared = FALSE;
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
     
@@ -3547,6 +3833,19 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "The number of files in the parameters does not match");
         goto out;
     }
+
+    /* A move writes both ends -- the entry leaves the source directory -- so
+     * both name lists go to the provider. A lock on a source file has to
+     * refuse this, not just a lock on the destination. */
+    if (CF_FILEOP_PREPARE (CF_OP_MOVE, error,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .names = dst_names,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .src_names = src_names, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     gboolean is_virtual_origin = is_virtual_repo_and_origin (src_repo, dst_repo);
     if (src_repo == dst_repo || is_virtual_origin) {
@@ -3678,12 +3977,26 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
         } // Synchronous move
     } //else diffrent repo
 
+    CF_FILEOP_COMMITTED (CF_OP_MOVE,
+                         .repo_id = dst_repo_id, .dir = dst_canon_path,
+                         .names = dst_names,
+                         .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                         .src_names = src_names, .user = user);
+    cf_prepared = FALSE;
+
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_MOVE,
+                           .repo_id = dst_repo_id, .dir = dst_canon_path,
+                           .names = dst_names,
+                           .src_repo_id = src_repo_id, .src_dir = src_canon_path,
+                           .src_names = src_names, .user = user);
+
     if (src_repo) seaf_repo_unref (src_repo);
     if (dst_repo) seaf_repo_unref (dst_repo);
 
     if (dst_head_commit) seaf_commit_unref(dst_head_commit);
-    
+
     if (src_canon_path) g_free (src_canon_path);
     if (dst_canon_path) g_free (dst_canon_path);
 
@@ -3736,8 +4049,10 @@ seaf_repo_manager_mkdir_with_parents (SeafRepoManager *mgr,
     GList *uncre_dir_list = NULL;
     GList *iter_list = NULL;
     char *uncre_dir;
-    int ret = 0; 
+    int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     if (new_dir_path[0] == '/' || new_dir_path[0] == '\\') {
         seaf_warning ("[mkdir with parent] Invalid relative path %s.\n", new_dir_path);
@@ -3782,6 +4097,16 @@ seaf_repo_manager_mkdir_with_parents (SeafRepoManager *mgr,
         ret = -1;
         goto out;
     }
+    /* One PREPARE for the deepest path asked for, not one per level created:
+     * the whole thing lands in a single commit, so it is a single operation. */
+    if (CF_FILEOP_PREPARE (CF_OP_MKDIR, error,
+                           .repo_id = repo_id, .dir = parent_dir_can,
+                           .name = relative_dir_can, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
+
     total_path_len = strlen (abs_path);
 
     // from the last, to check the folder exist
@@ -3848,17 +4173,30 @@ seaf_repo_manager_mkdir_with_parents (SeafRepoManager *mgr,
         /* Commit. */
         snprintf(buf, SEAF_PATH_MAX, "Added directory \"%s\"", relative_dir_can);
         if (gen_new_commit (repo_id, head_commit, root_id,
-                            user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                            user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
             ret = -1;
             g_free (root_id);
             goto out;
         }
+
+        CF_FILEOP_COMMITTED (CF_OP_MKDIR,
+                             .repo_id = repo_id, .dir = parent_dir_can,
+                             .name = relative_dir_can, .user = user,
+                             .commit_id = cf_commit_id);
+        cf_prepared = FALSE;
 
         seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
         g_free (root_id);
     }
 
 out:
+    /* An empty uncre_dir_list means every level already existed: no commit, so
+     * no fact -- only the abort, since PREPARE did run. */
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_MKDIR,
+                           .repo_id = repo_id, .dir = parent_dir_can,
+                           .name = relative_dir_can, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -3894,6 +4232,8 @@ seaf_repo_manager_post_dir (SeafRepoManager *mgr,
     SeafDirent *new_dent = NULL;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -3910,6 +4250,14 @@ seaf_repo_manager_post_dir (SeafRepoManager *mgr,
 
     FAIL_IF_FILE_EXISTS(repo->store_id, repo->version,
                         head_commit->root_id, canon_path, new_dir_name, NULL);
+
+    if (CF_FILEOP_PREPARE (CF_OP_MKDIR, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = new_dir_name, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     if (!new_dent) {
         new_dent = seaf_dirent_new (dir_version_from_repo_version(repo->version),
@@ -3933,14 +4281,25 @@ seaf_repo_manager_post_dir (SeafRepoManager *mgr,
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Added directory \"%s\"", new_dir_name);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_MKDIR,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .name = new_dir_name, .user = user,
+                         .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_MKDIR,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = new_dir_name, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -3969,6 +4328,8 @@ seaf_repo_manager_post_empty_file (SeafRepoManager *mgr,
     SeafDirent *new_dent = NULL;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -3987,6 +4348,14 @@ seaf_repo_manager_post_empty_file (SeafRepoManager *mgr,
 
     FAIL_IF_FILE_EXISTS(repo->store_id, repo->version,
                         head_commit->root_id, canon_path, new_file_name, NULL);
+
+    if (CF_FILEOP_PREPARE (CF_OP_CREATE_FILE, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = new_file_name, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     if (!new_dent) {
         new_dent = seaf_dirent_new (dir_version_from_repo_version(repo->version),
@@ -4009,16 +4378,27 @@ seaf_repo_manager_post_empty_file (SeafRepoManager *mgr,
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Added \"%s\"", new_file_name);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
+
+    CF_FILEOP_COMMITTED (CF_OP_CREATE_FILE,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .name = new_file_name, .user = user,
+                         .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
 
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
     update_repo_size (repo_id);
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_CREATE_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = new_file_name, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -4164,6 +4544,8 @@ seaf_repo_manager_rename_file (SeafRepoManager *mgr,
     int mode = 0;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     if (strcmp(oldname, newname) == 0)
         return 0;
@@ -4187,6 +4569,19 @@ seaf_repo_manager_rename_file (SeafRepoManager *mgr,
     FAIL_IF_FILE_EXISTS(repo->store_id, repo->version,
                         head_commit->root_id, canon_path, newname, NULL);
 
+    /* Not modelled as a move: Pro keeps a lock across a same-repo rename but
+     * refuses a cross-repo move, so collapsing the two would erase exactly the
+     * distinction the lock needs. */
+    if (CF_FILEOP_PREPARE (CF_OP_RENAME, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = newname,
+                           .src_repo_id = repo_id, .src_dir = canon_path,
+                           .src_name = oldname, .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
+
     gc_id = seaf_repo_get_current_gc_id (repo);
 
     root_id = do_rename_file (repo, head_commit->root_id, canon_path,
@@ -4206,14 +4601,29 @@ seaf_repo_manager_rename_file (SeafRepoManager *mgr,
     }
 
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_RENAME,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .name = newname,
+                         .src_repo_id = repo_id, .src_dir = canon_path,
+                         .src_name = oldname, .user = user,
+                         .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_RENAME,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = newname,
+                           .src_repo_id = repo_id, .src_dir = canon_path,
+                           .src_name = oldname, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -4352,6 +4762,8 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
     char *old_file_id = NULL, *fullpath = NULL;
     char *gc_id = NULL;
     int ret = 0;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     if (g_access (temp_file_path, R_OK) != 0) {
         seaf_warning ("[put file] File %s doesn't exist or not readable.\n",
@@ -4386,6 +4798,19 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
     
     FAIL_IF_FILE_NOT_EXISTS(repo->store_id, repo->version,
                             head_commit->root_id, canon_path, file_name, NULL);
+
+    /* The one entry point that already carries the caller's expected source
+     * version: @head_id is optional upstream, so it is passed through as-is
+     * and stays NULL when the caller did not supply one. P1 turns it into the
+     * optimistic-concurrency check; here it is only carried. */
+    if (CF_FILEOP_PREPARE (CF_OP_UPDATE_FILE, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user,
+                           .expect_commit_id = head_id) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     /* Write blocks. */
     if (repo->encrypted) {
@@ -4450,10 +4875,17 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
 
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
-    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
-        goto out;       
+        goto out;
     }
+
+    CF_FILEOP_COMMITTED (CF_OP_UPDATE_FILE,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .name = file_name, .user = user,
+                         .expect_commit_id = head_id,
+                         .commit_id = cf_commit_id, .file_id = hex);
+    cf_prepared = FALSE;
 
     if (new_file_id)
         *new_file_id = g_strdup(new_dent->id);
@@ -4461,6 +4893,13 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    /* Also covers the identical-content short circuit above, which returns
+     * success without a commit: nothing was written, so no fact. */
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_UPDATE_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .name = file_name, .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -4522,10 +4961,26 @@ seaf_repo_manager_update_dir (SeafRepoManager *mgr,
     char *commit_desc = NULL;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id_buf[41] = "";
+    /* Report whatever id the commit actually got, whether or not the caller
+     * asked for it back. */
+    char *cf_commit_id = new_commit_id ? new_commit_id : cf_commit_id_buf;
 
     GET_REPO_OR_FAIL(repo, repo_id);
     const char *base = head_id ? head_id : repo->head->commit_id;
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, base);
+
+    /* Before the root/subdir split, so both branches are covered by one
+     * PREPARE. This is the entry point the sync client and WebDAV reach when
+     * they replace a whole directory object. */
+    if (CF_FILEOP_PREPARE (CF_OP_UPDATE_DIR, error,
+                           .repo_id = repo_id, .dir = dir_path,
+                           .user = user, .expect_commit_id = head_id) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     /* Are we updating the root? */
     if (strcmp (dir_path, "/") == 0) {
@@ -4534,8 +4989,15 @@ seaf_repo_manager_update_dir (SeafRepoManager *mgr,
             commit_desc = g_strdup("Auto merge by system");
 
         if (gen_new_commit (repo_id, head_commit, new_dir_id,
-                            user, commit_desc, new_commit_id, TRUE, FALSE, NULL, error) < 0)
+                            user, commit_desc, cf_commit_id, TRUE, FALSE, NULL, error) < 0)
             ret = -1;
+        else {
+            CF_FILEOP_COMMITTED (CF_OP_UPDATE_DIR,
+                                 .repo_id = repo_id, .dir = dir_path,
+                                 .user = user, .expect_commit_id = head_id,
+                                 .commit_id = cf_commit_id);
+            cf_prepared = FALSE;
+        }
         g_free (commit_desc);
         goto out;
     }
@@ -4569,14 +5031,25 @@ seaf_repo_manager_update_dir (SeafRepoManager *mgr,
         commit_desc = g_strdup("Auto merge by system");
 
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, commit_desc, new_commit_id, TRUE, TRUE, gc_id, error) < 0) {
+                        user, commit_desc, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         g_free (commit_desc);
         goto out;
     }
     g_free (commit_desc);
 
+    CF_FILEOP_COMMITTED (CF_OP_UPDATE_DIR,
+                         .repo_id = repo_id, .dir = dir_path,
+                         .user = user, .expect_commit_id = head_id,
+                         .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
+
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_UPDATE_DIR,
+                           .repo_id = repo_id, .dir = dir_path,
+                           .user = user, .expect_commit_id = head_id);
+
     seaf_repo_unref (repo);
     seaf_commit_unref (head_commit);
     seaf_dirent_free (new_dent);
@@ -4953,6 +5426,8 @@ seaf_repo_manager_revert_file (SeafRepoManager *mgr,
     gboolean skipped = FALSE;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -5012,6 +5487,21 @@ seaf_repo_manager_revert_file (SeafRepoManager *mgr,
         ret = -1;
         goto out;
     }
+
+    /* Restoring an old version overwrites the current one, so a lock on the
+     * path has to refuse it -- section 4.8 of the lock spec lists "restore an
+     * old version" among the operations a lock blocks.
+     *
+     * The missing-parent branch below calls mkdir_with_parents, which runs its
+     * own PREPARE for the directories. That nesting is intended: two commits
+     * really do happen. */
+    if (CF_FILEOP_PREPARE (CF_OP_REVERT_FILE, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     gc_id = seaf_repo_get_current_gc_id (repo);
     
@@ -5078,14 +5568,25 @@ seaf_repo_manager_revert_file (SeafRepoManager *mgr,
 #endif
     snprintf(buf, SEAF_PATH_MAX, "Reverted file \"%s\" to status at %s", filename, time_str);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_REVERT_FILE,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .user = user, .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    /* Also covers the `skipped` path, which succeeds without a commit. */
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_REVERT_FILE,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -5189,6 +5690,8 @@ seaf_repo_manager_revert_dir (SeafRepoManager *mgr,
     gboolean skipped = FALSE;
     int ret = 0;
     char *gc_id = NULL;
+    gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(repo, repo_id);
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, repo->head->commit_id);
@@ -5242,6 +5745,14 @@ seaf_repo_manager_revert_dir (SeafRepoManager *mgr,
         ret = -1;
         goto out;
     }
+
+    if (CF_FILEOP_PREPARE (CF_OP_REVERT_DIR, error,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .user = user) < 0) {
+        ret = -1;
+        goto out;
+    }
+    cf_prepared = TRUE;
 
     gc_id = seaf_repo_get_current_gc_id (repo);
     
@@ -5304,14 +5815,25 @@ seaf_repo_manager_revert_dir (SeafRepoManager *mgr,
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Recovered deleted directory \"%s\"", dirname);
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+                        user, buf, cf_commit_id, TRUE, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_REVERT_DIR,
+                         .repo_id = repo_id, .dir = canon_path,
+                         .user = user, .commit_id = cf_commit_id);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    /* Also covers the `skipped` path, which succeeds without a commit. */
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_REVERT_DIR,
+                           .repo_id = repo_id, .dir = canon_path,
+                           .user = user);
+
     if (repo)
         seaf_repo_unref (repo);
     if (head_commit)
@@ -6229,6 +6751,16 @@ seaf_repo_manager_revert_on_server (SeafRepoManager *mgr,
     SeafCommit *commit = NULL, *new_commit = NULL;
     char desc[512];
     int ret = 0;
+    gboolean cf_prepared = FALSE;
+
+    /* Outside the retry label: rewinding the whole library is one operation no
+     * matter how many times the branch update loses a race. */
+    if (CF_FILEOP_PREPARE (CF_OP_REVERT_REPO, error,
+                           .repo_id = repo_id, .dir = "/",
+                           .user = user_name,
+                           .expect_commit_id = commit_id) < 0)
+        return -1;
+    cf_prepared = TRUE;
 
 retry:
     repo = seaf_repo_manager_get_repo (mgr, repo_id);
@@ -6282,9 +6814,22 @@ retry:
         goto retry;
     }
 
+    CF_FILEOP_COMMITTED (CF_OP_REVERT_REPO,
+                         .repo_id = repo_id, .dir = "/",
+                         .user = user_name,
+                         .expect_commit_id = commit_id,
+                         .commit_id = new_commit->commit_id);
+    cf_prepared = FALSE;
+
     seaf_repo_manager_merge_virtual_repo (mgr, repo_id, NULL);
 
 out:
+    if (cf_prepared)
+        CF_FILEOP_ABORTED (CF_OP_REVERT_REPO,
+                           .repo_id = repo_id, .dir = "/",
+                           .user = user_name,
+                           .expect_commit_id = commit_id);
+
     if (new_commit)
         seaf_commit_unref (new_commit);
     if (commit)

@@ -23,6 +23,8 @@
  * seaf->db, seaf->group_mgr and seaf->cfg_mgr, none of which exist in a
  * non-server build. */
 #include "cf-ext.h"
+#include "cf-fileop.h"
+#include "cf-fileop-json.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -4117,6 +4119,128 @@ seafile_cf_find_restricted_path (const char *repo_id, const char *path,
     return restricted;
 #else
     return NULL;
+#endif
+}
+
+/*
+ * CloudFile write lifecycle, exposed for the Go fileserver.
+ *
+ * The Go fileserver chunks, writes objects, generates commits and updates the
+ * branch without ever entering repo-op.c, so it is the one write path the C
+ * seam cannot see. Rather than reimplement the adjudication in Go -- a second
+ * implementation is a second thing to drift -- it asks over these RPCs and C
+ * stays the single authority. Same shape as cf_find_restricted_path.
+ *
+ * The context travels as one JSON string; see cf-fileop-json.h for why.
+ */
+int
+seafile_cf_fileop_active (GError **error)
+{
+#ifdef SEAFILE_SERVER
+    return cf_fileop_active () ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/*
+ * Returns a JSON verdict rather than raising, and the reason is the same one
+ * seafile_cf_find_restricted_path gives for swallowing its inner error: a
+ * refusal is a normal answer, not an RPC failure. Two things force it here:
+ *
+ *   - The Go searpc client discards err_code and keeps only err_msg, so a
+ *     refusal raised as a GError would arrive with its 423-vs-403 distinction
+ *     already gone -- and recovering it would mean patching searpc.go, one
+ *     more upstream file to carry forever.
+ *   - An RPC-level error is indistinguishable from the server being broken,
+ *     and "the file is locked" must not read as "the server is down".
+ *
+ * Shape: {"allowed":true} or {"allowed":false,"code":423,"message":"..."}.
+ * Returns NULL only for a genuinely malformed payload, which IS a failure.
+ */
+char *
+seafile_cf_fileop_prepare (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return g_strdup ("{\"allowed\":true}");
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return NULL;
+
+    GError *refusal = NULL;
+    int ret = cf_fileop_prepare (fop, &refusal);
+
+    cf_fileop_json_free (fop);
+
+    if (ret == 0) {
+        g_clear_error (&refusal);
+        return g_strdup ("{\"allowed\":true}");
+    }
+
+    json_t *verdict = json_object ();
+    json_object_set_new (verdict, "allowed", json_false ());
+    json_object_set_new (verdict, "code",
+                         json_integer (refusal ? refusal->code : SEAF_ERR_GENERAL));
+    json_object_set_new (verdict, "message",
+                         json_string (refusal && refusal->message
+                                      ? refusal->message : "Refused"));
+
+    char *out = json_dumps (verdict, JSON_COMPACT);
+    json_decref (verdict);
+    g_clear_error (&refusal);
+
+    /* json_dumps uses malloc; hand back a glib allocation so the caller frees
+     * it the same way as every other RPC string. */
+    char *ret_str = g_strdup (out ? out : "{\"allowed\":false,\"code\":500}");
+    free (out);
+
+    return ret_str;
+#else
+    return g_strdup ("{\"allowed\":true}");
+#endif
+}
+
+int
+seafile_cf_fileop_committed (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return 0;
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return -1;
+
+    cf_fileop_committed (fop);
+    cf_fileop_json_free (fop);
+
+    /* Always success: the write already happened. Reporting a failure here
+     * would make the fileserver retry an operation that took effect. */
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+int
+seafile_cf_fileop_aborted (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return 0;
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return -1;
+
+    cf_fileop_aborted (fop);
+    cf_fileop_json_free (fop);
+
+    return 0;
+#else
+    return 0;
 #endif
 }
 

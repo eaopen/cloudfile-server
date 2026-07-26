@@ -1072,11 +1072,30 @@ func putUpdateBranchCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		}
 	}
 
+	// CloudFile: the sync protocol trades commits, fs objects and blocks --
+	// it carries no paths, so there is no per-file adjudication point once a
+	// sync is under way. The library-level question is the only one that can
+	// be asked, exactly as with the ACL subtree check above. This is the
+	// contract's one structurally coarse operation, not a first-version
+	// limitation; see fileop-lifecycle.md section 3.
+	cfFop := &cfFileOp{
+		Op:             cfOpSyncUpdate,
+		RepoID:         repoID,
+		Dir:            "/",
+		User:           user,
+		ExpectCommitID: newCommit.ParentID.String,
+		CommitID:       newCommitID,
+	}
+	if appErr := cfFileOpPrepare(cfFop); appErr != nil {
+		return appErr
+	}
+
 	token := r.Header.Get("Seafile-Repo-Token")
 	if token == "" {
 		token = utils.GetAuthorizationToken(r.Header)
 	}
 	if err := fastForwardOrMerge(user, token, repo, base, newCommit); err != nil {
+		cfFileOpAborted(cfFop)
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
@@ -1084,6 +1103,8 @@ func putUpdateBranchCB(rsp http.ResponseWriter, r *http.Request) *appError {
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 	}
+
+	cfFileOpCommitted(cfFop)
 
 	go mergeVirtualRepoPool.AddTask(repoID, "")
 

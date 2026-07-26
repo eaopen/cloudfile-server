@@ -675,6 +675,27 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cf_find_restricted_path,
                                      "cf_find_restricted_path",
                                      searpc_signature_string__string_string_string());
+
+    /* CloudFile write lifecycle */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_fileop_active,
+                                     "cf_fileop_active",
+                                     searpc_signature_int__void());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_fileop_prepare,
+                                     "cf_fileop_prepare",
+                                     searpc_signature_string__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_fileop_committed,
+                                     "cf_fileop_committed",
+                                     searpc_signature_int__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_fileop_aborted,
+                                     "cf_fileop_aborted",
+                                     searpc_signature_int__string());
     
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_get_file_id_by_commit_and_path,

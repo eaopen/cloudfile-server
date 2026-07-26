@@ -968,6 +968,32 @@ char *
 seafile_cf_find_restricted_path (const char *repo_id, const char *path,
                                  const char *user, GError **error);
 
+/*
+ * CloudFile: write lifecycle, for the Go fileserver.
+ *
+ * @fop_json is the JSON form of a CfFileOp (see common/cf-fileop-json.h).
+ * committed and aborted always return 0 because the write has already
+ * happened either way; prepare answers with a verdict, see below.
+ *
+ * All four are no-ops returning 0 when no capability has registered.
+ */
+int
+seafile_cf_fileop_active (GError **error);
+
+/*
+ * Returns a JSON verdict: {"allowed":true} or
+ * {"allowed":false,"code":<n>,"message":"..."}. A refusal is a normal answer,
+ * so it is not raised as a GError -- NULL means the payload was malformed.
+ */
+char *
+seafile_cf_fileop_prepare (const char *fop_json, GError **error);
+
+int
+seafile_cf_fileop_committed (const char *fop_json, GError **error);
+
+int
+seafile_cf_fileop_aborted (const char *fop_json, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,

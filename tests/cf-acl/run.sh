@@ -26,9 +26,14 @@ trap 'rm -rf "$build"' EXIT
 
 python3 "$here/gen-cases.py" "$cases" > "$build/cf-acl-cases.h"
 
+# cf-path.c holds the path normalization that used to live in
+# cf-acl-resolve.c. It moved down to the baseline when the write lifecycle
+# seam needed the same rules -- see common/cf-path.h for why one
+# implementation rather than two.
 cc -std=c99 -Wall -Wextra -Wno-unused-parameter -o "$build/test-cf-acl" \
     "$here/test-cf-acl.c" \
     "$repo_root/common/cf-acl-resolve.c" \
+    "$repo_root/common/cf-path.c" \
     -I"$repo_root/common" -I"$build" \
     $(pkg-config --cflags --libs glib-2.0)
 

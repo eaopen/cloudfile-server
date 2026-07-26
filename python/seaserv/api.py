@@ -698,6 +698,18 @@ class SeafileAPI(object):
             return None
         return restricted or None
 
+    def cf_fileop_active(self):
+        """CloudFile: whether any write lifecycle provider is registered.
+
+        Returns False against an upstream seaf-server, which has no such RPC.
+        Exists so the baseline gate can assert the seam is installed but
+        inert, rather than inferring it from the absence of symptoms.
+        """
+        try:
+            return bool(seafserv_threaded_rpc.cf_fileop_active())
+        except Exception:
+            return False
+
     def is_repo_syncable(self, repo_id, user, repo_perm, client=None):
         """
         Check if the permission of the repo is syncable.

@@ -511,6 +511,29 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def cf_find_restricted_path(repo_id, path, user):
         pass
 
+    # CloudFile write lifecycle. `fop_json` is the JSON form of a CfFileOp;
+    # see cloudfile-docker/docs/fileop-lifecycle.md section 4.
+    #
+    # seafdav and Seahub do NOT call these: their writes go through
+    # seafile_api.post_file and friends, which land in repo-op.c where the
+    # seam already runs. Exposed here for the Go fileserver and for tests
+    # that need to assert the baseline is a pass-through.
+    @searpc_func("int", [])
+    def cf_fileop_active():
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_fileop_prepare(fop_json):
+        pass
+
+    @searpc_func("int", ["string"])
+    def cf_fileop_committed(fop_json):
+        pass
+
+    @searpc_func("int", ["string"])
+    def cf_fileop_aborted(fop_json):
+        pass
+
     # org repo
     @searpc_func("string", ["string", "string", "string", "string", "string", "int", "int"])
     def seafile_create_org_repo(name, desc, user, passwd, magic, random_key, enc_version, org_id):

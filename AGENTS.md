@@ -50,16 +50,23 @@ workspace/
 
 | 文件 | 改了什么 |
 |---|---|
-| `common/rpc-service.c` | `check_permission_by_path` 与目录列举接入扩展点，新增 `cf_find_restricted_path` RPC |
+| `common/rpc-service.c` | `check_permission_by_path` 与目录列举接入扩展点，新增 `cf_find_restricted_path` 与 `cf_fileop_*` RPC |
 | `include/seafile-rpc.h` | 新 RPC 声明 |
 | `server/seaf-server.c` | 新 RPC 注册 |
 | `server/seafile-session.c` | 启动时 `cf_ext_init()` |
 | `server/Makefile.am` | 新增源文件 |
-| `fileserver/sync_api.go` | 同步前的子树校验（两处） |
+| `server/repo-op.c` | 写入生命周期扩展点：19 个写入口各发 PREPARE / COMMITTED / ABORTED |
+| `fileserver/sync_api.go` | 同步前的子树校验（两处）+ `sync-update` 生命周期 |
+| `fileserver/fileop.go` | Go 侧写入口的生命周期接入 |
 | `python/seaserv/api.py` | `is_repo_syncable` / `is_dir_downloadable` 透传 RPC |
 | `python/seafile/rpcclient.py` | 新 RPC 客户端声明 |
 
-**这 8 个是基线一次性付掉的代价，能力分支不应再增加。**
+**这 10 个是基线一次性付掉的代价，能力分支不应再增加。**
+
+后两个（`repo-op.c`、`fileop.go`）是写入生命周期扩展点带来的，理由写在
+`cloudfile-docker/docs/fileop-lifecycle.md` 第五节：seam 不能放在已经登记过的
+`rpc-service.c`，因为 `upload-file.c`、虚拟库合并和 `copy-mgr` 都直接调用
+`seaf_repo_manager_*`，绕过 RPC 层——**终判点不能有绕行路**。
 
 改动这份清单时，同步更新 `cloudfile-docker/BRANCHING.md`——那是同步上游时的
 检查依据，失真就会漏掉冲突点。
@@ -71,12 +78,20 @@ docker 仓的 bootstrap 找不到该文件时会跳过并告警。
 ## 扩展点：cf-ext
 
 ```
-common/cf-ext.{c,h}     扩展点本身：配置读取 + 能力注册表 + 三个分发钩子
-fileserver/cf_ext.go    同步客户端网关，走 RPC 问 seaf-server
+common/cf-ext.{c,h}        读侧扩展点：配置读取 + 能力注册表 + 三个分发钩子
+common/cf-fileop.{c,h}     写侧扩展点：PREPARE / COMMITTED / ABORTED
+common/cf-fileop-json.{c,h} 上面那个的 JSON 线格式（jansson 只出现在这里）
+common/cf-path.{c,h}       路径规范化，两个扩展点共用同一份
+fileserver/cf_ext.go       同步客户端网关，走 RPC 问 seaf-server
+fileserver/cf_fileop.go    Go 写入口网关，同样走 RPC 问 seaf-server
 ```
 
-`cf_ext_init()` 里没有注册任何能力，所以基线上每个钩子都是透传，行为与原生 CE
-完全一致。
+`cf_ext_init()` 里没有注册任何能力，`cf_fileop_register()` 也没人调用，所以基线上
+每个钩子都是透传，行为与原生 CE 完全一致。
+
+`cf-fileop.c`、`cf-path.c` 刻意只依赖 glib，因此 `tests/cf-fileop/run.sh` 不需要
+完整的 seafile 构建就能跑——与 `cf-acl-resolve.c` 同一条理由。规格见
+`cloudfile-docker/docs/fileop-lifecycle.md`。
 
 **为什么用注册表而不是直接调用某个能力：**
 
@@ -106,7 +121,19 @@ fileserver/cf_ext.go    同步客户端网关，走 RPC 问 seaf-server
 ## 测试
 
 基线没有能力实现，因此没有能力级测试；`tests/` 下的测试随能力分支一起走
-（例如 `feature/dir-acl` 的 `tests/cf-acl/run.sh`）。
+（例如 `feature/dir-acl` 的 `tests/cf-acl/run.sh`）。**例外是扩展点自己**：
+`tests/cf-fileop/run.sh` 属于基线，它测的是 seam 而不是某个能力，包括
+"没有 provider 时什么都不做"这条铁律——一个从不被断言的不变量迟早会被违反。
+
+```bash
+./tests/cf-fileop/run.sh
+```
+
+它还顺带做一件本机做不到的事的近似：`check-call-sites.py` 把 `repo-op.c` 里每个
+`CF_FILEOP_*` 调用抽出来、把值换成对应类型的哑变量、再拿真正的 `cf-fileop.h`
+编译一遍。`repo-op.c` 在 macOS 上编译不了，而拼错字段名、写错 operation、
+少个逗号这类错误本来要等 CI 二十分钟才暴露。它**不**检查传的变量对不对——
+`.name = parent_dir` 类型是对的，值是错的，那只能靠 review 和 E2E。
 
 Go 部分：
 
