@@ -71,3 +71,21 @@ CREATE TABLE IF NOT EXISTS cf_sso_sync_state (
   detail TEXT,
   UNIQUE INDEX cf_sso_sync_state_name (name)
 ) ENGINE=INNODB;
+
+-- How far cf-worker's search indexer has walked seafevents' Activity table.
+-- One row per registered search provider that needs its own index built
+-- (currently just 'meilisearch' -- SeaSearch is indexed by seafevents itself
+-- and needs no row here). last_activity_id is Activity.id, which is a plain
+-- monotonically increasing sequence in seahub-db, not one of the cf_* tables
+-- -- safe to use as a resume cursor without owning that table.
+--
+-- Semantics: cloudfile-docker/docs/search.md
+CREATE TABLE IF NOT EXISTS cf_search_index_state (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(64) NOT NULL,
+  last_activity_id BIGINT NOT NULL DEFAULT 0,
+  last_run BIGINT,
+  status VARCHAR(16) NOT NULL,
+  detail TEXT,
+  UNIQUE INDEX cf_search_index_state_name (name)
+) ENGINE=INNODB;
