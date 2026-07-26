@@ -50,4 +50,19 @@ char *cf_path_normalize (const char *path);
  */
 char *cf_path_join (const char *dir, const char *entry);
 
+/*
+ * Whether @path has @component as one of its slash-separated components.
+ *
+ * Component-wise, deliberately not a substring or a prefix match:
+ *
+ *   - A substring makes "notes-secret.txt" match a component of "secret", so a
+ *     rule meant for one object quietly covers others.
+ *   - A prefix cannot express "anywhere below", and it cannot be seeded by a
+ *     test that has to create the marked directory first.
+ *
+ * Empty or NULL @component never matches -- that is how "no marker configured"
+ * is spelled, and it must not degenerate into "matches everything".
+ */
+gboolean cf_path_has_component (const char *path, const char *component);
+
 #endif /* CF_PATH_H */

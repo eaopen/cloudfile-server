@@ -8,6 +8,7 @@
 #include "seafile-session.h"
 #include "cf-ext.h"
 #include "cf-acl.h"
+#include "cf-fileop-test.h"
 
 typedef struct CfProvider {
     char *name;
@@ -24,6 +25,14 @@ cf_ext_config_bool (const char *key)
     if (!seaf || !seaf->cfg_mgr)
         return FALSE;
     return seaf_cfg_manager_get_config_boolean (seaf->cfg_mgr, "cloudfile", key);
+}
+
+char *
+cf_ext_config_string (const char *key)
+{
+    if (!seaf || !seaf->cfg_mgr)
+        return NULL;
+    return seaf_cfg_manager_get_config_string (seaf->cfg_mgr, "cloudfile", key);
 }
 
 gboolean
@@ -61,6 +70,7 @@ cf_ext_init (void)
      * this file is CloudFile's own, so editing it costs nothing at sync time.
      */
     cf_acl_init ();
+    cf_fileop_test_init ();
 }
 
 char *

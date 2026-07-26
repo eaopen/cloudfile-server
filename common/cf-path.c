@@ -47,3 +47,28 @@ cf_path_join (const char *dir, const char *entry)
 
     return norm;
 }
+
+gboolean
+cf_path_has_component (const char *path, const char *component)
+{
+    if (!path || !component || !*component)
+        return FALSE;
+
+    size_t len = strlen (component);
+    const char *p = path;
+
+    while (*p) {
+        while (*p == '/')
+            p++;
+        if (!*p)
+            break;
+        const char *start = p;
+        while (*p && *p != '/')
+            p++;
+        if ((size_t)(p - start) == len &&
+            strncmp (start, component, len) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}

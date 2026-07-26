@@ -154,6 +154,7 @@ def main():
                     continue
                 rest = rest[1:]     # the GError ** argument
 
+            given = set()
             rewritten = []
             for arg in rest:
                 m = re.match(r'^\.(\w+)\s*=\s*(.*)$', arg, re.S)
@@ -170,7 +171,22 @@ def main():
                     errors.append('%s: call sites must not set .phase'
                                   % where)
                     continue
+                given.add(name)
                 rewritten.append('.%s = %s' % (name, DUMMY[fields[name]]))
+
+            # Every operation but upload-blocks produces a commit, so its
+            # COMMITTED must say which one. A fact without a version cannot be
+            # lined up against the repo-update stream, and the omission is
+            # invisible: the consumer just gets an empty string.
+            #
+            # This rule exists because it happened: copy and move commit through
+            # put_dirent_and_commit and move_file_same_repo, two static helpers
+            # that used to swallow the id, so both facts shipped without one.
+            if (macro == 'CF_FILEOP_COMMITTED'
+                    and 'CF_OP_UPLOAD_BLOCKS' not in op
+                    and 'commit_id' not in given):
+                errors.append('%s: COMMITTED for %s without .commit_id'
+                              % (where, op))
 
             if macro == 'CF_FILEOP_PREPARE':
                 body.append('    /* %s */' % where)

@@ -2281,6 +2281,12 @@ out:
     return dent;
 }
 
+/*
+ * @new_commit_id: optional 41-byte out buffer for the resulting commit id.
+ * CloudFile needs it so the COMMITTED fact for a copy or a move carries the
+ * version it produced -- without it a consumer cannot line the event up with
+ * the repo-update stream, which is where the file change itself is recorded.
+ */
 static int
 put_dirent_and_commit (SeafRepo *repo,
                        const char *path,
@@ -2290,6 +2296,7 @@ put_dirent_and_commit (SeafRepo *repo,
                        const char *user,
                        gboolean check_gc,
                        const char *last_gc_id,
+                       char *new_commit_id,
                        GError **error)
 {
     SeafCommit *head_commit = NULL;
@@ -2337,7 +2344,7 @@ put_dirent_and_commit (SeafRepo *repo,
     }
 
     if (gen_new_commit (repo->id, head_commit, root_id,
-                        user, buf, NULL, TRUE, check_gc, last_gc_id, error) < 0)
+                        user, buf, new_commit_id, TRUE, check_gc, last_gc_id, error) < 0)
         ret = -1;
 
 out:
@@ -2904,6 +2911,7 @@ cross_repo_copy (const char *src_repo_id,
                                modifier,
                                TRUE,
                                gc_id,
+                               NULL,
                                NULL) < 0) {
         err_str = COPY_ERR_INTERNAL;
         ret = -1;
@@ -3041,6 +3049,7 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
     char *task_id = NULL;
     SeafileCopyResult *res= NULL;
     gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
 
@@ -3113,6 +3122,7 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
                                    user,
                                    FALSE,
                                    NULL,
+                                   cf_commit_id,
                                    error) < 0) {
             if (!error)
                 g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
@@ -3165,11 +3175,14 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
     /* The background branch reports the fact once the copy is scheduled: the
      * task runs cross_repo_copy, which commits through this same file, so a
      * second COMMITTED would double-count. */
+    /* Empty for the cross-repo branches: those commit inside the copy task,
+     * which runs through this same file and reports its own fact. */
     CF_FILEOP_COMMITTED (CF_OP_COPY,
                          .repo_id = dst_repo_id, .dir = dst_canon_path,
                          .name = dst_filename,
                          .src_repo_id = src_repo_id, .src_dir = src_canon_path,
-                         .src_name = src_filename, .user = user);
+                         .src_name = src_filename, .user = user,
+                         .commit_id = cf_commit_id);
     cf_prepared = FALSE;
 
 out:
@@ -3236,6 +3249,7 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
     SeafileCopyResult *res = NULL;
     GHashTable *dirent_hash = NULL;
     gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
     
@@ -3342,6 +3356,7 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
                                    user,
                                    FALSE,
                                    NULL,
+                                   cf_commit_id,
                                    error) < 0) {
             if (!error)
                 g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
@@ -3399,7 +3414,7 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
                          .repo_id = dst_repo_id, .dir = dst_canon_path,
                          .names = dst_names,
                          .src_repo_id = src_repo_id, .src_dir = src_canon_path,
-                         .user = user);
+                         .user = user, .commit_id = cf_commit_id);
     cf_prepared = FALSE;
 
 out:
@@ -3450,6 +3465,7 @@ move_file_same_repo (const char *repo_id,
                      int file_num,
                      int replace,
                      const char *user,
+                     char *new_commit_id,
                      GError **error)
 {
     SeafRepo *repo = NULL;
@@ -3504,7 +3520,7 @@ move_file_same_repo (const char *repo_id,
     }
 
     if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, TRUE, TRUE, gc_id, error) < 0)
+                        user, buf, new_commit_id, TRUE, TRUE, gc_id, error) < 0)
         ret = -1;
     
 out:
@@ -3682,6 +3698,7 @@ cross_repo_move (const char *src_repo_id,
                                modifier,
                                TRUE,
                                gc_id,
+                               NULL,
                                NULL) < 0) {
         err_str = COPY_ERR_INTERNAL;
         ret = -1;
@@ -3799,6 +3816,7 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
     SeafileCopyResult *res = NULL;
     GHashTable *dirent_hash = NULL;
     gboolean cf_prepared = FALSE;
+    char cf_commit_id[41] = "";
 
     GET_REPO_OR_FAIL(src_repo, src_repo_id);
     
@@ -3906,7 +3924,8 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
                                      src_filenames,
                                      src_canon_path, src_dents,
                                      dst_canon_path, dst_dents,
-                                     file_num, replace, user, error) < 0) {
+                                     file_num, replace, user,
+                                     cf_commit_id, error) < 0) {
                 ret = -1;
                 goto out;
             }
@@ -3920,6 +3939,7 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
                                        user,
                                        FALSE,
                                        NULL,
+                                       cf_commit_id,
                                        NULL) < 0) {
                 ret = -1;
                 goto out;
@@ -3981,7 +4001,8 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
                          .repo_id = dst_repo_id, .dir = dst_canon_path,
                          .names = dst_names,
                          .src_repo_id = src_repo_id, .src_dir = src_canon_path,
-                         .src_names = src_names, .user = user);
+                         .src_names = src_names, .user = user,
+                         .commit_id = cf_commit_id);
     cf_prepared = FALSE;
 
 out:

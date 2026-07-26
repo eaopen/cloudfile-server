@@ -65,6 +65,26 @@ run_normalize (void)
     }
 }
 
+/* --------------------------------------------------------- has_component */
+
+/*
+ * The write lifecycle gate's fake provider refuses on a marked path component,
+ * so whether phase 2 of that gate passes for the right reason lives here.
+ * Substring matching would make one refusal cover paths the test never named,
+ * and an empty component matching everything would make it cover all of them --
+ * either way the gate would be green while proving something else.
+ */
+static void
+run_components (void)
+{
+    for (int i = 0; i < CF_N_COMPONENT_CASES; i++) {
+        const ComponentCase *c = &cf_component_cases[i];
+        check_int ("has_component", c->name, "match",
+                   cf_path_has_component (c->path, c->component) ? 1 : 0,
+                   c->expect);
+    }
+}
+
 /* ------------------------------------------------------------ operations */
 
 static void
@@ -364,6 +384,7 @@ int
 main (void)
 {
     run_normalize ();
+    run_components ();
     run_operations ();
     run_dispatch ();
     run_facts ();

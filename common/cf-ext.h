@@ -42,6 +42,12 @@ void cf_ext_init (void);
  */
 gboolean cf_ext_config_bool (const char *key);
 
+/* A [cloudfile] string key, or NULL when unset. Newly allocated; caller
+ * frees. Same reason as the boolean above: one place that knows where
+ * capability configuration lives.
+ */
+char *cf_ext_config_string (const char *key);
+
 /* Whether any capability has registered. Lets callers skip work entirely on a
  * plain CE deployment.
  */

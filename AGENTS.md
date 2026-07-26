@@ -81,13 +81,22 @@ docker 仓的 bootstrap 找不到该文件时会跳过并告警。
 common/cf-ext.{c,h}        读侧扩展点：配置读取 + 能力注册表 + 三个分发钩子
 common/cf-fileop.{c,h}     写侧扩展点：PREPARE / COMMITTED / ABORTED
 common/cf-fileop-json.{c,h} 上面那个的 JSON 线格式（jansson 只出现在这里）
-common/cf-path.{c,h}       路径规范化，两个扩展点共用同一份
+common/cf-fileop-test.c    门禁用的假 provider，默认关闭，**不是能力**
+common/cf-path.{c,h}       路径规范化与组件匹配，两个扩展点共用同一份
 fileserver/cf_ext.go       同步客户端网关，走 RPC 问 seaf-server
 fileserver/cf_fileop.go    Go 写入口网关，同样走 RPC 问 seaf-server
 ```
 
-`cf_ext_init()` 里没有注册任何能力，`cf_fileop_register()` 也没人调用，所以基线上
-每个钩子都是透传，行为与原生 CE 完全一致。
+`cf_ext_init()` 里没有注册任何能力，所以基线上每个钩子都是透传，行为与原生 CE
+完全一致。唯一的例外是 `cf-fileop-test.c`：它由 `[cloudfile]
+fileop_test_provider_enabled` 门控，**默认关闭**，且刻意不进 `CF_ENABLE_*` 清单——
+那份清单里的每一项都是运维可以合理打开的产品能力，而它是写入生命周期门禁用的
+仪器，能拒绝写入、每次写入都追加文件，注册时会打一条明说"不要在生产里跑"的警告。
+
+为什么用运行时开关而不是编译期剔除：编译期剔除意味着门禁跑的镜像不是发出去的
+那个。这个项目为此付过一次代价——一份手写的 `seahub_settings.py` fixture 通过了
+测试，而真正生成的文件抛 `NameError`、把整个文件的 CloudFile 配置一起丢掉，
+服务看起来还正常起来了。**测发出去的那个。**
 
 `cf-fileop.c`、`cf-path.c` 刻意只依赖 glib，因此 `tests/cf-fileop/run.sh` 不需要
 完整的 seafile 构建就能跑——与 `cf-acl-resolve.c` 同一条理由。规格见

@@ -73,6 +73,18 @@ def main():
     out.write('};\n')
     out.write('#define CF_N_OPERATION_CASES %d\n\n' % len(cases))
 
+    # --- has_component ---------------------------------------------------
+    out.write('typedef struct { const char *name; const char *path;\n'
+              '    const char *component; int expect; } ComponentCase;\n\n')
+    cases = data['has_component']['cases']
+    out.write('static const ComponentCase cf_component_cases[] = {\n')
+    for case in cases:
+        out.write('    { %s, %s, %s, %d },\n' % (
+            c_string(case['name']), c_string(case['path']),
+            c_string(case['component']), int(case['expect'])))
+    out.write('};\n')
+    out.write('#define CF_N_COMPONENT_CASES %d\n\n' % len(cases))
+
     # --- dispatch --------------------------------------------------------
     out.write('typedef struct { const char *name; const int *verdicts;\n'
               '    int n_verdicts; int expect_allowed; int expect_ran;\n'
