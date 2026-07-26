@@ -72,6 +72,78 @@ CREATE TABLE IF NOT EXISTS cf_sso_sync_state (
   UNIQUE INDEX cf_sso_sync_state_name (name)
 ) ENGINE=INNODB;
 
+-- External resource sources: an SMB/NFS share the operator has already
+-- mounted on the host and bind-mounted into the container, registered here so
+-- it can be browsed from CloudFile.
+--
+-- Semantics: cloudfile-docker/docs/external-sources.md
+--
+-- Like cf_sso_group_map, nothing below the Hub reads these -- external sources
+-- deliberately never enter the repo/commit/block model, so seaf-server and the
+-- Go fileserver have nothing to enforce here. They live in seafile-db for the
+-- same reason: this is the one schema mechanism for cf_* tables and it runs on
+-- every start, whereas a second home in seahub-db would mean carrying a Django
+-- migration history across upstream merges in exchange for nothing.
+--
+-- repo_id is a synthetic UUID that matches no real library. It exists so that
+-- cf_dir_acl rules can be written against a source's subdirectories with no
+-- new code, and so the shadow layer (docs/external-sources.md section six) has
+-- an id to present. It is NOT a foreign key into Repo, and nothing may treat it
+-- as one.
+--
+-- root_path is a container path, and must resolve under
+-- CF_EXTERNAL_SOURCES_ROOTS. That is enforced in the Hub on every access, not
+-- just at registration time -- see external-sources.md section three for why
+-- checking once is not enough.
+CREATE TABLE IF NOT EXISTS cf_external_source (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  repo_id CHAR(36) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  source_type VARCHAR(32) NOT NULL,
+  root_path VARCHAR(1000) NOT NULL,
+  enabled TINYINT NOT NULL DEFAULT 1,
+  ctime BIGINT,
+  mtime BIGINT,
+  UNIQUE INDEX cf_external_source_repo (repo_id),
+  UNIQUE INDEX cf_external_source_name (name)
+) ENGINE=INNODB;
+
+-- Who may read a source. External sources are not libraries: they have no
+-- owner and are not shared through Seafile's own sharing, so authorisation is
+-- its own table rather than a reuse of library-level shares.
+--
+-- permission has exactly one legal value ('r') in this release. The column
+-- exists because read-only is a product decision rather than a property of the
+-- data model, and adding a column later is more expensive than validating a
+-- narrow domain now -- the validation lives in the API layer, not in a comment.
+CREATE TABLE IF NOT EXISTS cf_external_source_grant (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  source_id BIGINT NOT NULL,
+  subject_type VARCHAR(16) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  permission VARCHAR(16) NOT NULL,
+  ctime BIGINT,
+  UNIQUE INDEX cf_external_source_grant_unique (source_id, subject_type, subject),
+  INDEX cf_external_source_grant_source (source_id)
+) ENGINE=INNODB;
+
+-- How far cf-worker's incremental scan has walked each source (feature 51).
+-- Created with the rest of the cluster's schema rather than when the scanner
+-- lands, because the schema file is applied on every start and a table that
+-- appears in a later release would otherwise only exist on deployments that
+-- restarted after upgrading.
+CREATE TABLE IF NOT EXISTS cf_external_scan_state (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  source_id BIGINT NOT NULL,
+  -- Directory the last pass stopped at, so a large share is walked over
+  -- several ticks instead of blocking the worker on one full traversal.
+  cursor_path VARCHAR(1000),
+  last_run BIGINT,
+  status VARCHAR(16) NOT NULL,
+  detail TEXT,
+  UNIQUE INDEX cf_external_scan_state_source (source_id)
+) ENGINE=INNODB;
+
 -- How far cf-worker's search indexer has walked seafevents' Activity table.
 -- One row per registered search provider that needs its own index built
 -- (currently just 'meilisearch' -- SeaSearch is indexed by seafevents itself
