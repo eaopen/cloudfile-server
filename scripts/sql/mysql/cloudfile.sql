@@ -161,3 +161,42 @@ CREATE TABLE IF NOT EXISTS cf_search_index_state (
   detail TEXT,
   UNIQUE INDEX cf_search_index_state_name (name)
 ) ENGINE=INNODB;
+
+-- File-lock truth for manual checkout, local editors and OnlyOffice.  CE's
+-- FileLocks table has no manager or write-path enforcement, so it is never
+-- written at runtime.  A lease is keyed by the normalized object path and a
+-- fresh UUID generation is produced every time an expired/released row is
+-- claimed; old sessions therefore cannot become valid again after a release.
+CREATE TABLE IF NOT EXISTS cf_lock_lease (
+  repo_id CHAR(36) NOT NULL,
+  normalized_path VARCHAR(1000) NOT NULL,
+  -- SHA1 is indexed instead of the full utf8mb4 path; all reads also compare
+  -- normalized_path so a theoretical digest collision cannot alias a lock.
+  path_hash CHAR(40) NOT NULL,
+  lock_id CHAR(36) NOT NULL,
+  generation CHAR(36) NOT NULL,
+  owner VARCHAR(255) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  session_id CHAR(36),
+  device_id VARCHAR(255),
+  source_file_id CHAR(40),
+  source_commit_id CHAR(40),
+  lease_until BIGINT NOT NULL,
+  hard_expire_at BIGINT NOT NULL,
+  last_heartbeat_at BIGINT,
+  status VARCHAR(16) NOT NULL,
+  forced_by VARCHAR(255),
+  forced_reason TEXT,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (repo_id, path_hash),
+  INDEX cf_lock_lease_live (repo_id, status, lease_until)
+) ENGINE=INNODB;
+
+-- A monotonic, opaque value for clients that poll the lock set.  Lease
+-- refreshes do not update this value; acquire/release state transitions do.
+CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (
+  repo_id CHAR(36) NOT NULL PRIMARY KEY,
+  revision BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+) ENGINE=INNODB;

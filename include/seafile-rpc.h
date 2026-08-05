@@ -994,6 +994,17 @@ seafile_cf_fileop_committed (const char *fop_json, GError **error);
 int
 seafile_cf_fileop_aborted (const char *fop_json, GError **error);
 
+/* CloudFile's CE-specific lease-lock control plane. Request and response are
+ * JSON so optional session fields can evolve without widening a searpc ABI. */
+char *
+seafile_cf_lock_status (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_acquire (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_release (const char *request_json, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,

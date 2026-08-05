@@ -96,3 +96,4 @@ tests/conf/PeerMgr
 /symbols
 __pycache__/
 .cache/
+.codegraph

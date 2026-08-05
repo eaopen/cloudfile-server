@@ -25,6 +25,7 @@
 #include "cf-ext.h"
 #include "cf-fileop.h"
 #include "cf-fileop-json.h"
+#include "cf-lock.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -4241,6 +4242,45 @@ seafile_cf_fileop_aborted (const char *fop_json, GError **error)
     return 0;
 #else
     return 0;
+#endif
+}
+
+/* CloudFile lease-lock control plane. These are intentionally separate from
+ * the legacy Pro RPC names: CE must not pretend that unrelated Pro features
+ * exist merely because it offers a compatible lock capability. */
+char *
+seafile_cf_lock_status (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_status_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_acquire (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_acquire_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_release (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_release_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
 #endif
 }
 

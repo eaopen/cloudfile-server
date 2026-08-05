@@ -9,6 +9,7 @@
 #include "cf-ext.h"
 #include "cf-acl.h"
 #include "cf-fileop-test.h"
+#include "cf-lock.h"
 
 typedef struct CfProvider {
     char *name;
@@ -71,6 +72,7 @@ cf_ext_init (void)
      */
     cf_acl_init ();
     cf_fileop_test_init ();
+    cf_lock_init ();
 }
 
 char *

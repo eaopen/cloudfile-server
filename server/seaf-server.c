@@ -696,6 +696,21 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cf_fileop_aborted,
                                      "cf_fileop_aborted",
                                      searpc_signature_int__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_lock_status,
+                                     "cf_lock_status",
+                                     searpc_signature_string__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_lock_acquire,
+                                     "cf_lock_acquire",
+                                     searpc_signature_string__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_lock_release,
+                                     "cf_lock_release",
+                                     searpc_signature_string__string());
     
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_get_file_id_by_commit_and_path,

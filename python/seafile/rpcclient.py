@@ -534,6 +534,20 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def cf_fileop_aborted(fop_json):
         pass
 
+    # CloudFile lease locks. These deliberately do not reuse Pro's lock_file
+    # names, which are absent in CE and carry a broader feature contract.
+    @searpc_func("string", ["string"])
+    def cf_lock_status(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_acquire(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_release(request_json):
+        pass
+
     # org repo
     @searpc_func("string", ["string", "string", "string", "string", "string", "int", "int"])
     def seafile_create_org_repo(name, desc, user, passwd, magic, random_key, enc_version, org_id):
