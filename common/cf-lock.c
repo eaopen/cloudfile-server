@@ -112,7 +112,7 @@ lock_is_live (const CfLockRow *row, gint64 now)
 }
 
 static const char *
-json_string (json_t *obj, const char *name)
+request_string (json_t *obj, const char *name)
 {
     json_t *value = json_object_get (obj, name);
     if (!value || !json_is_string (value))
@@ -168,8 +168,8 @@ parse_request (const char *request_json, GError **error)
 static gboolean
 request_object (json_t *request, const char **repo_id, char **path, GError **error)
 {
-    *repo_id = json_string (request, "repo_id");
-    const char *raw_path = json_string (request, "path");
+    *repo_id = request_string (request, "repo_id");
+    const char *raw_path = request_string (request, "path");
     if (!*repo_id || !raw_path) {
         bad_request (error, "repo_id and path are required");
         return FALSE;
@@ -306,8 +306,8 @@ cf_lock_acquire_json (const char *request_json, GError **error)
     json_t *request = parse_request (request_json, error);
     if (!request)
         return NULL;
-    const char *repo_id, *owner = json_string (request, "owner");
-    const char *kind = json_string (request, "kind");
+    const char *repo_id, *owner = request_string (request, "owner");
+    const char *kind = request_string (request, "kind");
     char *path = NULL;
     if (!owner || !kind || !request_object (request, &repo_id, &path, error)) {
         g_free (path);
@@ -386,8 +386,8 @@ cf_lock_release_json (const char *request_json, GError **error)
     json_t *request = parse_request (request_json, error);
     if (!request)
         return NULL;
-    const char *repo_id, *owner = json_string (request, "owner");
-    const char *generation = json_string (request, "generation");
+    const char *repo_id, *owner = request_string (request, "owner");
+    const char *generation = request_string (request, "generation");
     char *path = NULL;
     if (!owner || !request_object (request, &repo_id, &path, error)) {
         g_free (path); json_decref (request);
