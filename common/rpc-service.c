@@ -4273,12 +4273,36 @@ seafile_cf_lock_acquire (const char *request_json, GError **error)
 }
 
 char *
+seafile_cf_lock_refresh (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_refresh_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
 seafile_cf_lock_release (const char *request_json, GError **error)
 {
 #ifdef SEAFILE_SERVER
     if (!cf_lock_enabled ())
         return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
     return cf_lock_release_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_force_release (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_force_release_json (request_json, error);
 #else
     return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
 #endif

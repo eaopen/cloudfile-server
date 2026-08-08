@@ -1003,7 +1003,13 @@ char *
 seafile_cf_lock_acquire (const char *request_json, GError **error);
 
 char *
+seafile_cf_lock_refresh (const char *request_json, GError **error);
+
+char *
 seafile_cf_lock_release (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_force_release (const char *request_json, GError **error);
 
 GList *
 seafile_list_dir_with_perm (const char *repo_id,

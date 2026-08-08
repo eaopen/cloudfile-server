@@ -425,8 +425,14 @@ class SeafileAPI(object):
     def cf_lock_acquire(self, request_json):
         return seafserv_threaded_rpc.cf_lock_acquire(request_json)
 
+    def cf_lock_refresh(self, request_json):
+        return seafserv_threaded_rpc.cf_lock_refresh(request_json)
+
     def cf_lock_release(self, request_json):
         return seafserv_threaded_rpc.cf_lock_release(request_json)
+
+    def cf_lock_force_release(self, request_json):
+        return seafserv_threaded_rpc.cf_lock_force_release(request_json)
 
     # share repo to user
     def share_repo(self, repo_id, from_username, to_username, permission):

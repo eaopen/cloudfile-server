@@ -381,6 +381,68 @@ cf_lock_acquire_json (const char *request_json, GError **error)
 }
 
 char *
+cf_lock_refresh_json (const char *request_json, GError **error)
+{
+    json_t *request = parse_request (request_json, error);
+    if (!request)
+        return NULL;
+    const char *repo_id, *owner = request_string (request, "owner");
+    const char *generation = request_string (request, "generation");
+    char *path = NULL;
+    if (!owner || !generation || !request_object (request, &repo_id, &path, error)) {
+        g_free (path); json_decref (request);
+        return bad_request (error, "owner, generation, repo_id and path are required");
+    }
+
+    gint64 now = (gint64)time (NULL);
+    gint64 lease_seconds = json_seconds (request, "lease_seconds", 12 * 60 * 60, 72 * 3600);
+    SeafDBTrans *trans = seaf_db_begin_transaction (seaf->db);
+    if (!trans) {
+        g_free (path); json_decref (request);
+        return bad_request (error, "File lock service unavailable");
+    }
+
+    char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA1, path, -1);
+    CfLockRow row = {0};
+    int ret = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT lock_id, generation, owner, kind, lease_until, hard_expire_at, status "
+        "FROM cf_lock_lease WHERE repo_id=? AND path_hash=? AND normalized_path=? FOR UPDATE",
+        load_lock_row_cb, &row, 3, "string", repo_id, "string", path_hash, "string", path);
+    gboolean valid = ret == 0 && lock_is_live (&row, now) &&
+        row.owner && strcmp (row.owner, owner) == 0 &&
+        row.generation && strcmp (row.generation, generation) == 0;
+    gint64 lease_until = valid ? MIN (now + lease_seconds, row.hard_expire_at) : 0;
+    if (valid)
+        ret = seaf_db_trans_query (trans,
+            "UPDATE cf_lock_lease SET lease_until=?, last_heartbeat_at=?, updated_at=? "
+            "WHERE repo_id=? AND path_hash=? AND normalized_path=? AND owner=? AND generation=? AND status='active'",
+            9, "int64", lease_until, "int64", now, "int64", now,
+            "string", repo_id, "string", path_hash, "string", path,
+            "string", owner, "string", generation);
+    if (ret == 0 && valid)
+        ret = seaf_db_commit (trans);
+    else
+        seaf_db_rollback (trans);
+    seaf_db_trans_close (trans);
+
+    json_t *response = json_object ();
+    if (ret != 0) {
+        json_object_set_new (response, "ok", json_false ());
+        json_object_set_new (response, "reason", json_string ("lock_service_unavailable"));
+    } else if (!valid) {
+        json_object_set_new (response, "ok", json_false ());
+        json_object_set_new (response, "reason", json_string ("not_owner_or_stale"));
+    } else {
+        json_object_set_new (response, "ok", json_true ());
+        json_object_set_new (response, "generation", json_string (generation));
+        json_object_set_new (response, "lease_until", json_integer (lease_until));
+    }
+    lock_row_clear (&row);
+    g_free (path_hash); g_free (path); json_decref (request);
+    return dump_response (response);
+}
+
+char *
 cf_lock_release_json (const char *request_json, GError **error)
 {
     json_t *request = parse_request (request_json, error);
@@ -422,6 +484,70 @@ cf_lock_release_json (const char *request_json, GError **error)
         seaf_db_statement_query (seaf->db,
             "INSERT INTO cf_lock_repo_revision (repo_id, revision, updated_at) VALUES (?, 1, ?) ON DUPLICATE KEY UPDATE revision=revision+1, updated_at=VALUES(updated_at)",
             2, "string", repo_id, "int64", now);
+    g_free (path_hash); g_free (path); json_decref (request);
+    return dump_response (response);
+}
+
+char *
+cf_lock_force_release_json (const char *request_json, GError **error)
+{
+    json_t *request = parse_request (request_json, error);
+    if (!request)
+        return NULL;
+    const char *repo_id, *actor = request_string (request, "actor");
+    const char *generation = request_string (request, "generation");
+    const char *reason = request_string (request, "reason");
+    char *path = NULL;
+    if (!actor || !generation || !request_object (request, &repo_id, &path, error)) {
+        g_free (path); json_decref (request);
+        return bad_request (error, "actor, generation, repo_id and path are required");
+    }
+    if (!reason)
+        reason = "administrator_force_release";
+
+    gint64 now = (gint64)time (NULL);
+    SeafDBTrans *trans = seaf_db_begin_transaction (seaf->db);
+    if (!trans) {
+        g_free (path); json_decref (request);
+        return bad_request (error, "File lock service unavailable");
+    }
+
+    char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA1, path, -1);
+    CfLockRow row = {0};
+    int ret = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT lock_id, generation, owner, kind, lease_until, hard_expire_at, status "
+        "FROM cf_lock_lease WHERE repo_id=? AND path_hash=? AND normalized_path=? FOR UPDATE",
+        load_lock_row_cb, &row, 3, "string", repo_id, "string", path_hash, "string", path);
+    gboolean valid = ret == 0 && lock_is_live (&row, now) &&
+        row.generation && strcmp (row.generation, generation) == 0;
+    if (valid)
+        ret = seaf_db_trans_query (trans,
+            "UPDATE cf_lock_lease SET status='released', forced_by=?, forced_reason=?, updated_at=? "
+            "WHERE repo_id=? AND path_hash=? AND normalized_path=? AND generation=? AND status='active'",
+            8, "string", actor, "string", reason, "int64", now,
+            "string", repo_id, "string", path_hash, "string", path, "string", generation);
+    if (ret == 0 && valid)
+        ret = seaf_db_trans_query (trans,
+            "INSERT INTO cf_lock_repo_revision (repo_id, revision, updated_at) VALUES (?, 1, ?) "
+            "ON DUPLICATE KEY UPDATE revision=revision+1, updated_at=VALUES(updated_at)",
+            2, "string", repo_id, "int64", now);
+    if (ret == 0 && valid)
+        ret = seaf_db_commit (trans);
+    else
+        seaf_db_rollback (trans);
+    seaf_db_trans_close (trans);
+
+    json_t *response = json_object ();
+    if (ret != 0) {
+        json_object_set_new (response, "ok", json_false ());
+        json_object_set_new (response, "reason", json_string ("lock_service_unavailable"));
+    } else if (!valid) {
+        json_object_set_new (response, "ok", json_false ());
+        json_object_set_new (response, "reason", json_string ("not_found_or_stale"));
+    } else {
+        json_object_set_new (response, "ok", json_true ());
+    }
+    lock_row_clear (&row);
     g_free (path_hash); g_free (path); json_decref (request);
     return dump_response (response);
 }

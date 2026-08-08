@@ -15,7 +15,9 @@ void cf_lock_init (void);
  * malformed request returns NULL and sets error. The caller owns the string. */
 char *cf_lock_status_json (const char *request_json, GError **error);
 char *cf_lock_acquire_json (const char *request_json, GError **error);
+char *cf_lock_refresh_json (const char *request_json, GError **error);
 char *cf_lock_release_json (const char *request_json, GError **error);
+char *cf_lock_force_release_json (const char *request_json, GError **error);
 
 gboolean cf_lock_enabled (void);
 

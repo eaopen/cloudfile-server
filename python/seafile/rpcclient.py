@@ -545,7 +545,15 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
 
     @searpc_func("string", ["string"])
+    def cf_lock_refresh(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
     def cf_lock_release(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_force_release(request_json):
         pass
 
     # org repo

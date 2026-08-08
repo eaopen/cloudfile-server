@@ -200,3 +200,25 @@ CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (
   revision BIGINT NOT NULL,
   updated_at BIGINT NOT NULL
 ) ENGINE=INNODB;
+
+-- Opaque, single-claim sessions for CloudFile Local. The descriptor downloaded
+-- by a browser carries only the ticket; access and write-back capabilities are
+-- minted after the native agent claims it and never persist in this table.
+CREATE TABLE IF NOT EXISTS cf_edit_session (
+  session_id CHAR(36) NOT NULL PRIMARY KEY,
+  ticket_digest CHAR(64) NOT NULL,
+  ticket_expire_at BIGINT NOT NULL,
+  mode VARCHAR(32) NOT NULL,
+  username VARCHAR(255) NOT NULL,
+  repo_id CHAR(36) NOT NULL,
+  normalized_path VARCHAR(1000) NOT NULL,
+  base_file_id CHAR(40),
+  generation CHAR(36),
+  state VARCHAR(16) NOT NULL,
+  claimed_at BIGINT,
+  closed_at BIGINT,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE INDEX cf_edit_session_ticket (ticket_digest),
+  INDEX cf_edit_session_expiry (state, ticket_expire_at)
+) ENGINE=INNODB;

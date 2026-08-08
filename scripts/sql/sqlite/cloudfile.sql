@@ -25,3 +25,9 @@ CREATE INDEX IF NOT EXISTS cf_external_source_grant_source ON cf_external_source
 
 CREATE TABLE IF NOT EXISTS cf_external_scan_state (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id BIGINT NOT NULL, cursor_path TEXT, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_external_scan_state_source ON cf_external_scan_state (source_id);
+
+CREATE TABLE IF NOT EXISTS cf_lock_lease (repo_id CHAR(36) NOT NULL, normalized_path TEXT NOT NULL, path_hash CHAR(40) NOT NULL, lock_id CHAR(36) NOT NULL, generation CHAR(36) NOT NULL, owner VARCHAR(255) NOT NULL, kind VARCHAR(32) NOT NULL, session_id CHAR(36), device_id VARCHAR(255), source_file_id CHAR(40), source_commit_id CHAR(40), lease_until BIGINT NOT NULL, hard_expire_at BIGINT NOT NULL, last_heartbeat_at BIGINT, status VARCHAR(16) NOT NULL, forced_by VARCHAR(255), forced_reason TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (repo_id, path_hash));
+CREATE INDEX IF NOT EXISTS cf_lock_lease_live ON cf_lock_lease (repo_id, status, lease_until);
+CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (repo_id CHAR(36) NOT NULL PRIMARY KEY, revision BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS cf_edit_session (session_id CHAR(36) NOT NULL PRIMARY KEY, ticket_digest CHAR(64) NOT NULL UNIQUE, ticket_expire_at BIGINT NOT NULL, mode VARCHAR(32) NOT NULL, username VARCHAR(255) NOT NULL, repo_id CHAR(36) NOT NULL, normalized_path TEXT NOT NULL, base_file_id CHAR(40), generation CHAR(36), state VARCHAR(16) NOT NULL, claimed_at BIGINT, closed_at BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS cf_edit_session_expiry ON cf_edit_session (state, ticket_expire_at);

@@ -708,8 +708,18 @@ static void start_rpc_service (const char *seafile_dir,
                                      searpc_signature_string__string());
 
     searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_lock_refresh,
+                                     "cf_lock_refresh",
+                                     searpc_signature_string__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_cf_lock_release,
                                      "cf_lock_release",
+                                     searpc_signature_string__string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_lock_force_release,
+                                     "cf_lock_force_release",
                                      searpc_signature_string__string());
     
     searpc_server_register_function ("seafserv-threaded-rpcserver",
