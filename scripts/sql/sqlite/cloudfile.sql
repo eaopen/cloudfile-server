@@ -26,6 +26,10 @@ CREATE INDEX IF NOT EXISTS cf_external_source_grant_source ON cf_external_source
 CREATE TABLE IF NOT EXISTS cf_external_scan_state (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id BIGINT NOT NULL, cursor_path TEXT, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_external_scan_state_source ON cf_external_scan_state (source_id);
 
+CREATE TABLE IF NOT EXISTS cf_external_overlay (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id BIGINT NOT NULL, path TEXT NOT NULL, path_hash CHAR(40) NOT NULL, metadata TEXT, tags TEXT, ctime BIGINT, mtime BIGINT);
+CREATE UNIQUE INDEX IF NOT EXISTS cf_external_overlay_unique ON cf_external_overlay (source_id, path_hash);
+CREATE INDEX IF NOT EXISTS cf_external_overlay_source ON cf_external_overlay (source_id);
+
 CREATE TABLE IF NOT EXISTS cf_lock_lease (repo_id CHAR(36) NOT NULL, normalized_path TEXT NOT NULL, path_hash CHAR(40) NOT NULL, lock_id CHAR(36) NOT NULL, generation CHAR(36) NOT NULL, owner VARCHAR(255) NOT NULL, kind VARCHAR(32) NOT NULL, session_id CHAR(36), device_id VARCHAR(255), source_file_id CHAR(40), source_commit_id CHAR(40), lease_until BIGINT NOT NULL, hard_expire_at BIGINT NOT NULL, last_heartbeat_at BIGINT, status VARCHAR(16) NOT NULL, forced_by VARCHAR(255), forced_reason TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (repo_id, path_hash));
 CREATE INDEX IF NOT EXISTS cf_lock_lease_live ON cf_lock_lease (repo_id, status, lease_until);
 CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (repo_id CHAR(36) NOT NULL PRIMARY KEY, revision BIGINT NOT NULL, updated_at BIGINT NOT NULL);

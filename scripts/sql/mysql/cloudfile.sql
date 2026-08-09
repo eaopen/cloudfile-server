@@ -144,6 +144,22 @@ CREATE TABLE IF NOT EXISTS cf_external_scan_state (
   UNIQUE INDEX cf_external_scan_state_source (source_id)
 ) ENGINE=INNODB;
 
+-- User-facing metadata for an external path. This is deliberately a tiny
+-- sidecar: metadata and tags can be edited without creating a Seafile commit
+-- or copying a byte from the mounted share into the object store.
+CREATE TABLE IF NOT EXISTS cf_external_overlay (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  source_id BIGINT NOT NULL,
+  path VARCHAR(1000) NOT NULL,
+  path_hash CHAR(40) NOT NULL,
+  metadata TEXT,
+  tags TEXT,
+  ctime BIGINT,
+  mtime BIGINT,
+  UNIQUE INDEX cf_external_overlay_unique (source_id, path_hash),
+  INDEX cf_external_overlay_source (source_id)
+) ENGINE=INNODB;
+
 -- How far cf-worker's search indexer has walked seafevents' Activity table.
 -- One row per registered search provider that needs its own index built
 -- (currently just 'meilisearch' -- SeaSearch is indexed by seafevents itself
