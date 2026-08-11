@@ -68,7 +68,8 @@ load_revision_cb (SeafDBRow *row, void *data)
 }
 
 /* A repository with no mutations yet is at its logical bootstrap revision.
- * The first write creates the same value, then every later write increments.
+ * Hub creates revision 2 for the first rule mutation, then increments each
+ * later write.
  */
 static gboolean
 load_repo_revision (const char *repo_id, gint64 *revision)
