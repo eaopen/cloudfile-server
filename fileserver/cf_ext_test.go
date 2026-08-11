@@ -1,12 +1,11 @@
-// Red tests for the three-state ACL authority contract at the Go fileserver
+// Tests for the three-state ACL authority contract at the Go fileserver
 // boundary (SEC-02).
 //
 // cfFindRestrictedPath is the only enforcement point between the desktop sync
 // client and file data: sync exchanges commits/fs/blocks without per-file
 // authorization, so the only safe moment to say "no" is before a sync starts.
-// The current implementation conflates "authority RPC failed" with "no
-// restriction" by returning "" on any error -- that is the
-// elevation-of-privilege bug these tests exist to fix.
+// An authority RPC failure must remain distinct from "no restriction" --
+// conflating the two is an elevation-of-privilege bug.
 //
 // The contract being locked here is the same one the Hub and C suites
 // consume from cloudfile-docker/docs/acl-cases.json::authority_states:
@@ -28,11 +27,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 func cfExtRepoRoot(t *testing.T) string {
@@ -148,6 +151,73 @@ func TestCfAclAuthorityWireClassification(t *testing.T) {
 	}
 }
 
+func TestCfAclAuthorityRevisionInvalidatesCachedVerdict(t *testing.T) {
+	originalCall := cfCallAuthority
+	originalEnabled := option.CloudFileDirACLEnabled
+	t.Cleanup(func() {
+		cfCallAuthority = originalCall
+		option.CloudFileDirACLEnabled = originalEnabled
+		cfRestrictedCache = sync.Map{}
+	})
+
+	option.CloudFileDirACLEnabled = true
+	cfRestrictedCache = sync.Map{}
+	replies := []string{
+		`{"state":"active-valid","revision":2,"restricted_path":null}`,
+		`{"state":"active-valid","revision":3,"restricted_path":"/secret"}`,
+	}
+	cfCallAuthority = func(repoID, user string) (interface{}, error) {
+		reply := replies[0]
+		replies = replies[1:]
+		return reply, nil
+	}
+
+	if got := cfFindRestrictedPath("repo", "user"); got != "" {
+		t.Fatalf("revision 2 should allow sync, got restricted path %q", got)
+	}
+	if got := cfFindRestrictedPath("repo", "user"); got != "/secret" {
+		t.Fatalf("revision 3 must invalidate cached allow, got %q", got)
+	}
+}
+
+func TestCfAclAuthorityFailureDeniesWhenEnabled(t *testing.T) {
+	originalCall := cfCallAuthority
+	originalEnabled := option.CloudFileDirACLEnabled
+	t.Cleanup(func() {
+		cfCallAuthority = originalCall
+		option.CloudFileDirACLEnabled = originalEnabled
+		cfRestrictedCache = sync.Map{}
+	})
+
+	option.CloudFileDirACLEnabled = true
+	cfCallAuthority = func(repoID, user string) (interface{}, error) {
+		return nil, errors.New("authority unavailable")
+	}
+	if got := cfFindRestrictedPath("repo", "user"); got != "/" {
+		t.Fatalf("active authority failure must deny at root, got %q", got)
+	}
+}
+
+func TestCfAclDisabledPassesThroughWithoutAuthorityCall(t *testing.T) {
+	originalCall := cfCallAuthority
+	originalEnabled := option.CloudFileDirACLEnabled
+	t.Cleanup(func() {
+		cfCallAuthority = originalCall
+		option.CloudFileDirACLEnabled = originalEnabled
+	})
+
+	option.CloudFileDirACLEnabled = false
+	called := false
+	cfCallAuthority = func(repoID, user string) (interface{}, error) {
+		called = true
+		return nil, errors.New("must not be called")
+	}
+	if got := cfFindRestrictedPath("repo", "user"); got != "" || called {
+		t.Fatalf("disabled ACL must pass through without RPC, got=%q called=%v",
+			got, called)
+	}
+}
+
 // TestAuthorityStatesFixtureParity drives the Go side from the same fixture
 // the Hub and C suites use, so the three cannot drift apart. Each active-*
 // state in the fixture MUST map to a deny verdict; only the two off states
@@ -200,8 +270,7 @@ func TestCfAclAuthorityUnknownStateDenies(t *testing.T) {
 // TestCfExtRestrictedCacheKeysOnRevision asserts that the restricted-path
 // cache key includes the ACL revision. Without it, a cached "no restriction"
 // verdict survives a rule change for up to cfRestrictedExpireTime (300s) --
-// that is the immediate-revocation hole SEC-02 closes. Wave 3 plan 01-04
-// threads the revision into the cache key.
+// that is the immediate-revocation hole SEC-02 closes.
 func TestCfAclAuthorityRestrictedCacheKeysOnRevision(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join(cfExtRepoRoot(t), "cf_ext.go"))
 	if err != nil {

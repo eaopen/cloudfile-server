@@ -62,6 +62,10 @@ func cfReadAuthorityState(reply interface{}) (cfAuthorityState, bool) {
 
 var cfRestrictedCache sync.Map
 
+var cfCallAuthority = func(repoID, user string) (interface{}, error) {
+	return rpcclient.Call("cf_acl_authority_state", repoID, "/", user)
+}
+
 // cfFindRestrictedPath asks seaf-server for the first path in repoID that user
 // cannot access at all. It returns "" when the library is fully reachable.
 //
@@ -76,7 +80,7 @@ func cfFindRestrictedPath(repoID, user string) string {
 	key := fmt.Sprintf("%s:%s", repoID, user)
 	now := time.Now().Unix()
 
-	ret, err := rpcclient.Call("cf_acl_authority_state", repoID, "/", user)
+	ret, err := cfCallAuthority(repoID, user)
 	if err != nil {
 		return "/"
 	}
