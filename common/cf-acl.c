@@ -2,7 +2,9 @@
 
 #include "common.h"
 
+#include <stdlib.h>
 #include <string.h>
+#include <jansson.h>
 
 #include "log.h"
 #include "seafile-session.h"
@@ -51,6 +53,57 @@ gboolean
 cf_acl_enabled (void)
 {
     return cf_acl_on;
+}
+
+typedef struct {
+    gint64 revision;
+} CfAclRevision;
+
+static gboolean
+load_revision_cb (SeafDBRow *row, void *data)
+{
+    CfAclRevision *revision = data;
+    revision->revision = seaf_db_row_get_column_int64 (row, 0);
+    return FALSE;
+}
+
+/* A repository with no mutations yet is at its logical bootstrap revision.
+ * The first write creates the same value, then every later write increments.
+ */
+static gboolean
+load_repo_revision (const char *repo_id, gint64 *revision)
+{
+    const char *sql =
+        "SELECT revision FROM cf_dir_acl_repo_revision WHERE repo_id = ?";
+    CfAclRevision row = { .revision = 1 };
+
+    if (seaf_db_statement_foreach_row (seaf->db, sql, load_revision_cb, &row,
+                                       1, "string", repo_id) < 0) {
+        seaf_warning ("CloudFile: failed to load directory ACL revision for "
+                      "repo %s.\n", repo_id);
+        return FALSE;
+    }
+    *revision = row.revision;
+    return TRUE;
+}
+
+static char *
+authority_json (const char *state, gint64 revision, const char *restricted)
+{
+    json_t *response = json_object ();
+    json_object_set_new (response, "state", json_string (state));
+    if (revision > 0)
+        json_object_set_new (response, "revision", json_integer (revision));
+    if (restricted)
+        json_object_set_new (response, "restricted_path", json_string (restricted));
+    else
+        json_object_set_new (response, "restricted_path", json_null ());
+
+    char *raw = json_dumps (response, JSON_COMPACT);
+    char *result = raw ? g_strdup (raw) : NULL;
+    free (raw);
+    json_decref (response);
+    return result;
 }
 
 /* -- subjects ------------------------------------------------------------ */
@@ -154,6 +207,46 @@ load_repo_rules (const char *repo_id, gboolean *db_error)
     }
 
     return rules;
+}
+
+char *
+cf_acl_authority_state (const char *repo_id,
+                        const char *path,
+                        const char *user)
+{
+    if (!cf_acl_on)
+        return authority_json ("inactive-disabled", 0, NULL);
+    if (!repo_id || !path || !user || *user == '\0')
+        return authority_json ("active-malformed", 0, NULL);
+
+    gint64 revision = 0;
+    if (!load_repo_revision (repo_id, &revision))
+        return authority_json ("active-unavailable", 0, NULL);
+
+    char *perm = seafile_check_permission (repo_id, user, NULL);
+    if (!perm)
+        return authority_json ("active-valid", revision, "/");
+
+    gboolean db_error = FALSE;
+    GList *rules = load_repo_rules (repo_id, &db_error);
+    if (db_error) {
+        g_free (perm);
+        return authority_json ("active-unavailable", 0, NULL);
+    }
+    if (!rules) {
+        g_free (perm);
+        return authority_json ("active-valid", revision, NULL);
+    }
+
+    GHashTable *subjects = build_subject_set (user);
+    char *restricted = cf_acl_find_restricted (rules, subjects, path, perm);
+    char *result = authority_json ("active-valid", revision, restricted);
+
+    g_free (restricted);
+    g_free (perm);
+    g_hash_table_destroy (subjects);
+    g_list_free_full (rules, (GDestroyNotify)cf_acl_rule_free);
+    return result;
 }
 
 char *

@@ -968,6 +968,11 @@ char *
 seafile_cf_find_restricted_path (const char *repo_id, const char *path,
                                  const char *user, GError **error);
 
+/* CloudFile directory ACL authority state for cache-safe sync decisions. */
+char *
+seafile_cf_acl_authority_state (const char *repo_id, const char *path,
+                                 const char *user, GError **error);
+
 /*
  * CloudFile: write lifecycle, for the Go fileserver.
  *

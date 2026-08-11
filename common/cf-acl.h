@@ -31,6 +31,15 @@ void cf_acl_init (void);
 gboolean cf_acl_enabled (void);
 
 /*
+ * JSON authority response for a sync/download boundary.  A disabled feature
+ * returns inactive-disabled; once active, an unreadable authority returns
+ * active-unavailable rather than a pass-through result.
+ */
+char *cf_acl_authority_state (const char *repo_id,
+                              const char *path,
+                              const char *user);
+
+/*
  * Narrow @native_perm according to the directory ACL for @user on @path.
  *
  * Returns a newly allocated permission string, or NULL for no access.

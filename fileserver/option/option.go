@@ -44,6 +44,10 @@ var (
 
 	// general options
 	CloudMode bool
+	// CloudFile directory ACL is off unless the C authority is explicitly on.
+	// This preserves upstream CE pass-through while making an active authority
+	// outage fail closed at the sync boundary.
+	CloudFileDirACLEnabled bool
 
 	// notification server
 	EnableNotification bool
@@ -134,6 +138,11 @@ func LoadFileServerOptions(centralDir string) {
 	if section, err := config.GetSection("general"); err == nil {
 		if key, err := section.GetKey("cloud_mode"); err == nil {
 			CloudMode, _ = key.Bool()
+		}
+	}
+	if section, err := config.GetSection("cloudfile"); err == nil {
+		if key, err := section.GetKey("dir_acl_enabled"); err == nil {
+			CloudFileDirACLEnabled, _ = key.Bool()
 		}
 	}
 

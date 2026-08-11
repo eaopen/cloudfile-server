@@ -18,10 +18,9 @@
 //   active-malformed   -> DENY (unparseable reply)
 //   active-stale       -> DENY (revision mismatch at the final boundary)
 //
-// These tests are written to FAIL today: Wave 3 plan 01-04 introduces the
-// explicit state classification in cf_ext.go. Green requires the
-// empty-string anti-pattern to be gone from cf_ext.go AND every active-*
-// state to map to an explicit denial rather than "".
+// These tests keep the explicit classification in place: the empty-string
+// anti-pattern must not return, and every active-* failure must deny rather
+// than silently fall back to native CE.
 //
 // Run with: go test -count=1 -run 'TestCfAclAuthority' .
 
@@ -88,8 +87,7 @@ func loadAuthorityStates(t *testing.T) map[string]map[string]interface{} {
 // TestCfExtSourceHasExplicitAuthorityStateClassification is the structural
 // guard against the empty-string anti-pattern. cf_ext.go MUST NOT silently
 // translate an RPC error into the empty string that callers treat as
-// "no restriction". Wave 3 plan 01-04 introduces an explicit state type;
-// until then this fails.
+// "no restriction".
 func TestCfAclAuthoritySourceClassification(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join(cfExtRepoRoot(t), "cf_ext.go"))
 	if err != nil {
@@ -107,7 +105,7 @@ func TestCfAclAuthoritySourceClassification(t *testing.T) {
 			`classified as DENY, not pass-through; see SEC-02.`)
 	}
 
-	// The contract symbol Wave 3 introduces. Naming is at the implementer's
+	// The contract symbol. Naming is at the implementer's
 	// discretion per CONTEXT.md, so this asserts the SHAPE (a typed state
 	// distinct from the raw string return) rather than a specific identifier.
 	hasStateType := strings.Contains(src, "cfAuthorityState") ||
@@ -127,6 +125,26 @@ func TestCfAclAuthoritySourceClassification(t *testing.T) {
 		t.Errorf(`cf_ext.go has no revision-aware path. SEC-02 requires the ` +
 			`final content boundary to recheck the current ACL revision so ` +
 			`revocation is immediate despite the 300s restricted-path cache.`)
+	}
+}
+
+func TestCfAclAuthorityWireClassification(t *testing.T) {
+	valid := `{"state":"active-valid","revision":42,"restricted_path":"/secret"}`
+	state, ok := cfReadAuthorityState(valid)
+	if !ok || state.Revision != 42 || state.RestrictedPath == nil ||
+		*state.RestrictedPath != "/secret" {
+		t.Fatalf("valid authority response was not accepted: %#v, %v", state, ok)
+	}
+
+	for _, raw := range []interface{}{
+		`{"state":"active-unavailable"}`,
+		`{"state":"active-valid","revision":0}`,
+		`not-json`,
+		nil,
+	} {
+		if _, ok := cfReadAuthorityState(raw); ok {
+			t.Errorf("unsafe authority reply classified as valid: %#v", raw)
+		}
 	}
 }
 

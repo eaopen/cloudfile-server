@@ -675,6 +675,10 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cf_find_restricted_path,
                                      "cf_find_restricted_path",
                                      searpc_signature_string__string_string_string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_acl_authority_state,
+                                     "cf_acl_authority_state",
+                                     searpc_signature_string__string_string_string());
 
     /* CloudFile write lifecycle */
     searpc_server_register_function ("seafserv-threaded-rpcserver",
