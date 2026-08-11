@@ -1,4 +1,9 @@
+<!-- generated-by: gsd-doc-writer -->
 # CLAUDE.md
+
+> 用途：把 Claude Code 引导到本仓唯一的 agent 约束来源。
+> 适用版本：CloudFile `dev`，面向 Seafile CE 14 扩展分支。
+> 状态：已完成。
 
 本仓库的约定统一写在 [AGENTS.md](AGENTS.md)，面向所有 AI coding agent。
 
