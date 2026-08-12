@@ -19,107 +19,34 @@
 
 package main
 
-import (
-	"encoding/json"
-	"fmt"
-	"sync"
-	"time"
+import "github.com/haiwen/seafile-server/fileserver/option"
 
-	"github.com/haiwen/seafile-server/fileserver/option"
-)
-
-const cfRestrictedExpireTime = 300
-
-type cfRestrictedInfo struct {
-	// Empty when the whole library is reachable.
-	restrictedPath string
-	revision       int64
-	expireTime     int64
-}
-
-// cfAuthorityState is the explicit wire contract between the Go content
-// boundary and C's ACL authority.  Only an explicitly disabled feature may
-// pass through; every active failure or malformed reply becomes a denial.
-type cfAuthorityState struct {
-	State          string  `json:"state"`
-	Revision       int64   `json:"revision"`
-	RestrictedPath *string `json:"restricted_path"`
-}
-
-func cfReadAuthorityState(reply interface{}) (cfAuthorityState, bool) {
-	raw, ok := reply.(string)
-	if !ok {
-		return cfAuthorityState{}, false
-	}
-
-	var authority cfAuthorityState
-	if err := json.Unmarshal([]byte(raw), &authority); err != nil ||
-		authority.State != "active-valid" || authority.Revision < 1 {
-		return cfAuthorityState{}, false
-	}
-	return authority, true
-}
-
-var cfRestrictedCache sync.Map
-
-var cfCallAuthority = func(repoID, user string) (interface{}, error) {
-	return rpcclient.Call("cf_acl_authority_state", repoID, "/", user)
+var cfCallRestrictedPath = func(repoID, user string) (interface{}, error) {
+	return rpcclient.Call("cf_find_restricted_path", repoID, "/", user)
 }
 
 // cfFindRestrictedPath asks seaf-server for the first path in repoID that user
 // cannot access at all. It returns "" when the library is fully reachable.
 //
-// A server without the RPC is a stock CE deployment only while the local
-// switch is off.  Once the switch is on, a missing/malformed RPC reply is an
-// active authority failure and must refuse sync.
+// The MVP deliberately does not cache this decision. A rule change therefore
+// takes effect on the next sync request without a revision table or a second
+// cache-invalidation protocol. Once enabled, an unavailable or malformed
+// authority reply refuses sync at the repository root.
 func cfFindRestrictedPath(repoID, user string) string {
 	if !option.CloudFileDirACLEnabled {
 		return ""
 	}
 
-	key := fmt.Sprintf("%s:%s", repoID, user)
-	now := time.Now().Unix()
-
-	ret, err := cfCallAuthority(repoID, user)
+	ret, err := cfCallRestrictedPath(repoID, user)
 	if err != nil {
 		return "/"
 	}
-
-	authority, ok := cfReadAuthorityState(ret)
+	if ret == nil {
+		return ""
+	}
+	path, ok := ret.(string)
 	if !ok {
 		return "/"
 	}
-
-	if value, ok := cfRestrictedCache.Load(key); ok {
-		info := value.(*cfRestrictedInfo)
-		if info.expireTime > now && info.revision == authority.Revision {
-			return info.restrictedPath
-		}
-		cfRestrictedCache.Delete(key)
-	}
-
-	restricted := ""
-	if authority.RestrictedPath != nil {
-		restricted = *authority.RestrictedPath
-	}
-
-	cfRestrictedCache.Store(key, &cfRestrictedInfo{
-		restrictedPath: restricted,
-		revision:       authority.Revision,
-		expireTime:     now + cfRestrictedExpireTime,
-	})
-
-	return restricted
-}
-
-// cfClearRestrictedCache drops expired entries. Called from the same sweep
-// that prunes permCache.
-func cfClearRestrictedCache() {
-	now := time.Now().Unix()
-	cfRestrictedCache.Range(func(key, value interface{}) bool {
-		if info, ok := value.(*cfRestrictedInfo); ok && info.expireTime <= now {
-			cfRestrictedCache.Delete(key)
-		}
-		return true
-	})
+	return path
 }

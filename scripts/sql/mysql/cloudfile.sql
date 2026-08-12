@@ -32,16 +32,6 @@ CREATE TABLE IF NOT EXISTS cf_dir_acl (
   INDEX cf_dir_acl_repo (repo_id)
 ) ENGINE=INNODB;
 
--- A repository-local revision for directory ACL decisions.  Hub mutations
--- advance it in the same transaction as cf_dir_acl, so sync clients can
--- reject a cached verdict immediately after a revoke instead of waiting for
--- their cache TTL to elapse.
-CREATE TABLE IF NOT EXISTS cf_dir_acl_repo_revision (
-  repo_id CHAR(36) NOT NULL PRIMARY KEY,
-  revision BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
-) ENGINE=INNODB;
-
 -- SSO directory mapping: which Seafile groups CloudFile created, mirroring
 -- which groups in the customer's directory.
 --

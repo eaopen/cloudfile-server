@@ -1505,7 +1505,6 @@ func removeSyncAPIExpireCache() {
 	tokenCache.Range(deleteTokens)
 	permCache.Range(deletePerms)
 	virtualRepoInfoCache.Range(deleteVirtualRepoInfo)
-	cfClearRestrictedCache()
 }
 
 type collectFsInfo struct {

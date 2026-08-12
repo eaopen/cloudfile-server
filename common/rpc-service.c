@@ -23,7 +23,6 @@
  * seaf->db, seaf->group_mgr and seaf->cfg_mgr, none of which exist in a
  * non-server build. */
 #include "cf-ext.h"
-#include "cf-acl.h"
 #include "cf-fileop.h"
 #include "cf-fileop-json.h"
 #include "cf-lock.h"
@@ -4119,22 +4118,6 @@ seafile_cf_find_restricted_path (const char *repo_id, const char *path,
     char *restricted = cf_ext_find_restricted_path (repo_id, path, user, perm);
     g_free (perm);
     return restricted;
-#else
-    return NULL;
-#endif
-}
-
-char *
-seafile_cf_acl_authority_state (const char *repo_id, const char *path,
-                                 const char *user, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!repo_id || !path || !user) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                     "Arguments should not be empty");
-        return NULL;
-    }
-    return cf_acl_authority_state (repo_id, path, user);
 #else
     return NULL;
 #endif
