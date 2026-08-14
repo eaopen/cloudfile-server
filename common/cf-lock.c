@@ -423,7 +423,7 @@ cf_lock_refresh_json (const char *request_json, GError **error)
         ret = seaf_db_trans_query (trans,
             "UPDATE cf_lock_lease SET lease_until=?, last_heartbeat_at=?, updated_at=? "
             "WHERE repo_id=? AND path_hash=? AND normalized_path=? AND owner=? AND generation=? AND status='active'",
-            9, "int64", lease_until, "int64", now, "int64", now,
+            8, "int64", lease_until, "int64", now, "int64", now,
             "string", repo_id, "string", path_hash, "string", path,
             "string", owner, "string", generation);
     if (ret == 0 && valid)
@@ -532,7 +532,7 @@ cf_lock_force_release_json (const char *request_json, GError **error)
         ret = seaf_db_trans_query (trans,
             "UPDATE cf_lock_lease SET status='released', forced_by=?, forced_reason=?, updated_at=? "
             "WHERE repo_id=? AND path_hash=? AND normalized_path=? AND generation=? AND status='active'",
-            8, "string", actor, "string", reason, "int64", now,
+            7, "string", actor, "string", reason, "int64", now,
             "string", repo_id, "string", path_hash, "string", path, "string", generation);
     if (ret == 0 && valid)
         ret = seaf_db_trans_query (trans,
