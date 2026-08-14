@@ -71,7 +71,11 @@ load_lock_row (const char *repo_id, const char *path, CfLockRow *row)
         load_lock_row_cb, row, 3, "string", repo_id, "string", path_hash,
         "string", path);
     g_free (path_hash);
-    return ret;
+    /* foreach_row returns a row count, not an error code: 0 means "no row",
+     * a positive count means "row found", and only a negative value is an
+     * error. Normalize so callers can treat 0 as success without misreading
+     * a found row as a failure. */
+    return ret < 0 ? -1 : 0;
 }
 
 static char *
@@ -101,7 +105,7 @@ load_descendant_lock_row (const char *repo_id, const char *path, CfLockRow *row)
         "ORDER BY normalized_path LIMIT 1",
         load_lock_row_cb, row, 2, "string", repo_id, "string", pattern);
     g_free (pattern);
-    return ret;
+    return ret < 0 ? -1 : 0;
 }
 
 static gboolean
@@ -337,11 +341,13 @@ cf_lock_acquire_json (const char *request_json, GError **error)
         "ON DUPLICATE KEY UPDATE repo_id=VALUES(repo_id)",
         5, "string", repo_id, "string", path, "string", path_hash, "int64", now, "int64", now);
     CfLockRow row = {0};
-    if (ret == 0)
-        ret = seaf_db_trans_foreach_selected_row (trans,
+    if (ret == 0) {
+        int selected = seaf_db_trans_foreach_selected_row (trans,
             "SELECT lock_id, generation, owner, kind, lease_until, hard_expire_at, status "
             "FROM cf_lock_lease WHERE repo_id=? AND path_hash=? AND normalized_path=? FOR UPDATE",
             load_lock_row_cb, &row, 3, "string", repo_id, "string", path_hash, "string", path);
+        ret = selected < 0 ? -1 : 0;
+    }
     gboolean conflict = ret == 0 && lock_is_live (&row, now);
     if (ret == 0 && !conflict)
         ret = seaf_db_trans_query (trans,
@@ -408,6 +414,7 @@ cf_lock_refresh_json (const char *request_json, GError **error)
         "SELECT lock_id, generation, owner, kind, lease_until, hard_expire_at, status "
         "FROM cf_lock_lease WHERE repo_id=? AND path_hash=? AND normalized_path=? FOR UPDATE",
         load_lock_row_cb, &row, 3, "string", repo_id, "string", path_hash, "string", path);
+    ret = ret < 0 ? -1 : 0;
     gboolean valid = ret == 0 && lock_is_live (&row, now) &&
         row.owner && strcmp (row.owner, owner) == 0 &&
         row.generation && strcmp (row.generation, generation) == 0;
@@ -518,6 +525,7 @@ cf_lock_force_release_json (const char *request_json, GError **error)
         "SELECT lock_id, generation, owner, kind, lease_until, hard_expire_at, status "
         "FROM cf_lock_lease WHERE repo_id=? AND path_hash=? AND normalized_path=? FOR UPDATE",
         load_lock_row_cb, &row, 3, "string", repo_id, "string", path_hash, "string", path);
+    ret = ret < 0 ? -1 : 0;
     gboolean valid = ret == 0 && lock_is_live (&row, now) &&
         row.generation && strcmp (row.generation, generation) == 0;
     if (valid)
