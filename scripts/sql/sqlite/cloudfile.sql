@@ -35,3 +35,6 @@ CREATE INDEX IF NOT EXISTS cf_lock_lease_live ON cf_lock_lease (repo_id, status,
 CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (repo_id CHAR(36) NOT NULL PRIMARY KEY, revision BIGINT NOT NULL, updated_at BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS cf_edit_session (session_id CHAR(36) NOT NULL PRIMARY KEY, ticket_digest CHAR(64) NOT NULL UNIQUE, ticket_expire_at BIGINT NOT NULL, mode VARCHAR(32) NOT NULL, username VARCHAR(255) NOT NULL, repo_id CHAR(36) NOT NULL, normalized_path TEXT NOT NULL, base_file_id CHAR(40), generation CHAR(36), state VARCHAR(16) NOT NULL, claimed_at BIGINT, closed_at BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS cf_edit_session_expiry ON cf_edit_session (state, ticket_expire_at);
+CREATE TABLE IF NOT EXISTS cf_fileop_task (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id CHAR(36) NOT NULL, idempotency_key CHAR(64) NOT NULL, username VARCHAR(255) NOT NULL, operation VARCHAR(16) NOT NULL, status VARCHAR(16) NOT NULL, detail TEXT, ctime BIGINT NOT NULL, mtime BIGINT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS cf_fileop_task_idem ON cf_fileop_task (username, idempotency_key);
+CREATE INDEX IF NOT EXISTS cf_fileop_task_id ON cf_fileop_task (task_id);

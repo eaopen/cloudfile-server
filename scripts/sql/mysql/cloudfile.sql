@@ -238,3 +238,29 @@ CREATE TABLE IF NOT EXISTS cf_edit_session (
   UNIQUE INDEX cf_edit_session_ticket (ticket_digest),
   INDEX cf_edit_session_expiry (state, ticket_expire_at)
 ) ENGINE=INNODB;
+
+-- Copy/move task idempotency and failure reporting (P2-06).  One row per
+-- submitted copy/move intent; the idempotency_key is what turns a repeated
+-- click into a no-op instead of a second copy.  Lives in seafile-db so the
+-- Hub can deduplicate before ever calling seafile_api.copy_file / move_file,
+-- which is the only layer that actually mutates the tree.  Nothing below the
+-- Hub reads this: the write itself still goes through repo-op.c.
+--
+-- Semantics: cloudfile-docker/docs/features/fileops.md
+--
+-- idempotency_key is sha256(username|operation|src_repo|src_parent|src_names|
+-- dst_repo|dst_parent), so two identical submissions map to the same task and
+-- the second one is a no-op.
+CREATE TABLE IF NOT EXISTS cf_fileop_task (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  task_id CHAR(36) NOT NULL,
+  idempotency_key CHAR(64) NOT NULL,
+  username VARCHAR(255) NOT NULL,
+  operation VARCHAR(16) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  detail TEXT,
+  ctime BIGINT NOT NULL,
+  mtime BIGINT NOT NULL,
+  UNIQUE INDEX cf_fileop_task_idem (username, idempotency_key),
+  INDEX cf_fileop_task_id (task_id)
+) ENGINE=INNODB;
