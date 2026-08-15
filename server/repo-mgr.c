@@ -22,6 +22,7 @@
 
 #include "seaf-db.h"
 #include "seaf-utils.h"
+#include "cf-storage.h"
 
 #define REAP_TOKEN_INTERVAL 300 /* 5 mins */
 #define DECRYPTED_TOKEN_TTL 3600 /* 1 hour */
@@ -3957,6 +3958,7 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
                                    int enc_version,
                                    const char *pwd_hash_algo,
                                    const char *pwd_hash_params,
+                                   const char *storage_id,
                                    GError **error)
 {
     char *repo_id = NULL;
@@ -3965,6 +3967,21 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
     const char *params = pwd_hash_params;
 
     repo_id = gen_uuid ();
+
+    /* Pin the storage class before create_repo_common writes the initial
+     * commit: RepoStorageId must already point at the target backend or the
+     * root commit lands in the default store and the repo becomes unreadable
+     * (the multi-storage router looks the commit up in the pinned store). */
+    if (storage_id && storage_id[0]) {
+        if (cf_set_repo_storage_id (repo_id, storage_id) < 0) {
+            seaf_warning ("Failed to pin repo %s to storage %s.\n",
+                          repo_id, storage_id);
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "Failed to assign storage class.");
+            g_free (repo_id);
+            return NULL;
+        }
+    }
 
     if (passwd && passwd[0] != 0) {
         if (seafile_generate_repo_salt (salt) < 0) {

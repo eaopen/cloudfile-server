@@ -650,7 +650,7 @@ create_system_default_repo (void *data)
                                                  "My Library Template",
                                                  "Template for creating 'My Library' for users",
                                                  "System",
-                                                 NULL, -1, NULL, NULL, NULL);
+                                                 NULL, -1, NULL, NULL, NULL, NULL);
     if (!repo_id) {
         seaf_warning ("Failed to create system default repo.\n");
         return data;
