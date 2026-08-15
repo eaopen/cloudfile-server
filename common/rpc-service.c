@@ -3297,7 +3297,6 @@ seafile_create_repo (const char *repo_name,
                      int enc_version,
                      const char *pwd_hash_algo,
                      const char *pwd_hash_params,
-                     const char *storage_id,
                      GError **error)
 {
     if (!repo_name || !repo_desc || !owner_email) {
@@ -3314,7 +3313,7 @@ seafile_create_repo (const char *repo_name,
                                                  enc_version,
                                                  pwd_hash_algo,
                                                  pwd_hash_params,
-                                                 storage_id,
+                                                 NULL,
                                                  error);
     return repo_id;
 }
@@ -4323,21 +4322,20 @@ seafile_cf_get_storage_classes (GError **error)
 #endif
 }
 
-int
-seafile_cf_set_repo_storage_id (const char *repo_id, const char *storage_id,
-                                GError **error)
+char *
+seafile_cf_create_repo (const char *request_json, GError **error)
 {
 #ifdef SEAFILE_SERVER
     if (!cf_storage_enabled ()) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                      "Storage classes are disabled.");
-        return -1;
+        return NULL;
     }
-    return cf_set_repo_storage_id (repo_id, storage_id);
+    return cf_create_repo_json (request_json, error);
 #else
     g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                  "Storage classes are disabled.");
-    return -1;
+    return NULL;
 #endif
 }
 

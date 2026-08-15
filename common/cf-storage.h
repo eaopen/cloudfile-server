@@ -14,6 +14,13 @@ gboolean cf_storage_enabled (void);
  * Returns 0 on success, -1 on failure. */
 int cf_set_repo_storage_id (const char *repo_id, const char *storage_id);
 
+/* Create a repo pinned to a storage class in one step, so the initial commit
+ * lands in the target store. @request_json is
+ * {"name","owner","desc","passwd","enc_version","pwd_hash_algo",
+ * "pwd_hash_params","storage_id"}; only name and owner are required. Returns
+ * the new repo id (caller g_free) or NULL with error set. */
+char *cf_create_repo_json (const char *request_json, GError **error);
+
 /* Serialize the configured storage classes into a JSON array of
  * {"storage_id": ..., "storage_name": ..., "is_default": ...}. Caller owns
  * the returned string (g_free). Returns NULL and sets error on failure. */

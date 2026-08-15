@@ -933,7 +933,6 @@ seafile_create_repo (const char *repo_name,
                      int enc_version,
                      const char *pwd_hash_algo,
                      const char *pwd_hash_params,
-                     const char *storage_id,
                      GError **error);
 
 char *
@@ -1013,14 +1012,14 @@ char *
 seafile_cf_lock_force_release (const char *request_json, GError **error);
 
 /* CloudFile storage-class assignment (P2 storage backends). List returns a
- * JSON array of {"storage_id","storage_name","is_default"}; set pins a repo
- * to a class. Both answer a "disabled" JSON / -1 when the switch is off. */
+ * JSON array of {"storage_id","storage_name","is_default"}; create makes a
+ * repo pinned to a class. Both answer a "disabled" JSON / NULL when the
+ * switch is off. */
 char *
 seafile_cf_get_storage_classes (GError **error);
 
-int
-seafile_cf_set_repo_storage_id (const char *repo_id, const char *storage_id,
-                                GError **error);
+char *
+seafile_cf_create_repo (const char *request_json, GError **error);
 
 GList *
 seafile_list_dir_with_perm (const char *repo_id,

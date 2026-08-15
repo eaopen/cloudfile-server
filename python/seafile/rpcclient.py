@@ -50,8 +50,8 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         NamedPipeClient.__init__(self, pipe_path, "seafserv-threaded-rpcserver")
 
     # repo manipulation
-    @searpc_func("string", ["string", "string", "string", "string", "int", "string", "string", "string"])
-    def seafile_create_repo(name, desc, owner_email, passwd, enc_version, pwd_hash_algo, pwd_hash_params, storage_id):
+    @searpc_func("string", ["string", "string", "string", "string", "int", "string", "string"])
+    def seafile_create_repo(name, desc, owner_email, passwd, enc_version, pwd_hash_algo, pwd_hash_params):
         pass
     create_repo = seafile_create_repo
 
@@ -605,8 +605,8 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def cf_get_storage_classes():
         pass
 
-    @searpc_func("int", ["string", "string"])
-    def cf_set_repo_storage_id(repo_id, storage_id):
+    @searpc_func("string", ["string"])
+    def cf_create_repo(request_json):
         pass
 
     # org repo

@@ -91,7 +91,7 @@ class SeafileAPI(object):
     # repo manipulation
 
     def create_repo(self, name, desc, username, passwd=None, enc_version=2, storage_id=None, pwd_hash_algo=None, pwd_hash_params=None):
-        return seafserv_threaded_rpc.create_repo(name, desc, username, passwd, enc_version, pwd_hash_algo, pwd_hash_params, storage_id)
+        return seafserv_threaded_rpc.create_repo(name, desc, username, passwd, enc_version, pwd_hash_algo, pwd_hash_params)
 
     def create_enc_repo(self, repo_id, name, desc, username, magic, random_key, salt, enc_version, pwd_hash=None, pwd_hash_algo=None, pwd_hash_params=None):
         return seafserv_threaded_rpc.create_enc_repo(repo_id, name, desc, username, magic, random_key, salt, enc_version, pwd_hash, pwd_hash_algo, pwd_hash_params)
@@ -438,9 +438,8 @@ class SeafileAPI(object):
     def get_storage_classes(self):
         return seafserv_threaded_rpc.cf_get_storage_classes()
 
-    def set_repo_storage_id(self, repo_id, storage_id):
-        return seafserv_threaded_rpc.cf_set_repo_storage_id(repo_id,
-                                                            storage_id)
+    def create_repo_with_storage(self, request_json):
+        return seafserv_threaded_rpc.cf_create_repo(request_json)
 
     # share repo to user
     def share_repo(self, repo_id, from_username, to_username, permission):

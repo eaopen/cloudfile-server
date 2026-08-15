@@ -19,6 +19,7 @@
 #include "cf-ext.h"
 #include "cf-storage.h"
 #include "log.h"
+#include "repo-mgr.h"
 #include "seaf-db.h"
 #include "seafile-error.h"
 #include "seafile-session.h"
@@ -50,6 +51,60 @@ cf_set_repo_storage_id (const char *repo_id, const char *storage_id)
     }
     seaf_db_trans_close (trans);
     return 0;
+}
+
+char *
+cf_create_repo_json (const char *request_json, GError **error)
+{
+    json_t *req;
+    json_error_t json_error;
+    const char *name;
+    const char *desc;
+    const char *owner;
+    const char *passwd;
+    const char *storage_id;
+    const char *pwd_hash_algo;
+    const char *pwd_hash_params;
+    int enc_version;
+    char *repo_id;
+
+    req = json_loads (request_json, 0, &json_error);
+    if (!req) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid request JSON at line %d: %s",
+                     json_error.line, json_error.text);
+        return NULL;
+    }
+
+    name = json_string_value (json_object_get (req, "name"));
+    owner = json_string_value (json_object_get (req, "owner"));
+    if (!name || !name[0] || !owner || !owner[0]) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "name and owner are required.");
+        json_decref (req);
+        return NULL;
+    }
+
+    desc = json_string_value (json_object_get (req, "desc"));
+    passwd = json_string_value (json_object_get (req, "passwd"));
+    storage_id = json_string_value (json_object_get (req, "storage_id"));
+    pwd_hash_algo = json_string_value (json_object_get (req, "pwd_hash_algo"));
+    pwd_hash_params = json_string_value (json_object_get (req,
+                                                          "pwd_hash_params"));
+    if (json_object_get (req, "enc_version")) {
+        enc_version = json_integer_value (json_object_get (req, "enc_version"));
+    } else {
+        enc_version = 2;
+    }
+
+    repo_id = seaf_repo_manager_create_new_repo (
+        seaf->repo_mgr, name, desc ? desc : "", owner,
+        passwd && passwd[0] ? passwd : NULL,
+        enc_version, pwd_hash_algo, pwd_hash_params,
+        storage_id && storage_id[0] ? storage_id : NULL,
+        error);
+    json_decref (req);
+    return repo_id;
 }
 
 /* Resolve [storage] storage_classes_file the same way the multi-storage
