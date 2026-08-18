@@ -32,6 +32,28 @@ CREATE TABLE IF NOT EXISTS cf_dir_acl (
   INDEX cf_dir_acl_repo (repo_id)
 ) ENGINE=INNODB;
 
+-- Directory-level admin (delegated manage): the orthogonal dimension to
+-- cf_dir_acl (acl-semantics.md section 7). A row grants the subject the right
+-- to manage ACL rules -- and further admin grants -- on `path` and, with
+-- inherit, everything below it. There is no permission column: the grant *is*
+-- the admin role. Only the Hub reads this table -- management is a Hub-side
+-- decision and seaf-server enforces content, not manage -- but it lives here
+-- because this is the one schema mechanism for cf_* tables and it runs on
+-- every start, covering fresh installs and existing deployments alike.
+CREATE TABLE IF NOT EXISTS cf_dir_admin (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  repo_id CHAR(36) NOT NULL,
+  path VARCHAR(1000) NOT NULL,
+  path_hash CHAR(40) NOT NULL,
+  subject_type VARCHAR(16) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  inherit TINYINT NOT NULL DEFAULT 1,
+  ctime BIGINT,
+  mtime BIGINT,
+  UNIQUE INDEX cf_dir_admin_unique (repo_id, path_hash, subject_type, subject),
+  INDEX cf_dir_admin_repo (repo_id)
+) ENGINE=INNODB;
+
 -- SSO directory mapping: which Seafile groups CloudFile created, mirroring
 -- which groups in the customer's directory.
 --
