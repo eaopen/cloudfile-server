@@ -133,11 +133,15 @@ subject_matches (GHashTable *subjects, const CfAclRule *rule)
 
 /*
  * Pick the winning permission among the rules that matched at one level:
- * most specific subject type first, then strictest permission within it.
+ * most specific subject type first, then -- within that type -- a deny
+ * vetoes outright and otherwise the highest grant wins.
  *
- * Splitting by subject type is what keeps an explicit user grant meaningful.
- * Without it a single 'r' rule on an "everyone" group would cap every
- * individual 'rw' grant in the repo.
+ * Splitting by subject type is what keeps an explicit user grant meaningful:
+ * without it a single 'r' rule on an "everyone" group would cap every
+ * individual 'rw' grant in the repo. Within the same type a deny
+ * ('invisible'/'none') vetoes any grant (CE 'none' semantics), while
+ * competing grants merge to the highest ('rw' over 'r'), matching CE's group
+ * permission merge in repo-perm.c.
  */
 static int
 pick_level_decision (GList *applicable)
@@ -151,18 +155,30 @@ pick_level_decision (GList *applicable)
             best_type = rule->subject_type;
     }
 
-    int decision = CF_PERM_UNKNOWN;
+    int deny = CF_PERM_UNKNOWN;    /* most restrictive deny seen */
+    int grant = CF_PERM_UNKNOWN;   /* highest grant seen */
     gboolean found = FALSE;
+
     for (ptr = applicable; ptr; ptr = ptr->next) {
         CfAclRule *rule = ptr->data;
         if (rule->subject_type != best_type)
             continue;
-        if (!found || rule->permission < decision)
-            decision = rule->permission;
         found = TRUE;
+
+        if (rule->permission == CF_PERM_INVISIBLE)
+            return CF_PERM_INVISIBLE;   /* strictest value; nothing out-ranks it */
+        if (rule->permission == CF_PERM_NONE) {
+            deny = CF_PERM_NONE;
+        } else if (rule->permission > grant) {
+            grant = rule->permission;
+        }
     }
 
-    return found ? decision : CF_PERM_UNKNOWN;
+    if (!found)
+        return CF_PERM_UNKNOWN;
+    if (deny == CF_PERM_NONE)
+        return CF_PERM_NONE;
+    return grant;
 }
 
 /*
