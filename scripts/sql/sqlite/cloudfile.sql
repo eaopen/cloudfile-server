@@ -9,11 +9,14 @@ CREATE TABLE IF NOT EXISTS cf_dir_admin (id INTEGER PRIMARY KEY AUTOINCREMENT, r
 CREATE UNIQUE INDEX IF NOT EXISTS cf_dir_admin_unique ON cf_dir_admin (repo_id, path_hash, subject_type, subject);
 CREATE INDEX IF NOT EXISTS cf_dir_admin_repo ON cf_dir_admin (repo_id);
 
-CREATE TABLE IF NOT EXISTS cf_sso_group_map (id INTEGER PRIMARY KEY AUTOINCREMENT, provider VARCHAR(32) NOT NULL, external_id VARCHAR(255) NOT NULL, group_id INTEGER NOT NULL, name VARCHAR(255) NOT NULL, ctime BIGINT, mtime BIGINT);
+CREATE TABLE IF NOT EXISTS cf_sso_group_map (id INTEGER PRIMARY KEY AUTOINCREMENT, provider VARCHAR(32) NOT NULL, external_id VARCHAR(255) NOT NULL, group_id INTEGER NOT NULL, name VARCHAR(255) NOT NULL, subject_type VARCHAR(16), parent_external_id VARCHAR(255), ctime BIGINT, mtime BIGINT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_sso_group_map_unique ON cf_sso_group_map (provider, external_id);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_sso_group_map_group ON cf_sso_group_map (group_id);
 
-CREATE TABLE IF NOT EXISTS cf_sso_sync_state (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(64) NOT NULL, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS cf_managed_library_share (id INTEGER PRIMARY KEY AUTOINCREMENT, provider VARCHAR(32) NOT NULL, repo_id CHAR(36) NOT NULL, external_group_id VARCHAR(128) NOT NULL, seafile_group_id INTEGER NOT NULL, permission VARCHAR(8) NOT NULL, state VARCHAR(16) NOT NULL, last_error VARCHAR(1000), ctime BIGINT, mtime BIGINT);
+CREATE UNIQUE INDEX IF NOT EXISTS cf_managed_library_share_unique ON cf_managed_library_share (provider, repo_id, external_group_id);
+
+(id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(64) NOT NULL, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_sso_sync_state_name ON cf_sso_sync_state (name);
 
 CREATE TABLE IF NOT EXISTS cf_search_index_state (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(64) NOT NULL, last_activity_id BIGINT NOT NULL DEFAULT 0, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);

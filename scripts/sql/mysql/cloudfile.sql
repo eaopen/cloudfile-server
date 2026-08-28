@@ -76,10 +76,45 @@ CREATE TABLE IF NOT EXISTS cf_sso_group_map (
   -- Two mappings onto one group would fight over its membership every tick.
   group_id INT NOT NULL,
   name VARCHAR(255) NOT NULL,
+  -- Hierarchy contract (eap-cloudfile decision 2026-08-27 §3): 'dept' rows
+  -- are created as Seafile departments (parent_group_id -1 or >0), 'group'
+  -- rows stay flat. Nullable so rows written before the upgrade keep reading
+  -- as plain groups; CREATE TABLE IF NOT EXISTS never alters an existing
+  -- table, and NULL is the pre-upgrade value.
+  subject_type VARCHAR(16) NULL,
+  -- external_id of the parent dept, resolved to a Seafile group_id at apply
+  -- time from rows the same sync writes. Never a numeric Seafile id: external
+  -- ids survive a Seafile rebuild, numeric ids do not.
+  parent_external_id VARCHAR(255) NULL,
   ctime BIGINT,
   mtime BIGINT,
   UNIQUE INDEX cf_sso_group_map_unique (provider, external_id),
   UNIQUE INDEX cf_sso_group_map_group (group_id)
+) ENGINE=INNODB;
+
+-- Library shares this integration applied, on behalf of an external system
+-- (eap-cloudfile decision 2026-08-27 §4.3). The boundary this table draws is
+-- the whole point: Seafile shares carry no marker of who created them, so a
+-- reconcile loop that cannot tell its own work from a person's will
+-- eventually delete a person's access. Only rows recorded here may be
+-- revoked; a share in Seafile without a ledger row was made by hand and is
+-- not ours to take back. external_group_id is the external system's stable
+-- id (never a Seafile numeric id, which does not survive a rebuild);
+-- seafile_group_id is re-resolved from cf_sso_group_map on every reconcile
+-- and is diagnostic only.
+CREATE TABLE IF NOT EXISTS cf_managed_library_share (
+  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  provider VARCHAR(32) NOT NULL,
+  repo_id CHAR(36) NOT NULL,
+  external_group_id VARCHAR(128) NOT NULL,
+  seafile_group_id INT NOT NULL,
+  permission VARCHAR(8) NOT NULL,
+  state VARCHAR(16) NOT NULL,
+  last_error VARCHAR(1000) NULL,
+  ctime BIGINT,
+  mtime BIGINT,
+  UNIQUE INDEX cf_managed_library_share_unique
+    (provider, repo_id, external_group_id)
 ) ENGINE=INNODB;
 
 -- When the last sync ran and how it went. Directory mapping is eventually
