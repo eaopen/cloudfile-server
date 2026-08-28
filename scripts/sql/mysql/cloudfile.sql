@@ -117,6 +117,20 @@ CREATE TABLE IF NOT EXISTS cf_managed_library_share (
     (provider, repo_id, external_group_id)
 ) ENGINE=INNODB;
 
+-- Highest desired-state revision this integration has accepted per repo
+-- (eap-cloudfile decision 2026-08-28 §8.2). A PUT carries the revision its
+-- expectation was computed from; an older one is rejected so a delayed retry
+-- can never overwrite a newer policy. No row means "no revision contract yet"
+-- -- any revision is accepted and recorded.
+CREATE TABLE IF NOT EXISTS cf_library_share_revision (
+  provider VARCHAR(32) NOT NULL,
+  repo_id CHAR(36) NOT NULL,
+  policy_revision BIGINT NOT NULL,
+  ctime BIGINT,
+  mtime BIGINT,
+  UNIQUE INDEX cf_library_share_revision_unique (provider, repo_id)
+) ENGINE=INNODB;
+
 -- When the last sync ran and how it went. Directory mapping is eventually
 -- consistent by design, and that trade is only defensible while "how stale is
 -- this?" has an answer somebody can read.

@@ -16,6 +16,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS cf_sso_group_map_group ON cf_sso_group_map (gr
 CREATE TABLE IF NOT EXISTS cf_managed_library_share (id INTEGER PRIMARY KEY AUTOINCREMENT, provider VARCHAR(32) NOT NULL, repo_id CHAR(36) NOT NULL, external_group_id VARCHAR(128) NOT NULL, seafile_group_id INTEGER NOT NULL, permission VARCHAR(8) NOT NULL, state VARCHAR(16) NOT NULL, last_error VARCHAR(1000), ctime BIGINT, mtime BIGINT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_managed_library_share_unique ON cf_managed_library_share (provider, repo_id, external_group_id);
 
+CREATE TABLE IF NOT EXISTS cf_library_share_revision (provider VARCHAR(32) NOT NULL, repo_id CHAR(36) NOT NULL, policy_revision BIGINT NOT NULL, ctime BIGINT, mtime BIGINT);
+CREATE UNIQUE INDEX IF NOT EXISTS cf_library_share_revision_unique ON cf_library_share_revision (provider, repo_id);
+
 (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(64) NOT NULL, last_run BIGINT, status VARCHAR(16) NOT NULL, detail TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_sso_sync_state_name ON cf_sso_sync_state (name);
 

@@ -136,9 +136,10 @@ subject_matches (GHashTable *subjects, const CfAclRule *rule)
  * most specific subject type first, then -- within that type -- a deny
  * vetoes outright and otherwise the highest grant wins.
  *
- * Splitting by subject type is what keeps an explicit user grant meaningful:
- * without it a single 'r' rule on an "everyone" group would cap every
- * individual 'rw' grant in the repo. Within the same type a deny
+ * v3 note: resolve() feeds this function one track at a time (personal, or
+ * dept/group), so the user level here only settles dept-vs-group conflicts
+ * and the deny-wins rule inside a single type. Splitting by subject type is
+ * what keeps an explicit user grant meaningful; within the same type a deny
  * ('invisible'/'none') vetoes any grant (CE 'none' semantics), while
  * competing grants merge to the highest ('rw' over 'r'), matching CE's group
  * permission merge in repo-perm.c.
@@ -182,21 +183,28 @@ pick_level_decision (GList *applicable)
 }
 
 /*
- * Combine the resolved rule with the native share permission.
+ * Combine the resolved rule with the native share permission (v3, Pro
+ * compatible).
  *
- * Security invariant: never more privileged than @native_perm.
+ * `native` still gates eligibility: NULL means no share reaches this user
+ * and a rule never manufactures access. Within an existing grant the rule
+ * *defines* the permission -- a library-level r may be promoted to rw on a
+ * subtree (Seafile Pro sub-folder permissions) and rw demoted to r.
+ * Denies still veto outright.
  */
 static char *
 tighten (const char *native_perm, int decision)
 {
+    if (!native_perm)
+        return NULL;
+
     if (decision == CF_PERM_INVISIBLE || decision == CF_PERM_NONE)
         return NULL;
 
     int native_level = cf_acl_perm_to_level (native_perm);
 
     if (native_level == CF_PERM_R || native_level == CF_PERM_RW) {
-        int result = (native_level < decision) ? native_level : decision;
-        return g_strdup (level_to_perm (result));
+        return g_strdup (level_to_perm (decision));
     }
 
     if (g_strcmp0 (native_perm, "admin") == 0) {
@@ -211,20 +219,19 @@ tighten (const char *native_perm, int decision)
     return g_strdup (native_perm);
 }
 
-char *
-cf_acl_resolve (GList *rules,
-                GHashTable *subjects,
-                const char *path,
-                const char *native_perm)
+/*
+ * Deepest-level-with-matching-rules decision along the ancestor chain,
+ * restricted to one subject-type track. NULL when the track has no rules.
+ */
+static int
+resolve_track (GList *rules,
+               GHashTable *subjects,
+               const char *norm_path,
+               GList *levels,
+               gboolean personal)
 {
-    if (!native_perm)
-        return NULL;
-
-    char *norm_path = cf_acl_normalize_path (path);
-    GList *levels = cf_acl_ancestors (norm_path);
-    GList *lp, *rp;
-
     int decision = CF_PERM_UNKNOWN;
+    GList *lp, *rp;
 
     for (lp = levels; lp; lp = lp->next) {
         const char *level = lp->data;
@@ -232,6 +239,9 @@ cf_acl_resolve (GList *rules,
 
         for (rp = rules; rp; rp = rp->next) {
             CfAclRule *rule = rp->data;
+            gboolean is_personal = (rule->subject_type == CF_SUBJ_USER);
+            if (is_personal != personal)
+                continue;
             if (strcmp (rule->path, level) != 0)
                 continue;
             if (!rule->inherit && strcmp (level, norm_path) != 0)
@@ -248,6 +258,33 @@ cf_acl_resolve (GList *rules,
             g_list_free (applicable);
         }
     }
+
+    return decision;
+}
+
+char *
+cf_acl_resolve (GList *rules,
+                GHashTable *subjects,
+                const char *path,
+                const char *native_perm)
+{
+    if (!native_perm)
+        return NULL;
+
+    char *norm_path = cf_acl_normalize_path (path);
+    GList *levels = cf_acl_ancestors (norm_path);
+
+    /*
+     * v3 (Pro compatible): two tracks. The personal track carries CF_SUBJ_USER
+     * rules and wins outright over the dept/group track whenever it produces a
+     * decision -- across levels, so a personal rule inherited from a parent
+     * directory beats a group rule on a deeper one. Within a track the deepest
+     * matching level still wins.
+     */
+    int personal = resolve_track (rules, subjects, norm_path, levels, TRUE);
+    int group = resolve_track (rules, subjects, norm_path, levels, FALSE);
+
+    int decision = (personal != CF_PERM_UNKNOWN) ? personal : group;
 
     char *result;
     if (decision == CF_PERM_UNKNOWN)

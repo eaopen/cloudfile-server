@@ -107,15 +107,22 @@ load_rule_cb (SeafDBRow *row, void *data)
     int type_level = cf_acl_subject_type_to_level (subject_type);
     int perm_level = cf_acl_perm_to_level (permission);
     if (type_level == CF_SUBJ_UNKNOWN || perm_level == CF_PERM_UNKNOWN) {
-        /* Skip rather than guess: a row we cannot interpret must not be
-         * silently treated as "allow". */
-        seaf_warning ("CloudFile: ignoring ACL row with unknown "
-                      "subject_type '%s' or permission '%s'.\n",
+        /*
+         * Fail the whole repo, not just this row. A row we cannot interpret
+         * may be a restriction (none/invisible under a newer schema); skipping
+         * it would fall back to the native share permission and silently
+         * widen access -- precisely when the rules meant to constrain it are
+         * unreadable. cf_acl_apply and cf_acl_filter_dirents both treat a
+         * NULL rules list with err set as "deny everything in this repo".
+         */
+        seaf_warning ("CloudFile: uninterpretable ACL row in repo ("
+                      "subject_type '%s', permission '%s'); failing closed "
+                      "for the whole repo.\n",
                       subject_type ? subject_type : "(null)",
                       permission ? permission : "(null)");
-        return TRUE;
+        *rules = NULL;
+        return FALSE;
     }
-
     *rules = g_list_prepend (*rules,
                              cf_acl_rule_new (path, type_level, subject,
                                               perm_level, inherit));
@@ -132,7 +139,10 @@ load_rule_cb (SeafDBRow *row, void *data)
  * it shows an entry the server then refuses.
  *
  * Sets @db_error when the query itself failed, so the caller can tell "no
- * rules" apart from "could not read the rules".
+ * rules" apart from "could not read the rules". It also sets @db_error when a
+ * row cannot be interpreted (load_rule_cb aborts the scan): the repo's policy
+ * is then unreadable, and every consumer below must fail closed rather than
+ * fall back to the native permission.
  */
 static GList *
 load_repo_rules (const char *repo_id, gboolean *db_error)
@@ -144,11 +154,25 @@ load_repo_rules (const char *repo_id, gboolean *db_error)
 
     *db_error = FALSE;
 
-    if (seaf_db_statement_foreach_row (seaf->db, sql, load_rule_cb, &rules,
-                                       1, "string", repo_id) < 0) {
+    int rc = seaf_db_statement_foreach_row (seaf->db, sql, load_rule_cb,
+                                            &rules, 1, "string", repo_id);
+    if (rc < 0) {
         seaf_warning ("CloudFile: failed to load directory ACL for repo %s.\n",
                       repo_id);
         g_list_free_full (rules, (GDestroyNotify)cf_acl_rule_free);
+        *db_error = TRUE;
+        return NULL;
+    }
+
+    /*
+     * load_rule_cb aborts the scan (callback FALSE) on an uninterpretable row
+     * and NULLs the list; rc counts the rows seen, so rc > 0 with a NULL list
+     * means exactly that. rc == 0 with a NULL list is the ordinary "repo has
+     * no rules" case and passes through to native.
+     */
+    if (rules == NULL && rc > 0) {
+        seaf_warning ("CloudFile: directory ACL for repo %s has "
+                      "uninterpretable rows; failing closed.\n", repo_id);
         *db_error = TRUE;
         return NULL;
     }

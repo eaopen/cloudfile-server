@@ -87,40 +87,42 @@ run_case (const Case *tcase)
     g_hash_table_destroy (subjects);
 }
 
-/* The security invariant, checked exhaustively over the lattice. */
+/*
+ * The eligibility invariant (v3, Pro compatible), checked exhaustively over
+ * the lattice: a native of none stays none whatever the rules say -- a
+ * directory rule never manufactures access. Inside a grant the rule defines
+ * the value (r -> rw promotion included), so the old "never wider than
+ * native" bound no longer holds by design.
+ */
 static void
 test_never_widens (void)
 {
-    const char *natives[] = { "r", "rw" };
     const char *decisions[] = { "invisible", "none", "r", "rw" };
-    int n, d;
+    int d;
 
-    for (n = 0; n < 2; n++) {
-        for (d = 0; d < 4; d++) {
-            GHashTable *subjects = g_hash_table_new_full (
-                g_str_hash, g_str_equal, g_free, NULL);
-            g_hash_table_add (subjects,
-                              cf_acl_subject_key (CF_SUBJ_USER, "u@e.com"));
+    for (d = 0; d < 4; d++) {
+        GHashTable *subjects = g_hash_table_new_full (
+            g_str_hash, g_str_equal, g_free, NULL);
+        g_hash_table_add (subjects,
+                          cf_acl_subject_key (CF_SUBJ_USER, "u@e.com"));
 
-            GList *rules = g_list_append (NULL, cf_acl_rule_new (
-                "/x", CF_SUBJ_USER, "u@e.com",
-                cf_acl_perm_to_level (decisions[d]), 1));
+        GList *rules = g_list_append (NULL, cf_acl_rule_new (
+            "/x", CF_SUBJ_USER, "u@e.com",
+            cf_acl_perm_to_level (decisions[d]), 1));
 
-            char *got = cf_acl_resolve (rules, subjects, "/x", natives[n]);
-            checks++;
+        char *got = cf_acl_resolve (rules, subjects, "/x", NULL);
+        checks++;
 
-            if (got && cf_acl_perm_to_level (got) >
-                       cf_acl_perm_to_level (natives[n])) {
-                failures++;
-                fprintf (stderr,
-                         "FAIL invariant: native=%s decision=%s got=%s\n",
-                         natives[n], decisions[d], got);
-            }
-
-            g_free (got);
-            g_list_free_full (rules, (GDestroyNotify)cf_acl_rule_free);
-            g_hash_table_destroy (subjects);
+        if (got != NULL) {
+            failures++;
+            fprintf (stderr,
+                     "FAIL invariant: native=none decision=%s got=%s\n",
+                     decisions[d], got);
         }
+
+        g_free (got);
+        g_list_free_full (rules, (GDestroyNotify)cf_acl_rule_free);
+        g_hash_table_destroy (subjects);
     }
 }
 
