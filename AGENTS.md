@@ -51,8 +51,9 @@ workspace/
 新代码尽量放进新文件（`common/cf-*.c`、`fileserver/cf_*.go`、
 `scripts/sql/*/cloudfile.sql`）。
 
-当前差异已经不止最初 seam 的 10 个文件：ACL、写入生命周期、S3/多存储和迁移工具
-合入 `dev` 后，相对本地 `upstream/master` 快照共有 36 个已跟踪上游文件被修改。
+当前差异已经不止最初 seam 的 10 个文件：ACL（含 V3 Pro 兼容语义与 V2 委托管理）、
+写入生命周期、S3/多存储和迁移工具合入 `dev` 后，相对本地 `upstream/master`
+快照（`8c47d5f`，2026-08-11）共有 42 个已跟踪上游文件被修改，新增 51 个文件。
 静态清单会再次失真，检查时以这条命令为准：
 
 ```bash

@@ -10,7 +10,7 @@
 | 文档 | 状态 | 内容 |
 |---|---|---|
 | [AGENTS.md](../AGENTS.md) | 已完成 | 仓库边界、上游同步纪律和开发约束 |
-| [server-architecture.md](server-architecture.md) | 验证中 | server 边界、扩展点、能力状态、证据和上游 PR 评估 |
+| [server-architecture.md](server-architecture.md) | 已完成 | server 边界、扩展点、能力状态、证据和上游 PR 评估 |
 | [README.testing.md](../README.testing.md) | 已完成 | 本地测试、CI 门禁与验证限制 |
 | [tests/test_upload/readme.md](../tests/test_upload/readme.md) | 暂停 | 遗留并发上传手工工具；不属于自动化门禁 |
 | [CLAUDE.md](../CLAUDE.md) | 已完成 | 将 Claude Code 引导到统一约束 |
