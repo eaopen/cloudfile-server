@@ -171,11 +171,18 @@ CREATE TABLE IF NOT EXISTS cf_sso_sync_state (
 -- every start, whereas a second home in seahub-db would mean carrying a Django
 -- migration history across upstream merges in exchange for nothing.
 --
--- repo_id is a synthetic UUID that matches no real library. It exists so that
--- cf_dir_acl rules can be written against a source's subdirectories with no
--- new code, and so the shadow layer (docs/external-sources.md section six) has
--- an id to present. It is NOT a foreign key into Repo, and nothing may treat it
--- as one.
+-- repo_id is a synthetic UUID that matches no real library. It exists so the
+-- shadow layer (docs/external-sources.md section six) has an id to present, and
+-- so the directory-ACL *decision* path can be keyed by it. It is NOT a foreign
+-- key into Repo, and nothing may treat it as one.
+--
+-- 修改逻辑/原因（2026-09-23 口径更正）：原文写 "cf_dir_acl rules can be written
+-- against a source's subdirectories with no new code" —— **写路径不成立**。
+-- AdminDirACLView（acl/admin_apis.py）与 DirACLView（acl/apis.py）在写入前都先
+-- 校验 seafile_api.get_repo(repo_id)，合成 id 必然 404；可用的只有**判定**路径
+-- （service.permission_for → 权限钩子，只查 cf_dir_acl，不调 seafile_api）。
+-- 因此 v1 的外部源授权只到**源级 grant**；源内目录细化需先放行这两个写端点，
+-- 改动清单见 cloudfile-docker/docs/features/external-sources.md 的「权限」一节。
 --
 -- root_path is a container path, and must resolve under
 -- CF_EXTERNAL_SOURCES_ROOTS. That is enforced in the Hub on every access, not
