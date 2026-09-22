@@ -11,7 +11,9 @@
 
 `haiwen/seafile-server` 的 fork，CloudFile（Seafile CE 企业扩展版）的**权限终判层**。
 
-`dev` = **扩展基线 + 已验收能力**，全部开关默认关闭。开发中的能力在
+`dev` = **扩展基线 + 已验收能力**，默认值见
+`cloudfile-docker/docs/configuration.md`（修改于 2026-09-22：不依赖第三方的已验收能力
+默认打开；新增开关仍默认 `false`）。开发中的能力在
 `feature/<耦合簇>`，**验收后合回 `dev` 并删除分支**——
 不长期分叉，理由见 `cloudfile-docker/docs/BRANCHES.md` 第一节。
 
