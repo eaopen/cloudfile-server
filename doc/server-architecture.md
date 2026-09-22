@@ -10,7 +10,7 @@
 
 本仓复用 Seafile CE 的 library、commit/fs/block 对象模型、seaf-server、Go fileserver
 和 RPC 基础设施，只承载绕开 Seahub 仍必须生效的强制规则。UI、OnlyOffice 会话编排、
-SSO 同步、搜索任务、SMB/NFS 连接器和部署编排属于 Hub 或 Docker 仓；本仓最多提供
+SSO 同步、搜索任务和部署编排属于 Hub 或 Docker 仓；SMB/NFS/OpenList 等外部协议接入不属于任何 CloudFile 仓——v1 只支持只读挂载本地目录，转换由运维在宿主机完成。本仓最多提供
 底层 RPC、对象存储实现和共享 `cf_*` schema。
 
 ```text

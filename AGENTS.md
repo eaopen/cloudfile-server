@@ -41,7 +41,7 @@ workspace/
 - 存储扩展
 - 给 Hub 用的内部 RPC
 
-**不要**放这里：UI、项目业务流程、OnlyOffice 会话管理、SMB/NFS 连接器、
+**不要**放这里：UI、项目业务流程、OnlyOffice 会话管理、SMB/NFS/OpenList 等外部协议接入（v1 明确不做，转换归运维）、
 搜索索引任务。这些都在 `cloudfile-hub/cloudfile_ext/`。
 
 理由：C 代码的迭代成本远高于 Python，而上面这些东西并不需要底层强制。
