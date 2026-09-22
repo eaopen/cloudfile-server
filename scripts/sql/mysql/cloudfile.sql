@@ -14,6 +14,21 @@
 -- models, so Django migrations never own this schema.
 --
 -- Semantics: cloudfile-docker/docs/acl-semantics.md
+--
+-- Charset: every table declares utf8mb4 explicitly instead of inheriting the
+-- database default. Upstream CE 14 made that default utf8mb4 (seahub's
+-- "sql utf8mb4" change and setup-seafile-mysql.py's CREATE DATABASE), and
+-- seahub's own sql/mysql.sql now declares it on all 136 of its tables -- so
+-- declaring it here matches the CE 14 convention rather than inventing one.
+--
+-- Inheriting was actively wrong for us: the Hub connects with charset=utf8mb4
+-- (seahub/settings.py) and apply_cloudfile_schema() does the same, so on a
+-- database created before that CE 14 change a cf_* table would land as utf8mb3
+-- while the connection says utf8mb4 -- and storing a 4-byte character (an emoji
+-- in a library path, which these tables record) would fail. Declaring it makes
+-- the schema independent of the default. Index widths hold under utf8mb4 on
+-- InnoDB DYNAMIC (all CE 14-supported MariaDB/MySQL defaults): the widest is
+-- cf_dir_acl_unique at roughly 1.4 KB against a 3072-byte limit.
 
 CREATE TABLE IF NOT EXISTS cf_dir_acl (
   id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
@@ -30,7 +45,7 @@ CREATE TABLE IF NOT EXISTS cf_dir_acl (
   mtime BIGINT,
   UNIQUE INDEX cf_dir_acl_unique (repo_id, path_hash, subject_type, subject),
   INDEX cf_dir_acl_repo (repo_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Directory-level admin (delegated manage): the orthogonal dimension to
 -- cf_dir_acl (acl-semantics.md section 7). A row grants the subject the right
@@ -52,7 +67,7 @@ CREATE TABLE IF NOT EXISTS cf_dir_admin (
   mtime BIGINT,
   UNIQUE INDEX cf_dir_admin_unique (repo_id, path_hash, subject_type, subject),
   INDEX cf_dir_admin_repo (repo_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- SSO directory mapping: which Seafile groups CloudFile created, mirroring
 -- which groups in the customer's directory.
@@ -90,7 +105,7 @@ CREATE TABLE IF NOT EXISTS cf_sso_group_map (
   mtime BIGINT,
   UNIQUE INDEX cf_sso_group_map_unique (provider, external_id),
   UNIQUE INDEX cf_sso_group_map_group (group_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Library shares this integration applied, on behalf of an external system
 -- (eap-cloudfile decision 2026-08-27 §4.3). The boundary this table draws is
@@ -115,7 +130,7 @@ CREATE TABLE IF NOT EXISTS cf_managed_library_share (
   mtime BIGINT,
   UNIQUE INDEX cf_managed_library_share_unique
     (provider, repo_id, external_group_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Highest desired-state revision this integration has accepted per repo
 -- (eap-cloudfile decision 2026-08-28 §8.2). A PUT carries the revision its
@@ -129,7 +144,7 @@ CREATE TABLE IF NOT EXISTS cf_library_share_revision (
   ctime BIGINT,
   mtime BIGINT,
   UNIQUE INDEX cf_library_share_revision_unique (provider, repo_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- When the last sync ran and how it went. Directory mapping is eventually
 -- consistent by design, and that trade is only defensible while "how stale is
@@ -141,7 +156,7 @@ CREATE TABLE IF NOT EXISTS cf_sso_sync_state (
   status VARCHAR(16) NOT NULL,
   detail TEXT,
   UNIQUE INDEX cf_sso_sync_state_name (name)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- External resource sources: an SMB/NFS share the operator has already
 -- mounted on the host and bind-mounted into the container, registered here so
@@ -177,7 +192,7 @@ CREATE TABLE IF NOT EXISTS cf_external_source (
   mtime BIGINT,
   UNIQUE INDEX cf_external_source_repo (repo_id),
   UNIQUE INDEX cf_external_source_name (name)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Who may read a source. External sources are not libraries: they have no
 -- owner and are not shared through Seafile's own sharing, so authorisation is
@@ -196,7 +211,7 @@ CREATE TABLE IF NOT EXISTS cf_external_source_grant (
   ctime BIGINT,
   UNIQUE INDEX cf_external_source_grant_unique (source_id, subject_type, subject),
   INDEX cf_external_source_grant_source (source_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- How far cf-worker's incremental scan has walked each source (feature 51).
 -- Created with the rest of the cluster's schema rather than when the scanner
@@ -213,7 +228,7 @@ CREATE TABLE IF NOT EXISTS cf_external_scan_state (
   status VARCHAR(16) NOT NULL,
   detail TEXT,
   UNIQUE INDEX cf_external_scan_state_source (source_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- User-facing metadata for an external path. This is deliberately a tiny
 -- sidecar: metadata and tags can be edited without creating a Seafile commit
@@ -229,7 +244,7 @@ CREATE TABLE IF NOT EXISTS cf_external_overlay (
   mtime BIGINT,
   UNIQUE INDEX cf_external_overlay_unique (source_id, path_hash),
   INDEX cf_external_overlay_source (source_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- How far cf-worker's search indexer has walked seafevents' Activity table.
 -- One row per registered search provider that needs its own index built
@@ -247,7 +262,7 @@ CREATE TABLE IF NOT EXISTS cf_search_index_state (
   status VARCHAR(16) NOT NULL,
   detail TEXT,
   UNIQUE INDEX cf_search_index_state_name (name)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- File-lock truth for manual checkout, local editors and OnlyOffice.  CE's
 -- FileLocks table has no manager or write-path enforcement, so it is never
@@ -278,7 +293,7 @@ CREATE TABLE IF NOT EXISTS cf_lock_lease (
   updated_at BIGINT NOT NULL,
   PRIMARY KEY (repo_id, path_hash),
   INDEX cf_lock_lease_live (repo_id, status, lease_until)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- A monotonic, opaque value for clients that poll the lock set.  Lease
 -- refreshes do not update this value; acquire/release state transitions do.
@@ -286,7 +301,7 @@ CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (
   repo_id CHAR(36) NOT NULL PRIMARY KEY,
   revision BIGINT NOT NULL,
   updated_at BIGINT NOT NULL
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Opaque, single-claim sessions for CloudFile Local. The descriptor downloaded
 -- by a browser carries only the ticket; access and write-back capabilities are
@@ -308,7 +323,7 @@ CREATE TABLE IF NOT EXISTS cf_edit_session (
   updated_at BIGINT NOT NULL,
   UNIQUE INDEX cf_edit_session_ticket (ticket_digest),
   INDEX cf_edit_session_expiry (state, ticket_expire_at)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Copy/move task idempotency and failure reporting (P2-06).  One row per
 -- submitted copy/move intent; the idempotency_key is what turns a repeated
@@ -334,4 +349,4 @@ CREATE TABLE IF NOT EXISTS cf_fileop_task (
   mtime BIGINT NOT NULL,
   UNIQUE INDEX cf_fileop_task_idem (username, idempotency_key),
   INDEX cf_fileop_task_id (task_id)
-) ENGINE=INNODB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
