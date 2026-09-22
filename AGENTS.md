@@ -53,7 +53,7 @@ workspace/
 
 当前差异已经不止最初 seam 的 10 个文件：ACL（含 V3 Pro 兼容语义与 V2 委托管理）、
 写入生命周期、S3/多存储和迁移工具合入 `dev` 后，相对本地 `upstream/master`
-快照（`8c47d5f`，2026-08-11）共有 42 个已跟踪上游文件被修改，新增 51 个文件。
+（同步到 `d9ed57e`，2026-09-22）共有 42 个已跟踪上游文件被修改，新增 51 个文件。
 静态清单会再次失真，检查时以这条命令为准：
 
 ```bash
@@ -97,8 +97,7 @@ fileserver/cf_fileop.go    Go 写入口网关，同样走 RPC 问 seaf-server
 ```
 
 `cf_ext_init()` 当前调用 ACL、测试 provider 和文件锁的初始化函数；每个初始化函数
-都先读取运行时开关，全部关闭时不会注册任何 provider，钩子仍是透传，行为与原生 CE
-一致。`cf-fileop-test.c` 由 `[cloudfile]
+都先读取运行时开关，全部关闭时不会注册任何 provider，钩子仍是透传。`cf-fileop-test.c` 由 `[cloudfile]
 fileop_test_provider_enabled` 门控，**默认关闭**，且刻意不进 `CF_ENABLE_*` 清单——
 那份清单里的每一项都是运维可以合理打开的产品能力，而它是写入生命周期门禁用的
 仪器，能拒绝写入、每次写入都追加文件，注册时会打一条明说"不要在生产里跑"的警告。
@@ -172,10 +171,16 @@ go test -count=1 -run 'Cf[A-Z]' .
 
 ## 铁律
 
-**1. 没有能力注册 = 原生 CE 行为。**
+**1. 没有能力注册 = 不改变行为。**
 
 `cf_ext_init()` 会调用能力初始化函数，但能力受 `seafile.conf` 里 `[cloudfile]`
 的开关控制；全部关闭时没有 provider 注册，每个钩子都是透传。
+
+（2026-09-22 起不再要求"没有能力注册 = 原生 CE 逐字一致"。CloudFile 是 CE 的
+扩展版，本仓基线里本就有不受开关约束的改动——登记在
+`cloudfile-docker/docs/upstream-patches/cloudfile-server.txt` 的那些，例如
+`server/repo-mgr.c` 的 `storage_id` 参数、`lib/Makefile.am` 的 Vala 构建规则。
+理由与裁决顺序见 [cloudfile-docker/BRANCHING.md](../cloudfile-docker/BRANCHING.md)。）
 
 **2. 扩展只能收紧权限，不能放宽。**
 
