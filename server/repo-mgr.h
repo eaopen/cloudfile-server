@@ -911,6 +911,12 @@ seaf_repo_manager_get_upload_tmp_file_offset (SeafRepoManager *mgr,
                                               const char *file_path,
                                               GError **error);
 
+int
+seaf_repo_manager_discard_upload_tmp_file (SeafRepoManager *mgr,
+                                           const char *repo_id,
+                                           const char *file_path,
+                                           GError **error);
+
 void
 seaf_repo_manager_update_repo_info (SeafRepoManager *mgr,
                                     const char *repo_id,

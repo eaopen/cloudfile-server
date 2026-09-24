@@ -5072,6 +5072,33 @@ seafile_get_upload_tmp_file_offset (const char *repo_id, const char *file_path,
     return ret;
 }
 
+int
+seafile_cf_discard_upload_tmp_file (const char *repo_id, const char *file_path,
+                                    GError **error)
+{
+    if (!repo_id || !is_uuid_valid(repo_id)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid repo id");
+        return -1;
+    }
+
+    int path_len;
+    if (!file_path || (path_len = strlen(file_path)) == 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid file path");
+        return -1;
+    }
+
+    /* CloudFile: this RPC is deliberately narrow and does not expose an
+     * arbitrary filesystem delete. The repo manager resolves only a path
+     * already registered in WebUploadTempFiles. */
+    char *rfile_path = format_dir_path (file_path);
+    int ret = seaf_repo_manager_discard_upload_tmp_file (seaf->repo_mgr, repo_id,
+                                                         rfile_path, error);
+    g_free (rfile_path);
+    return ret;
+}
+
 char *
 seafile_convert_repo_path (const char *repo_id,
                            const char *path,

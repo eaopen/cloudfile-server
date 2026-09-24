@@ -4675,6 +4675,34 @@ seaf_repo_manager_get_upload_tmp_file_offset (SeafRepoManager *mgr,
     return file_stat.st_size;
 }
 
+int
+seaf_repo_manager_discard_upload_tmp_file (SeafRepoManager *mgr,
+                                           const char *repo_id,
+                                           const char *file_path,
+                                           GError **error)
+{
+    char *tmp_file_path = seaf_repo_manager_get_upload_tmp_file (mgr, repo_id,
+                                                                 file_path, error);
+    if (*error)
+        return -1;
+
+    /* CloudFile: a browser may explicitly abandon an old resumable upload
+     * after its local file identity no longer matches. Removing only the DB
+     * row would leak the temporary file; removing only the file would leave a
+     * stale offset record until the next query, so keep both sides together. */
+    if (tmp_file_path && g_unlink (tmp_file_path) < 0 && errno != ENOENT) {
+        seaf_warning ("Failed to discard upload temp file %s: %s.\n",
+                      tmp_file_path, strerror(errno));
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to discard upload temp file.");
+        g_free (tmp_file_path);
+        return -1;
+    }
+    g_free (tmp_file_path);
+
+    return seaf_repo_manager_del_upload_tmp_file (mgr, repo_id, file_path, error);
+}
+
 void
 seaf_repo_manager_update_repo_info (SeafRepoManager *mgr,
                                     const char *repo_id, const char *head_commit_id)

@@ -412,6 +412,10 @@ class SeafileAPI(object):
     def get_upload_tmp_file_offset (self, repo_id, file_path):
         return seafserv_threaded_rpc.get_upload_tmp_file_offset (repo_id, file_path)
 
+    def cf_discard_upload_tmp_file(self, repo_id, file_path):
+        """Discard an abandoned browser resumable-upload temp file."""
+        return seafserv_threaded_rpc.cf_discard_upload_tmp_file(repo_id, file_path)
+
     # file lock
     def check_file_lock(self, repo_id, path, user):
         """

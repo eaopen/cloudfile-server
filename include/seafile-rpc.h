@@ -1209,6 +1209,10 @@ gint64
 seafile_get_upload_tmp_file_offset (const char *repo_id, const char *file_path,
                                     GError **error);
 
+int
+seafile_cf_discard_upload_tmp_file (const char *repo_id, const char *file_path,
+                                    GError **error);
+
 char *
 seafile_convert_repo_path (const char *repo_id,
                            const char *path,
