@@ -12,6 +12,7 @@
 
 #ifdef FULL_FEATURE
 #include "notif-mgr.h"
+#include "cloudfile-policy.h"
 #endif
 
 #include "branch-mgr.h"
@@ -550,7 +551,7 @@ out:
  * so no managed generation can replace the checked value until SQL commit.
  * Ordinary CE entry points and legacy barrier-only calls remain unchanged. */
 static int
-cloudfile_check_context (SeafBranchManager *mgr, const char *conditions)
+cloudfile_check_context (SeafBranchManager *mgr, const char *conditions, json_t **snapshot)
 {
     int result = -1;
     json_t *root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
@@ -621,12 +622,18 @@ cloudfile_check_context (SeafBranchManager *mgr, const char *conditions)
         "or redis.call('PTTL',KEYS[1])<=0 or redis.call('EXISTS',KEYS[2])~=0 "
         "or type(v.subject)~='table' or v.subject.userId~=ARGV[1] "
         "or v.subject.status~='active' or type(v.source_etag)~='string' "
-        "or v.source_etag~=v.subject.etag then return 0 end; return 1";
+        "or v.source_etag~=v.subject.etag then return 0 end; return raw";
     char *lease = g_strconcat (key, ":lease", NULL);
     reply = redisCommand (client, "EVAL %s 2 %s %s %s %s", script, key, lease,
                           json_string_value (user), generation);
     g_free (lease);
-    if (reply && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1) result = 0;
+    if (reply && reply->type == REDIS_REPLY_STRING && reply->len <= 1048576) {
+        json_t *value = json_loadb (reply->str, reply->len, JSON_REJECT_DUPLICATES, NULL);
+        if (json_is_object (value)) {
+            if (snapshot) *snapshot = value; else json_decref (value);
+            result = 0;
+        } else if (value) json_decref (value);
+    }
 out:
     if (reply) freeReplyObject (reply);
     if (client) redisFree (client);
@@ -1065,16 +1072,31 @@ test_and_update_branch (SeafBranchManager *mgr,
         return -1;
     }
 
-    /* Context-bearing v2 calls require actual CE write qualification until the
-     * ACL loader is connected. Legacy barrier-only probes retain their scope. */
-    if (scopes_json && scopes_json[0] == '{' &&
-        cloudfile_library_qualification (mgr, trans, branch->repo_id, native_username) != 2) {
-        seaf_db_rollback (trans);
-        seaf_db_trans_close (trans);
-        return -2;
+    if (scopes_json && scopes_json[0] == '{') {
+        int qualification = cloudfile_library_qualification (mgr, trans, branch->repo_id, native_username);
+        json_t *snapshot = NULL;
+        json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        json_t *context = json_object_get (conditions, "context");
+        json_t *target = json_object_get (conditions, "path");
+        const char *path = json_string_value (target);
+        gboolean allowed = qualification > 0 && json_is_string (target) &&
+            json_string_length (target) == strlen (path) &&
+            cloudfile_check_context (mgr, scopes_json, &snapshot) == 0 &&
+            cf_policy_check_write (trans, branch->repo_id, path,
+                json_string_value (json_object_get (context, "provider")),
+                json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0;
+        if (snapshot) json_decref (snapshot);
+        if (conditions) json_decref (conditions);
+        if (!allowed) {
+            seaf_db_rollback (trans);
+            seaf_db_trans_close (trans);
+            return -2;
+        }
     }
 
-    if (scopes_json && cloudfile_check_context (mgr, scopes_json) < 0) {
+    /* Recheck after policy/qualification waits too. Natural expiry may occur
+     * without a refresh taking the SQL scopes held by this transaction. */
+    if (scopes_json && cloudfile_check_context (mgr, scopes_json, NULL) < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -2;

@@ -591,7 +591,7 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             now = time.time()
             snapshot = dict(userId=user_id, context_epoch=epoch, status="ready",
                 expires_at=now + 120, fetched_at=now, source_etag="fixture",
-                subject=dict(userId=user_id, status="active", etag="fixture"))
+                subject=dict(userId=user_id, status="active", etag="fixture", organizations=[], roles=[]))
             try:
                 for field, bad in (("context_epoch", "b" * 32), ("status", "refreshing"),
                                    ("expires_at", now - 1), ("userId", "other")):
@@ -620,6 +620,31 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
                     with connection.cursor() as cursor:
                         cursor.execute("INSERT INTO SharedRepo(repo_id,from_email,to_email,permission) VALUES(%s,%s,%s,'r')", (repo, "fixture-other-owner", actor))
                     assert write(changed, head, guarded, context=context) is None  # Personal read dominates group write.
+                    # CE read is qualification, not an immutable write ceiling.
+                    # Only an actual persisted directory grant may elevate it.
+                    from cloudfile_extensions.authorization.rules import ACLRules
+                    acl = ACLRules(connection, provider="directory", actor="manager-fixture",
+                        request_id="native-acl-fixture", authorize=lambda *_: True)
+                    reference = dict(repo_id=repo, path="/", kind="dir")
+                    user_subject = dict(type="user", provider="directory", namespace="user", external_id=user_id)
+                    grant = acl.mutate(reference, value=dict(path="/", kind="dir", subject=user_subject,
+                        permission="rw", inherit=True))
+                    try:
+                        assert write(changed, head, guarded, context=context)
+                        file_ref = dict(repo_id=repo, path="/probe.txt", kind="file")
+                        deny = acl.mutate(file_ref, value=dict(path="/probe.txt", kind="file",
+                            subject=user_subject, permission="none", inherit=False))
+                        try:
+                            assert write(changed, head, guarded, context=context) is None
+                            assert write(original, head, guarded, context=context) is None
+                            assert api.get_repo(repo).head_cmmt_id == head
+                        finally:
+                            acl.mutate(file_ref, rule_id=deny["id"], if_match=deny["etag"])
+                        grant = acl.mutate(reference, value=dict(path="/", kind="dir", subject=user_subject,
+                            permission="invisible", inherit=True), rule_id=grant["id"], if_match=grant["etag"])
+                        assert write(changed, head, guarded, context=context) is None
+                    finally:
+                        acl.mutate(reference, rule_id=grant["id"], if_match=grant["etag"])
                     with connection.cursor() as cursor:
                         cursor.execute("UPDATE SharedRepo SET permission='rw' WHERE repo_id=%s AND to_email=%s", (repo, actor))
                     assert write(changed, head, guarded, context=context)
@@ -791,7 +816,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "native_department_provision_hierarchy_and_retry": True,
             "native_membership_apply_remove_preserve_and_retry": True,
             "native_context_epoch_ready_ttl_lease_unicode_write_noop": bool(os.environ.get("CF_TEST_REDIS_PORT")),
-            "native_ce_qualification_owner_personal_group_and_ancestor": bool(os.environ.get("CF_TEST_REDIS_PORT"))}
+            "native_ce_qualification_owner_personal_group_and_ancestor": bool(os.environ.get("CF_TEST_REDIS_PORT")),
+            "native_persisted_acl_ce_read_elevation_file_deny_hidden_root": bool(os.environ.get("CF_TEST_REDIS_PORT"))}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):

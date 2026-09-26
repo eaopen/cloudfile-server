@@ -2756,6 +2756,7 @@ put_file_rpc (const char *repo_id, const char *temp_file_path,
 {
     char *norm_parent_dir = NULL, *norm_file_name = NULL, *rpath = NULL;
     char *new_file_id = NULL;
+    char *target_conditions = NULL;
 
     if (!repo_id || !temp_file_path || !parent_dir || !file_name || !user) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
@@ -2784,9 +2785,26 @@ put_file_rpc (const char *repo_id, const char *temp_file_path,
 
     rpath = format_dir_path (norm_parent_dir);
 
+    if (scopes_json && scopes_json[0] == '{') {
+        json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        char *target = g_build_path ("/", rpath, norm_file_name, NULL);
+        if (!json_is_object (conditions) || !target ||
+            json_object_set_new (conditions, "path", json_string (target)) < 0) {
+            if (conditions) json_decref (conditions);
+            g_free (target);
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile target");
+            goto out;
+        }
+        target_conditions = json_dumps (conditions, JSON_COMPACT | JSON_SORT_KEYS);
+        json_decref (conditions); g_free (target);
+        if (!target_conditions) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile target");
+            goto out;
+        }
+    }
     if (scopes_json)
         seaf_repo_manager_put_file_with_barriers (seaf->repo_mgr, repo_id,
-            temp_file_path, rpath, norm_file_name, user, head_id, scopes_json,
+            temp_file_path, rpath, norm_file_name, user, head_id, target_conditions ? target_conditions : scopes_json,
             &new_file_id, error);
     else if (strict_head)
         seaf_repo_manager_put_file_if_head (seaf->repo_mgr, repo_id,
@@ -2803,7 +2821,7 @@ out:
     g_free (norm_parent_dir);
     g_free (norm_file_name);
     g_free (rpath);
-
+    free (target_conditions);
     return new_file_id;
 }
 
