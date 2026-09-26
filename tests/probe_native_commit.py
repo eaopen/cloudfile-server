@@ -458,6 +458,27 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         connection = pymysql.connect(**options)
         cleanup.callback(connection.close)
         SchemaRunner(connection).apply()
+        # Verify the internal SQL provisioner against real CE-created Group
+        # tables and C RPC read-back. Management/audit policy are fixtures.
+        from cloudfile_extensions.directory.provision import RoleGroupProvisioner
+        from seaserv import ccnet_api
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE cf_probe_group_audit(group_id INT PRIMARY KEY) ENGINE=InnoDB")
+        @contextmanager
+        def group_management_fixture(actor, provider):
+            yield
+        def group_audit_fixture(cursor, event):
+            cursor.execute("INSERT INTO cf_probe_group_audit VALUES(%s)", (event["group_id"],))
+        provisioner = RoleGroupProvisioner(connection, native_schema=account_database,
+                                          management_guard=group_management_fixture, audit_hook=group_audit_fixture)
+        request = dict(actor="probe-admin-business-id", provider="directory", namespace="role",
+                       external_id="probe-role", name="CloudFile native probe role")
+        group_id, created = provisioner.ensure(**request)
+        assert created
+        native_group = ccnet_api.get_group(group_id)
+        assert native_group.id == group_id and native_group.group_name == request["name"]
+        assert ccnet_api.get_group_members(group_id) == []
+        assert provisioner.ensure(**request) == (group_id, False)
         with connection.cursor() as cursor:
             cursor.execute("INSERT IGNORE INTO GCID(repo_id,gc_id) VALUES(%s,%s)", (repo, uuid4().hex))
         store = JobStore(connection)
@@ -651,7 +672,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "barrier_failed_cancelled_still_fenced": True, "barrier_and_publish_both_orders_serialized": True,
             "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
             "barrier_final_readonly_race_rejected": True,
-            "native_scope_total_wait_budget_rejected_without_publish": True}
+            "native_scope_total_wait_budget_rejected_without_publish": True,
+            "native_role_group_provision_readback_and_retry": True}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
