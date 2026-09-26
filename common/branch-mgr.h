@@ -52,6 +52,16 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr,
                                    SeafBranch *branch);
 
 #ifdef SEAFILE_SERVER
+#ifdef FULL_FEATURE
+#include "seaf-db.h"
+/* Internal final read guard. The caller owns this transaction and must verify
+ * target kind/existence/content version before releasing data or a ticket.
+ * No commit/close or public authentication is performed here. All acquired
+ * authority locks remain attached to trans until its owner closes it. */
+int seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
+    SeafDBTrans *trans, const char *repo_id, const char *path, int kind,
+    const char *conditions, const char *native_username);
+#endif
 /**
  * Atomically test whether the current head commit id on @branch
  * is the same as @old_commit_id and update branch in db.

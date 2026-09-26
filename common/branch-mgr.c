@@ -652,8 +652,17 @@ cloudfile_repo_status (SeafDBRow *row, void *data)
     return FALSE;
 }
 
+static gboolean
+cloudfile_repo_read_status (SeafDBRow *row, void *data)
+{
+    gboolean *readable = data;
+    const char *status = seaf_db_row_get_column_text (row, 0);
+    *readable = status && (!strcmp (status, "0") || !strcmp (status, "1"));
+    return FALSE;
+}
+
 static int
-cloudfile_check_repo (SeafDBTrans *trans, const char *repo_id)
+cloudfile_check_repo_mode (SeafDBTrans *trans, const char *repo_id, gboolean read)
 {
     gboolean error = FALSE, writable = FALSE;
     /* These native rows share the branch transaction. Suspension, deletion or
@@ -666,13 +675,20 @@ cloudfile_check_repo (SeafDBTrans *trans, const char *repo_id)
         return -1;
     if (seaf_db_trans_foreach_selected_row (trans,
             "SELECT status FROM RepoInfo WHERE repo_id=? FOR UPDATE",
-            cloudfile_repo_status, &writable, 1, "string", repo_id) != 1 || !writable)
+            read ? cloudfile_repo_read_status : cloudfile_repo_status,
+            &writable, 1, "string", repo_id) != 1 || !writable)
         return -1;
     if (seaf_db_trans_check_for_existence (trans,
             "SELECT repo_id FROM VirtualRepo WHERE repo_id=? FOR UPDATE", &error,
             1, "string", repo_id) || error)
         return -1;
     return 0;
+}
+
+static int
+cloudfile_check_repo (SeafDBTrans *trans, const char *repo_id)
+{
+    return cloudfile_check_repo_mode (trans, repo_id, FALSE);
 }
 
 typedef struct {
@@ -978,6 +994,39 @@ out:
     if (parents) g_hash_table_destroy (parents);
     if (structures) g_hash_table_destroy (structures);
     g_free (schema); g_free (group_table); g_free (sql);
+    return result;
+}
+
+int
+seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
+    SeafDBTrans *trans, const char *repo_id, const char *path, int kind,
+    const char *conditions, const char *native_username)
+{
+    int result = -2;
+    json_t *root = NULL, *snapshot = NULL;
+    if (!mgr || !trans || !repo_id || !path || !conditions || !native_username ||
+        strlen (conditions) > 16384)
+        return -2;
+    root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
+    json_t *context = json_object_get (root, "context");
+    json_t *target = json_object_get (root, "path");
+    if (!json_is_object (root) || !json_is_object (context) || !json_is_string (target) ||
+        json_string_length (target) != strlen (path) || strcmp (json_string_value (target), path))
+        goto out;
+    if (cloudfile_check_barriers (trans, repo_id, conditions, mgr->seaf->user_mgr, native_username) < 0 ||
+        cloudfile_check_repo_mode (trans, repo_id, TRUE) < 0)
+        goto out;
+    int qualification = cloudfile_library_qualification (mgr, trans, repo_id, native_username);
+    if (qualification <= 0 || cloudfile_check_context (mgr, conditions, &snapshot) < 0 ||
+        cf_policy_check_read (trans, repo_id, path,
+            json_string_value (json_object_get (context, "provider")),
+            json_string_value (json_object_get (context, "userId")), snapshot, qualification, kind) < 0 ||
+        cloudfile_check_context (mgr, conditions, NULL) < 0)
+        goto out;
+    result = 0;
+out:
+    if (snapshot) json_decref (snapshot);
+    if (root) json_decref (root);
     return result;
 }
 
