@@ -33,6 +33,11 @@ func TestCloudFileReadAuditFactBoundaries(t *testing.T) {
 	if !valid.valid() {
 		t.Fatal("valid server fact rejected")
 	}
+	attempt := valid
+	attempt.Outcome = cloudFileReadOutcome{Result: "attempted"}
+	if !attempt.valid() {
+		t.Fatal("pre-release attempt fact rejected")
+	}
 	for _, change := range []func(*cloudFileReadAuditFact){
 		func(f *cloudFileReadAuditFact) { f.RequestID = "client-selected" },
 		func(f *cloudFileReadAuditFact) { f.UserID = "" },

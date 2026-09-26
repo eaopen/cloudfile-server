@@ -16,8 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Private server-derived fact. The future native adapter must populate these
-// fields from the consumed transfer, never from HTTP identity/path headers.
+// Private server-derived fact. The native adapter populates these fields from
+// the consumed transfer, never from HTTP identity/path headers.
 type cloudFileReadAuditFact struct {
 	RequestID, UserID, RepoID, Path, HeadID, Epoch, Operation string
 	Outcome                                                   cloudFileReadOutcome
@@ -93,7 +93,7 @@ func (f cloudFileReadAuditFact) valid() bool {
 		}
 	}
 	switch f.Outcome.Result {
-	case "succeeded", "stream_completed", "failed", "interrupted":
+	case "attempted", "succeeded", "stream_completed", "failed", "interrupted":
 	default:
 		return false
 	}
@@ -113,7 +113,7 @@ func lowerHex(value string, length int) bool {
 }
 
 // Atomic outbox+audit append on the existing native database. Explicitly not
-// wired to the handler until native fact derivation and release gates exist.
+// called by the unregistered managed handler; release gates remain outstanding.
 // A failed/uncertain commit is not retried under a fresh event identity.
 func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudFileReadAuditFact) error {
 	if ctx == nil || database == nil || !fact.valid() {
@@ -126,6 +126,12 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 		return err
 	}
 	defer transaction.Rollback()
+	// A nontransactional table could preserve only half of the fact. Missing or
+	// wrongly configured tables deny the transfer rather than degrading logging.
+	var engines int
+	if err = transaction.QueryRowContext(deadline, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('cf_event_outbox','cf_audit_event') AND engine='InnoDB'").Scan(&engines); err != nil || engines != 2 {
+		return errors.New("transactional read audit schema unavailable")
+	}
 	now := time.Now().UTC()
 	eventID := uuid.New().String()
 	stream := "repo." + fact.RepoID

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strconv"
@@ -8,13 +9,15 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/haiwen/seafile-server/fileserver/option"
 	"github.com/haiwen/seafile-server/fileserver/repomgr"
 )
 
 // Deliberately unregistered until identity/logout and deployment gates pass.
 // Reuses native file/Range readers, not a second block-transfer implementation.
-func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
+func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appError) {
 	cloudFileReadSecurityHeaders(rsp.Header())
 	defer cloudFileReadSecurityHeaders(rsp.Header())
 	if r.Method != "GET" && r.Method != "HEAD" {
@@ -51,6 +54,40 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if failure != nil {
 		return failure
 	}
+	requestID := uuid.New().String()
+	fact, err := captureCloudFileReadAudit(token, requestID)
+	if err != nil || fact.RepoID != info.repoID || fact.Operation != info.op {
+		return &appError{nil, "Read audit context unavailable", http.StatusServiceUnavailable}
+	}
+	rsp.Header().Set("X-Request-ID", requestID)
+	fact.Outcome = cloudFileReadOutcome{Result: "attempted"}
+	if appendCloudFileReadAudit(r.Context(), seafileDB, fact) != nil {
+		return &appError{nil, "Read audit unavailable", http.StatusServiceUnavailable}
+	}
+	defer func() {
+		interruption := recover()
+		observedFailure := writer.failed
+		if returned != nil || interruption != nil {
+			observedFailure = errCloudFileReadEnded
+		}
+		expected, lengthError := strconv.ParseUint(tracked.Header().Get("Content-Length"), 10, 64)
+		fact.Outcome = tracked.outcome(r.Method, expected, lengthError == nil,
+			observedFailure, r.Context().Err() != nil)
+		// Client disconnect must not cancel the server's terminal audit. This
+		// independent SQL operation remains bounded by its own five-second limit.
+		auditError := appendCloudFileReadAudit(context.Background(), seafileDB, fact)
+		if interruption != nil {
+			panic(interruption)
+		}
+		if auditError != nil {
+			if tracked.committed {
+				panic(http.ErrAbortHandler)
+			}
+			tracked.Header().Del("Content-Length")
+			tracked.Header().Del("Content-Disposition")
+			returned = &appError{nil, "Read audit unavailable", http.StatusServiceUnavailable}
+		}
+	}()
 	repo := repomgr.Get(info.repoID)
 	if repo == nil || repo.VirtualInfo != nil {
 		return &appError{nil, "Read target unavailable", http.StatusForbidden}
