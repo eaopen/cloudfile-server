@@ -58,7 +58,64 @@ def web_update(http, port, token, head, content):
         return response.status, response.read(1024).decode()
 
 
-def check_strict_primitive(api, repo, actor, root, data, original, changed, stale):
+def check_gc_race(api, repo, actor, data, path, admin, database, native_user):
+    """Wait for the actual native transaction to block, then advance GC.
+
+    No timing-only success: performance_schema must prove a GCID row-lock
+    wait by this probe's unique native SQL account before the race proceeds.
+    """
+    from pysearpc import SearpcError
+    from seafile import ServerThreadedRpcClient
+    expected = api.get_repo(repo).head_cmmt_id
+    file_id = api.get_file_id_by_path(repo, "/probe.txt")
+    with admin.cursor() as cursor:
+        cursor.execute("INSERT INTO " + database + ".GCID (repo_id,gc_id) VALUES (%s,%s) "
+                       "ON DUPLICATE KEY UPDATE gc_id=VALUES(gc_id)", (repo, uuid4().hex))
+    blocker = admin.__class__(host=admin.host, port=admin.port, user="root", password="",
+                              autocommit=False, connect_timeout=5, read_timeout=10)
+    def write():
+        client = ServerThreadedRpcClient(str(data / "seafile.sock"))
+        try:
+            client.cloudfile_put_file_if_head(repo, str(path), "/", "probe.txt", actor, expected)
+            return False
+        except SearpcError:
+            return True
+    try:
+        with blocker.cursor() as cursor:
+            cursor.execute("SELECT gc_id FROM " + database + ".GCID WHERE repo_id=%s FOR UPDATE", (repo,))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(write)
+            try:
+                deadline = time.monotonic() + 10
+                while True:
+                    with admin.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                            "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                            "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                            "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='GCID' AND t.PROCESSLIST_USER=%s",
+                            (database, native_user))
+                        waiting = cursor.fetchone()[0]
+                    if waiting:
+                        break
+                    if pending.done() or time.monotonic() >= deadline:
+                        raise RuntimeError("native GC row-lock wait was not observed")
+                    time.sleep(0.02)
+                with blocker.cursor() as cursor:
+                    cursor.execute("UPDATE " + database + ".GCID SET gc_id=%s WHERE repo_id=%s", (uuid4().hex, repo))
+                blocker.commit()
+                if not pending.result(timeout=10):
+                    raise RuntimeError("strict writer accepted concurrent GC")
+            finally:
+                # Release the lock even when observation fails before joining.
+                blocker.rollback()
+        if api.get_repo(repo).head_cmmt_id != expected or api.get_file_id_by_path(repo, "/probe.txt") != file_id:
+            raise RuntimeError("rejected GC race changed published content")
+    finally:
+        blocker.close()
+
+
+def check_strict_primitive(api, repo, actor, root, data, original, changed, stale, admin, database, native_user):
     from pysearpc import SearpcError
     from seafile import ServerThreadedRpcClient
     client = ServerThreadedRpcClient(str(data / "seafile.sock"))
@@ -76,6 +133,8 @@ def check_strict_primitive(api, repo, actor, root, data, original, changed, stal
     for invalid in (None, "", "*", "x" * 40):
         assert rejected(stale, invalid)
     assert api.get_repo(repo).head_cmmt_id == current
+    check_gc_race(api, repo, actor, data, changed, admin, database, native_user)
+    check_gc_race(api, repo, actor, data, original, admin, database, native_user)
     assert client.cloudfile_put_file_if_head(repo, str(original), "/", "probe.txt", actor, current) == result
     assert api.get_repo(repo).head_cmmt_id == current
     api.set_repo_status(repo, 1)
@@ -101,7 +160,8 @@ def check_strict_primitive(api, repo, actor, root, data, original, changed, stal
     assert rejected(changed, api.get_repo(virtual).head_cmmt_id, virtual)
     return {"strict_current_head_write": True, "strict_stale_write_and_noop_rejected": True,
             "strict_invalid_head_rejected": True, "strict_current_noop_preserves_head": True,
-            "strict_readonly_and_virtual_rejected": True, "strict_concurrent_winners": winners}
+            "strict_readonly_and_virtual_rejected": True, "strict_concurrent_winners": winners,
+            "strict_gc_race_write_and_noop_rejected": True}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False):
@@ -201,7 +261,8 @@ def run(server_binary, fileserver_binary, *, check_strict=False):
                     responses = list(pool.map(write, (1, 2)))
                 results["c_concurrent_accepted_count"] = sum(isinstance(value, str) for value in responses)
                 if check_strict:
-                    results.update(check_strict_primitive(api, repo, actor, root, data, original, changed, stale))
+                    results.update(check_strict_primitive(api, repo, actor, root, data, original, changed, stale,
+                                                         admin, databases[1], user))
 
                 fileserver = subprocess.Popen([fileserver_binary, "-F", str(config), "-d", str(data),
                                                "-l", str(root / "fileserver.log")], env=environment,

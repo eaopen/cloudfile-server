@@ -23,6 +23,12 @@ is loaded at import time. Full original upstream tests remain separate.
 Add `--check-strict` to validate the separate local RPC version primitive
 `seafile_cloudfile_put_file_if_head`: current-head write/no-op, stale-head and
 invalid conditions, read-only/virtual rejection, and exactly one concurrent winner.
+It also holds the GCID row lock, observes the native transaction's actual wait
+through MySQL 8 `performance_schema.data_lock_waits`, then advances GC. Both a
+changed-content write and a same-content no-op must fail without changing the
+published head/file. Missing lock-wait evidence fails the probe; elapsed time is
+not accepted as evidence. The disposable MySQL admin needs performance_schema
+visibility. This tests final GC comparison, not a real garbage-collector run.
 It conservatively conditions on the **whole repository head**. It neither changes
 legacy `seafile_put_file` nor provides CloudFile permission/lifecycle/barrier/lease
 coordination, a public upload endpoint or an enabled edit capability.
