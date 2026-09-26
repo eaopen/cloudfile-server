@@ -174,6 +174,24 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
 
     g_hash_table_insert (mgr->priv->access_token_hash, g_strdup(t), info);
 
+#ifdef HAVE_EVHTP
+    /* Copy the ZIP task arguments while info is protected. A concurrent
+     * expiry sweep or one-time query may free it immediately after unlock. */
+    webaccess = NULL;
+    if (!seaf->go_fileserver &&
+        (strcmp(op, "download-dir") == 0 ||
+         strcmp(op, "download-multi") == 0 ||
+         strcmp(op, "download-dir-link") == 0 ||
+         strcmp(op, "download-multi-link") == 0)) {
+        webaccess = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
+                                 "repo_id", info->repo_id,
+                                 "obj_id", info->obj_id,
+                                 "op", info->op,
+                                 "username", info->username,
+                                 NULL);
+    }
+#endif
+
     pthread_mutex_unlock (&mgr->priv->lock);
 
 #ifdef HAVE_EVHTP
@@ -182,13 +200,6 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
             strcmp(op, "download-multi") == 0 ||
             strcmp(op, "download-dir-link") == 0 ||
             strcmp(op, "download-multi-link") == 0) {
-
-            webaccess = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
-                                      "repo_id", info->repo_id,
-                                      "obj_id", info->obj_id,
-                                      "op", info->op,
-                                      "username", info->username,
-                                      NULL);
 
             if (zip_download_mgr_start_zip_task (seaf->zip_download_mgr,
                                                  t, webaccess, error) < 0) {
@@ -217,13 +228,14 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 
     pthread_mutex_lock (&mgr->priv->lock);
     info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
-    pthread_mutex_unlock (&mgr->priv->lock);
 
     if (info != NULL) {
         long expire_time = info->expire_time;
         long now = (long)time(NULL);        
 
         if (now - expire_time >= 0) {
+            g_hash_table_remove (mgr->priv->access_token_hash, token);
+            pthread_mutex_unlock (&mgr->priv->lock);
             return NULL;
         } else {
             webaccess = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
@@ -234,14 +246,12 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                       NULL);
 
             if (info->use_onetime) {
-                pthread_mutex_lock (&mgr->priv->lock);
                 g_hash_table_remove (mgr->priv->access_token_hash, token);
-                pthread_mutex_unlock (&mgr->priv->lock);
             }
-
+            pthread_mutex_unlock (&mgr->priv->lock);
             return webaccess;
         }
     }
-
+    pthread_mutex_unlock (&mgr->priv->lock);
     return NULL;
 }
