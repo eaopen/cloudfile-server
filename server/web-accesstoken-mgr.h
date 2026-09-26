@@ -44,6 +44,11 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
  * or a per-block read guard; fileserver release must still be connected. */
 SeafileWebAccess *seaf_web_at_manager_consume_read_ticket (
     SeafWebAccessTokenManager *mgr, const char *token, GError **error);
+/* Consumed ticket becomes a fixed five-minute local transfer reference, never
+ * consumable again. Check current target/authority on every release; no TTL
+ * renewal. The original bearer is not sufficient without this live check. */
+int seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
+    const char *token);
 /* Internal single-file path/head/object-bound ticket. Legacy query explicitly
  * refuses it. No RPC/HTTP registration until the current consumption guard is
  * connected; a signed-off issuance is never a future permission grant. */

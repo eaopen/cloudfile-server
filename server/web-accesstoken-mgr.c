@@ -45,6 +45,7 @@ typedef struct {
     char *path;
     char *head_id;
     gboolean consuming;
+    gboolean transferred;
 } AccessInfo;
 
 static void
@@ -280,7 +281,7 @@ seaf_web_at_manager_consume_read_ticket (SeafWebAccessTokenManager *mgr,
         goto denied;
     pthread_mutex_lock (&mgr->priv->lock);
     current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
-    if (current && current->conditions && !current->consuming &&
+    if (current && current->conditions && !current->consuming && !current->transferred &&
         current->expire_time > (long)time (NULL)) {
         current->consuming = TRUE;
         copy = g_new0 (AccessInfo, 1);
@@ -315,7 +316,9 @@ seaf_web_at_manager_consume_read_ticket (SeafWebAccessTokenManager *mgr,
         result = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
             "repo_id", copy->repo_id, "obj_id", copy->obj_id,
             "op", copy->op, "username", copy->username, NULL);
-        g_hash_table_remove (mgr->priv->access_token_hash, token);
+        current->transferred = TRUE;
+        current->consuming = FALSE;
+        current->expire_time = (long)time (NULL) + 300;
     }
     pthread_mutex_unlock (&mgr->priv->lock);
     if (result) {
@@ -339,6 +342,55 @@ denied:
     }
     g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "CloudFile read ticket unavailable");
     return NULL;
+}
+
+int
+seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
+    const char *token)
+{
+    AccessInfo *copy = NULL;
+    SeafDBTrans *trans = NULL;
+    int result = -1;
+    if (!mgr || !token || strlen (token) != TOKEN_LEN) return -1;
+    pthread_mutex_lock (&mgr->priv->lock);
+    AccessInfo *current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (current && current->conditions && current->transferred &&
+        current->expire_time > (long)time (NULL)) {
+        copy = g_new0 (AccessInfo, 1);
+        copy->repo_id = g_strdup (current->repo_id);
+        copy->obj_id = g_strdup (current->obj_id);
+        copy->username = g_strdup (current->username);
+        copy->conditions = g_strdup (current->conditions);
+        copy->path = g_strdup (current->path);
+        copy->head_id = g_strdup (current->head_id);
+        copy->expire_time = current->expire_time;
+    }
+    pthread_mutex_unlock (&mgr->priv->lock);
+    if (!copy) return -1;
+    trans = seaf_db_begin_transaction (mgr->seaf->db);
+    if (!trans || seaf_branch_manager_check_read_target (mgr->seaf->branch_mgr, trans,
+            copy->repo_id, copy->path, CF_FILE, copy->head_id, copy->obj_id,
+            copy->conditions, copy->username) < 0)
+        goto out;
+    pthread_mutex_lock (&mgr->priv->lock);
+    current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (current && current->transferred && current->expire_time == copy->expire_time &&
+        current->expire_time > (long)time (NULL) &&
+        !g_strcmp0 (current->conditions, copy->conditions) &&
+        !g_strcmp0 (current->path, copy->path) &&
+        !g_strcmp0 (current->head_id, copy->head_id) &&
+        !g_strcmp0 (current->obj_id, copy->obj_id) &&
+        !g_strcmp0 (current->repo_id, copy->repo_id) &&
+        !g_strcmp0 (current->username, copy->username) && seaf_db_commit (trans) == 0)
+        result = 0;
+    pthread_mutex_unlock (&mgr->priv->lock);
+out:
+    if (trans) {
+        if (result < 0) seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+    }
+    free_access_info (copy);
+    return result;
 }
 
 char *
