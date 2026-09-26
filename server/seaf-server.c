@@ -592,6 +592,15 @@ static void start_rpc_service (const char *seafile_dir,
 
     /* -------- rpc services -------- */
     /* token for web access to repo */
+#ifdef FULL_FEATURE
+    /* Privileged named-pipe RPC only. No public HTTP download registration. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+        seafile_cloudfile_issue_read_ticket, "seafile_cloudfile_issue_read_ticket",
+        searpc_signature_string__string_string_string_string_string_string_string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+        seafile_cloudfile_consume_read_ticket, "seafile_cloudfile_consume_read_ticket",
+        searpc_signature_object__string());
+#endif
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_web_get_access_token,
                                      "seafile_web_get_access_token",

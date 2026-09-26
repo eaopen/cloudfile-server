@@ -1641,6 +1641,32 @@ seafile_web_query_access_token (const char *token, GError **error)
     return NULL;
 }
 
+#ifdef FULL_FEATURE
+char *
+seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
+    const char *head_id, const char *object_id, const char *op,
+    const char *username, const char *conditions, GError **error)
+{
+    if (!repo_id || !is_uuid_valid (repo_id) || !path || !head_id ||
+        !object_id || !op || !username || !conditions || strlen (conditions) > 16384) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile read ticket request");
+        return NULL;
+    }
+    return seaf_web_at_manager_issue_read_ticket (seaf->web_at_mgr,
+        repo_id, path, head_id, object_id, op, username, conditions, error);
+}
+
+GObject *
+seafile_cloudfile_consume_read_ticket (const char *token, GError **error)
+{
+    if (!token || !is_uuid_valid (token)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile read ticket");
+        return NULL;
+    }
+    return (GObject *)seaf_web_at_manager_consume_read_ticket (seaf->web_at_mgr, token, error);
+}
+#endif
+
 char *
 seafile_query_zip_progress (const char *token, GError **error)
 {

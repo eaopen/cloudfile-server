@@ -508,6 +508,13 @@ seafile_web_get_access_token (const char *repo_id,
 GObject *
 seafile_web_query_access_token (const char *token, GError **error);
 
+#ifdef FULL_FEATURE
+char *seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
+    const char *head_id, const char *object_id, const char *op,
+    const char *username, const char *conditions, GError **error);
+GObject *seafile_cloudfile_consume_read_ticket (const char *token, GError **error);
+#endif
+
 char *
 seafile_query_zip_progress (const char *token, GError **error);
 
