@@ -481,6 +481,37 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         identity_results = check_identity_gate(api, repo, actor, original, changed, admin,
                                               identity_database, native_user, scopes, write, file_database=database)
 
+        # Two actual contended scopes share one native acquisition budget.
+        # Release user after observed waiting; keep repo held past the budget.
+        budget_names = [lock_name(database, canonical_scope(scope)) for scope in scopes]
+        head = api.get_repo(repo).head_cmmt_id
+        with connection.cursor() as cursor:
+            for name in budget_names:
+                cursor.execute("SELECT GET_LOCK(%s,0)", (name,))
+                assert cursor.fetchone()[0] == 1
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                started = time.monotonic()
+                pending = pool.submit(write, changed, head)
+                wait_sql(admin,
+                    "SELECT COUNT(*) FROM performance_schema.metadata_locks l "
+                    "JOIN performance_schema.threads t ON t.THREAD_ID=l.OWNER_THREAD_ID "
+                    "WHERE l.OBJECT_TYPE='USER LEVEL LOCK' AND l.OBJECT_NAME=%s "
+                    "AND l.LOCK_STATUS='PENDING' AND t.PROCESSLIST_USER=%s",
+                    (budget_names[1], native_user), pending)
+                time.sleep(3)
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (budget_names[1],))
+                    assert cursor.fetchone()[0] == 1
+                assert pending.result(timeout=6) is None
+                assert time.monotonic() - started < 6
+        finally:
+            with connection.cursor() as cursor:
+                for name in budget_names:
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (name,))
+        assert api.get_repo(repo).head_cmmt_id == head
+        assert write(original, head)
+
         def submit(scope, key):
             return store.submit(actor="admin", actor_kind="user", kind="authorization.refresh", scope=scope,
                                 request={}, idempotency_key=key, barrier=True)[0]
@@ -619,7 +650,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
     return {**account_results, **identity_results, "barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
             "barrier_failed_cancelled_still_fenced": True, "barrier_and_publish_both_orders_serialized": True,
             "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
-            "barrier_final_readonly_race_rejected": True}
+            "barrier_final_readonly_race_rejected": True,
+            "native_scope_total_wait_budget_rejected_without_publish": True}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):

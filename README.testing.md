@@ -38,6 +38,10 @@ Add `--check-barriers` with the new Hub source package on `PYTHONPATH` to exerci
 Its sixth argument is bounded JSON containing exactly `head_id` and `scopes`.
 Scopes use the job scope contract; at least a user scope and this repository's
 scope are mandatory. **Trusted runtime assembles scopes; they are not grants.**
+Scope acquisition shares one five-second monotonic budget, rounded down to
+remaining whole seconds; exhausted budget makes subsequent locks nonblocking.
+The native probe holds both user and repo locks, releases user after observed
+waiting and keeps repo held; publication must fail within the shared budget.
 The probe uses the real schema runner and checks Unicode key parity, missing
 schema failure, failed/cancelled barriers, changed-content/no-op rejection, both
 barrier/publication orderings, final read-only change and native connection loss.

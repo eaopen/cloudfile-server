@@ -497,6 +497,9 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
     if (!has_user || !has_repo)
         goto out;
     g_ptr_array_sort (ordered, cloudfile_scope_compare);
+    /* One total acquisition budget, matching Hub's monotonic deadline.
+     * Never multiply five seconds by the number of requested scopes. */
+    gint64 scope_deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
     if (seaf_db_trans_foreach_selected_row (trans, "SELECT DATABASE()", get_gc_id,
                                            &database, 0) != 1 || !database || strchr (database, '\n'))
         goto out;
@@ -507,7 +510,9 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
         char *text = g_strdup_printf ("%s\n%s", database, scope->canonical);
         char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, text, -1);
         char *name = g_strdup_printf ("cf.auth.%.56s", digest);
-        int locked = seaf_db_trans_acquire_scope_lock (trans, name, 5);
+        gint64 remaining = scope_deadline - g_get_monotonic_time ();
+        int timeout = remaining > 0 ? (int)(remaining / G_TIME_SPAN_SECOND) : 0;
+        int locked = seaf_db_trans_acquire_scope_lock (trans, name, timeout);
         g_free (name);
         g_free (digest);
         g_free (text);
