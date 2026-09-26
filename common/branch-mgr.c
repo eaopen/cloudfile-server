@@ -1034,6 +1034,64 @@ out:
     return result;
 }
 
+/* Optional only for non-OIDC trusted callers. An OIDC host must include this
+ * server-derived reference and its provider scope; omission is not logout proof. */
+static const char *
+cloudfile_oidc_identifier (json_t *object, const char *name, size_t maximum)
+{
+    json_t *value = json_object_get (object, name);
+    const char *text = json_string_value (value);
+    return text && json_string_length (value) == strlen (text) &&
+        strlen (text) <= maximum ? text : NULL;
+}
+
+static int
+cloudfile_check_oidc_reference (SeafDBTrans *trans, json_t *root)
+{
+    json_t *reference = json_object_get (root, "oidc_session");
+    if (!reference) return 0;
+    if (!json_is_object (reference) || json_object_size (reference) != 5) return -1;
+    const char *scope = cloudfile_oidc_identifier (reference, "scope_hash", 64);
+    const char *key = cloudfile_oidc_identifier (reference, "session_key", 32);
+    const char *subject = cloudfile_oidc_identifier (reference, "subject_hash", 64);
+    json_t *sid_value = json_object_get (reference, "sid_hash");
+    const char *sid = json_is_null (sid_value) ? NULL : cloudfile_oidc_identifier (reference, "sid_hash", 64);
+    json_t *issued = json_object_get (reference, "authenticated_at");
+    if (!scope || strlen (scope) != 64 || strspn (scope, "0123456789abcdef") != 64 ||
+        !key || strlen (key) != 32 || strspn (key, "0123456789abcdefghijklmnopqrstuvwxyz") != 32 ||
+        !subject || strlen (subject) != 64 || strspn (subject, "0123456789abcdef") != 64 ||
+        (!json_is_null (sid_value) && (!sid || strlen (sid) != 64 || strspn (sid, "0123456789abcdef") != 64)) ||
+        !json_is_integer (issued) || json_integer_value (issued) < 0) return -1;
+    char provider[33];
+    g_snprintf (provider, sizeof provider, "cf_oidc_%.24s", scope);
+    gboolean locked_scope = FALSE;
+    json_t *scopes = json_object_get (root, "scopes");
+    for (size_t i = 0; i < json_array_size (scopes); ++i) {
+        json_t *candidate = json_array_get (scopes, i);
+        if (!g_strcmp0 (json_string_value (json_object_get (candidate, "type")), "provider") &&
+            !g_strcmp0 (json_string_value (json_object_get (candidate, "provider")), provider) &&
+            !g_strcmp0 (json_string_value (json_object_get (candidate, "external_id")), provider)) locked_scope = TRUE;
+    }
+    if (!locked_scope) return -1;
+    gboolean error = FALSE;
+    if (!seaf_db_trans_check_for_existence (trans,
+        "SELECT session_key FROM cf_oidc_session WHERE scope_hash=? AND session_key=? "
+        "AND subject_hash=? AND COALESCE(sid_hash,'')=? AND authenticated_at=? AND expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
+        &error, 5, "string", scope, "string", key, "string", subject, "string", sid ? sid : "",
+        "int64", (gint64)json_integer_value (issued)) || error) return -1;
+    const char *types[] = {"subject", "sid"};
+    const char *targets[] = {subject, sid};
+    for (int i = 0; i < 2; ++i) {
+        if (!targets[i]) continue;
+        if (seaf_db_trans_check_for_existence (trans,
+            "SELECT cutoff_at FROM cf_oidc_logout_fence WHERE scope_hash=? AND target_type=? "
+            "AND target_hash=? AND cutoff_at>=? FOR UPDATE", &error,
+            4, "string", scope, "string", types[i], "string", targets[i],
+            "int64", (gint64)json_integer_value (issued)) || error) return -1;
+    }
+    return 0;
+}
+
 int
 seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, int kind, const char *head_id,
@@ -1049,6 +1107,10 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         seaf_branch_manager_check_read_with_barriers (mgr, trans, repo_id, path,
             kind, conditions, native_username) < 0)
         return -2;
+    json_t *reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
+    int reference_result = cloudfile_check_oidc_reference (trans, reference_root);
+    if (reference_root) json_decref (reference_root);
+    if (reference_result < 0) return -2;
     /* Pin the actual master row after repository/authority locks. A cached
      * repo->head must never prove that a ticket still targets this version. */
     if (seaf_db_trans_foreach_selected_row (trans,
@@ -1071,6 +1133,10 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         (kind == CF_DIRECTORY && !S_ISDIR (mode)) ||
         cloudfile_check_context (mgr, conditions, NULL) < 0)
         goto out;
+    reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
+    reference_result = cloudfile_check_oidc_reference (trans, reference_root);
+    if (reference_root) json_decref (reference_root);
+    if (reference_result < 0) goto out;
     result = 0;
 out:
     if (error) g_error_free (error);
