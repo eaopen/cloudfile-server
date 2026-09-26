@@ -1322,6 +1322,7 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         json_t *context = json_object_get (conditions, "context");
         json_t *target = json_object_get (conditions, "path");
+        json_t *lease = json_object_get (conditions, "lease");
         const char *path = json_string_value (target);
         gboolean allowed = qualification > 0 && json_is_string (target) &&
             json_string_length (target) == strlen (path) &&
@@ -1329,7 +1330,12 @@ test_and_update_branch (SeafBranchManager *mgr,
             cf_policy_check_write (trans, branch->repo_id, path,
                 json_string_value (json_object_get (context, "provider")),
                 json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0 &&
-            cf_policy_check_unleased_write (trans, branch->repo_id, path) == 0;
+            (!lease || seaf_branch_manager_check_read_target (mgr, trans,
+                branch->repo_id, path, CF_FILE, old_commit_id,
+                json_string_value (json_object_get (lease, "base_version")),
+                scopes_json, native_username) == 0) &&
+            cf_policy_check_lease_write (trans, branch->repo_id, path,
+                json_string_value (json_object_get (context, "userId")), lease) == 0;
         if (snapshot) json_decref (snapshot);
         if (conditions) json_decref (conditions);
         if (!allowed) {

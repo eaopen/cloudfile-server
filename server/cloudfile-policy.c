@@ -4,6 +4,7 @@
 #include "cloudfile-acl.h"
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 int
 cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
@@ -36,6 +37,59 @@ cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char
         &error, 4, "string", repo, "string", digest, "string", path, "string", repo);
     g_free (digest);
     return locked || error ? -1 : 0;
+}
+
+static const char *
+lease_text (json_t *proof, const char *name, size_t length)
+{
+    json_t *value = json_object_get (proof, name);
+    const char *text = json_string_value (value);
+    return text && json_string_length (value) == length && strlen (text) == length ? text : NULL;
+}
+
+int
+cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *path,
+                             const char *user, json_t *proof)
+{
+    if (!proof) return cf_policy_check_unleased_write (trans, repo, path);
+    if (!json_is_object (proof) || json_object_size (proof) != 5 || !user || !*user) return -1;
+    const char *uid = lease_text (proof, "resource_uid", 36);
+    const char *holder = lease_text (proof, "holder_id", 64);
+    const char *token = lease_text (proof, "token", 64);
+    const char *base = lease_text (proof, "base_version", 40);
+    json_t *number = json_object_get (proof, "fencing");
+    const char *fence = json_string_value (number);
+    if (!uid || !holder || !token || !base || !fence || !*fence || fence[0] == '0' ||
+        strlen (fence) != json_string_length (number) || strlen (fence) > 20 ||
+        strspn (fence, "0123456789") != strlen (fence) ||
+        strspn (holder, "0123456789abcdef") != 64 || strspn (token, "0123456789abcdef") != 64 ||
+        strspn (base, "0123456789abcdef") != 40) return -1;
+    for (int i = 0; i < 36; ++i) {
+        gboolean dash = i == 8 || i == 13 || i == 18 || i == 23;
+        if ((dash && uid[i] != '-') || (!dash && !strchr ("0123456789abcdef", uid[i]))) return -1;
+    }
+    errno = 0;
+    char *end = NULL;
+    guint64 value = g_ascii_strtoull (fence, &end, 10);
+    if (errno || !end || *end || value == 0) return -1;
+    /* Reuse the schema gate, but not its 'unleased' decision. A live matching
+     * lease is expected here; SQL failures and missing schema still reject. */
+    gboolean error = FALSE;
+    if (!seaf_db_trans_check_for_existence (trans,
+        "SELECT version FROM cf_schema_migration WHERE version='029_lock_leases' AND state='applied' AND step=2 FOR UPDATE",
+        &error, 0) || error) return -1;
+    char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
+    char *token_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, token, -1);
+    gboolean matches = seaf_db_trans_check_for_existence (trans,
+        "SELECT r.uid FROM cf_resource r JOIN cf_lock_lease l ON l.resource_uid=r.uid "
+        "WHERE r.uid=? AND r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
+        "AND l.repo_id=? AND l.owner_user_id=? AND l.holder_id=? AND l.token_digest=? "
+        "AND CAST(l.fencing AS CHAR)=? AND l.base_version=? AND l.expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
+        &error, 10, "string", uid, "string", repo, "string", path_hash, "string", path,
+        "string", repo, "string", user, "string", holder, "string", token_hash, "string", fence, "string", base);
+    g_free (path_hash);
+    g_free (token_hash);
+    return matches && !error ? 0 : -1;
 }
 
 typedef struct {

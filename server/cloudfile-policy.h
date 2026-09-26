@@ -15,6 +15,11 @@ int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *pat
  * Exclusive-edit proof and structural/legacy entry coverage are separate gates. */
 int cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path);
 
+/* Trusted internal lease proof, not an HTTP identity. Caller also checks the
+ * actual current native file equals proof.base_version in this transaction. */
+int cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *path,
+                                 const char *user, json_t *proof);
+
 /* Shared read policy for an actual file/directory target (CF_FILE/CF_DIRECTORY).
  * Caller must establish native active/current subject, barriers, CE library
  * qualification and target existence on this same final transaction. This
