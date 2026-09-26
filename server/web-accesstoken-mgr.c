@@ -395,6 +395,7 @@ seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
 {
     AccessInfo *copy = NULL;
     SeafDBTrans *trans = NULL;
+    char *transfer_conditions = NULL;
     int result = -1;
     if (!mgr || !token || strlen (token) != TOKEN_LEN) return -1;
     pthread_mutex_lock (&mgr->priv->lock);
@@ -412,10 +413,20 @@ seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
     }
     pthread_mutex_unlock (&mgr->priv->lock);
     if (!copy) return -1;
+    json_t *root = json_loads (copy->conditions, JSON_REJECT_DUPLICATES, NULL);
+    if (!json_is_object (root)) {
+        if (root) json_decref (root);
+        goto out;
+    }
+    if (json_object_get (root, "user_delegation"))
+        json_object_set_new (root, "read_transfer_expires_at", json_integer (copy->expire_time));
+    transfer_conditions = json_dumps (root, JSON_COMPACT | JSON_SORT_KEYS);
+    json_decref (root);
+    if (!transfer_conditions) goto out;
     trans = seaf_db_begin_transaction (mgr->seaf->db);
     if (!trans || seaf_branch_manager_check_read_target (mgr->seaf->branch_mgr, trans,
             copy->repo_id, copy->path, CF_FILE, copy->head_id, copy->obj_id,
-            copy->conditions, copy->username) < 0)
+            transfer_conditions, copy->username) < 0)
         goto out;
     pthread_mutex_lock (&mgr->priv->lock);
     current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
@@ -430,6 +441,7 @@ seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
         result = 0;
     pthread_mutex_unlock (&mgr->priv->lock);
 out:
+    free (transfer_conditions);
     if (trans) {
         if (result < 0) seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
@@ -447,6 +459,10 @@ seaf_web_at_manager_issue_read_ticket (SeafWebAccessTokenManager *mgr,
     SeafDBTrans *trans = NULL;
     if (!mgr || !op || (strcmp (op, "view") && strcmp (op, "download")))
         goto denied;
+    json_t *root = conditions ? json_loads (conditions, JSON_REJECT_DUPLICATES, NULL) : NULL;
+    gboolean issuance = json_is_object (root) && !json_object_get (root, "read_transfer_expires_at");
+    if (root) json_decref (root);
+    if (!issuance) goto denied;
     trans = seaf_db_begin_transaction (mgr->seaf->db);
     if (!trans || seaf_branch_manager_check_read_target (mgr->seaf->branch_mgr, trans,
             repo_id, path, CF_FILE, head_id, object_id, conditions, username) < 0)

@@ -641,12 +641,20 @@ cloudfile_check_context (SeafBranchManager *mgr, const char *conditions, json_t 
         json_t *token = json_object_get (delegation, "token_id");
         json_t *issued = json_object_get (delegation, "issued_at");
         json_t *expires = json_object_get (delegation, "expires_at");
+        json_t *transfer = json_object_get (root, "read_transfer_expires_at");
         if (!json_is_object (delegation) || json_object_size (delegation) != 4 ||
             !scope_identifier (service) || !scope_identifier (token) ||
             json_string_length (token) > 128 || !json_is_integer (issued) ||
             !json_is_integer (expires) || json_integer_value (issued) < 0 ||
             json_integer_value (expires) <= json_integer_value (issued) ||
             json_integer_value (expires) - json_integer_value (issued) > 60)
+            goto out;
+        /* Only the native ticket manager constructs this field AFTER a
+         * successful one-time consumption. Issuance and writes reject it.
+         * Original JWT lifetime stays immutable; revocation remains checked. */
+        if (transfer && (!json_is_integer (transfer) ||
+            json_integer_value (transfer) <= json_integer_value (issued) ||
+            json_integer_value (transfer) - json_integer_value (expires) > 300))
             goto out;
         char *revocation_prefix = g_key_file_get_string (config, "cloudfile",
             "delegation_revocation_prefix", NULL);
@@ -671,7 +679,7 @@ cloudfile_check_context (SeafBranchManager *mgr, const char *conditions, json_t 
             "if tonumber(ARGV[1])>now+30 or tonumber(ARGV[2])<=now "
             "or redis.call('EXISTS',KEYS[1])~=0 then return 0 end; return 1",
             revocation_key, (long long)json_integer_value (issued),
-            (long long)json_integer_value (expires));
+            (long long)json_integer_value (transfer ? transfer : expires));
         g_free (revocation_key);
         gboolean allowed = active && active->type == REDIS_REPLY_INTEGER && active->integer == 1;
         if (active) freeReplyObject (active);
@@ -1325,6 +1333,7 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *lease = json_object_get (conditions, "lease");
         const char *path = json_string_value (target);
         gboolean allowed = qualification > 0 && json_is_string (target) &&
+            !json_object_get (conditions, "read_transfer_expires_at") &&
             json_string_length (target) == strlen (path) &&
             cloudfile_check_context (mgr, scopes_json, &snapshot) == 0 &&
             cf_policy_check_write (trans, branch->repo_id, path,
