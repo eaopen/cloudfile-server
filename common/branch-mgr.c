@@ -17,6 +17,7 @@
 #include "branch-mgr.h"
 #ifdef SEAFILE_SERVER
 #include <jansson.h>
+#include <hiredis.h>
 #endif
 
 #define BRANCH_DB "branch.db"
@@ -435,7 +436,7 @@ static int
 cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *scopes_json,
                          CcnetUserManager *user_mgr, const char *native_username)
 {
-    json_t *scopes = NULL;
+    json_t *root = NULL, *scopes = NULL;
     GPtrArray *ordered = g_ptr_array_new_with_free_func (cloudfile_scope_free);
     char *database = NULL;
     int result = -1;
@@ -443,7 +444,8 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
     const char *user_id = NULL;
     if (strlen (scopes_json) > 16384)
         goto out;
-    scopes = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+    root = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+    scopes = json_is_object (root) ? json_object_get (root, "scopes") : root;
     if (!json_is_array (scopes) || json_array_size (scopes) < 2 || json_array_size (scopes) > 16)
         goto out;
     for (size_t i = 0; i < json_array_size (scopes); ++i) {
@@ -538,8 +540,99 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
 out:
     g_free (database);
     g_ptr_array_free (ordered, TRUE);
-    if (scopes)
-        json_decref (scopes);
+    if (root)
+        json_decref (root);
+    return result;
+}
+
+/* Caller-supplied context is an expectation, never an authorization grant.
+ * SQL user/provider locks are already held. Refresh begin/publish share them,
+ * so no managed generation can replace the checked value until SQL commit.
+ * Ordinary CE entry points and legacy barrier-only calls remain unchanged. */
+static int
+cloudfile_check_context (SeafBranchManager *mgr, const char *conditions)
+{
+    int result = -1;
+    json_t *root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
+    json_t *context = json_is_object (root) ? json_object_get (root, "context") : NULL;
+    redisContext *client = NULL;
+    redisReply *reply = NULL;
+    char *host = NULL, *password = NULL, *prefix = NULL, *encoded = NULL, *digest = NULL, *key = NULL;
+    if (json_is_array (root)) { result = 0; goto out; }
+    if (!json_is_object (context) || json_object_size (context) != 3)
+        goto out;
+    json_t *provider = json_object_get (context, "provider");
+    json_t *user = json_object_get (context, "userId");
+    json_t *epoch = json_object_get (context, "epoch");
+    if (!scope_identifier (provider) || !scope_identifier (user) || !json_is_string (epoch))
+        goto out;
+    const char *generation = json_string_value (epoch);
+    if (json_string_length (epoch) != 32 || strspn (generation, "0123456789abcdef") != 32)
+        goto out;
+    gboolean found_user = FALSE, found_provider = FALSE;
+    json_t *scopes = json_object_get (root, "scopes");
+    for (size_t i = 0; i < json_array_size (scopes); ++i) {
+        json_t *scope = json_array_get (scopes, i);
+        const char *type = json_string_value (json_object_get (scope, "type"));
+        const char *source = json_string_value (json_object_get (scope, "provider"));
+        const char *external = json_string_value (json_object_get (scope, "external_id"));
+        if (g_strcmp0 (type, "user") == 0) {
+            if (g_strcmp0 (source, json_string_value (provider)) ||
+                g_strcmp0 (external, json_string_value (user))) goto out;
+            found_user = TRUE;
+        }
+        if (g_strcmp0 (type, "provider") == 0 &&
+            g_strcmp0 (source, json_string_value (provider)) == 0 &&
+            g_strcmp0 (external, json_string_value (provider)) == 0)
+            found_provider = TRUE;
+    }
+    if (!found_user || !found_provider) goto out;
+    GKeyFile *config = mgr->seaf->config;
+    host = g_key_file_get_string (config, "cloudfile", "subject_redis_host", NULL);
+    int port = g_key_file_get_integer (config, "cloudfile", "subject_redis_port", NULL);
+    prefix = g_key_file_get_string (config, "cloudfile", "subject_redis_prefix", NULL);
+    password = g_key_file_get_string (config, "cloudfile", "subject_redis_password", NULL);
+    if (!host || !*host || port < 1 || port > 65535 || !prefix || !*prefix || strlen (prefix) > 160)
+        goto out;
+    json_t *pair = json_array ();
+    json_array_append (pair, provider);
+    json_array_append (pair, user);
+    encoded = json_dumps (pair, JSON_COMPACT);
+    json_decref (pair);
+    if (!encoded) goto out;
+    digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, encoded, -1);
+    key = g_strconcat (prefix, digest, NULL);
+    struct timeval timeout = {1, 0};
+    client = redisConnectWithTimeout (host, port, timeout);
+    if (!client || client->err || redisSetTimeout (client, timeout) != REDIS_OK) goto out;
+    if (password && *password) {
+        reply = redisCommand (client, "AUTH %b", password, strlen (password));
+        if (!reply || reply->type != REDIS_REPLY_STATUS || g_strcmp0 (reply->str, "OK")) goto out;
+        freeReplyObject (reply); reply = NULL;
+    }
+    const char *script =
+        "local raw=redis.call('GET',KEYS[1]); if not raw or #raw>1048576 then return 0 end; "
+        "local ok,v=pcall(cjson.decode,raw); if not ok or type(v)~='table' then return 0 end; "
+        "local t=redis.call('TIME'); local now=tonumber(t[1])+tonumber(t[2])/1000000; "
+        "if v.userId~=ARGV[1] or v.context_epoch~=ARGV[2] or v.status~='ready' "
+        "or type(v.expires_at)~='number' or type(v.fetched_at)~='number' "
+        "or not(v.expires_at>now and v.expires_at-v.fetched_at>0 "
+        "and v.expires_at-v.fetched_at<=1800 and v.fetched_at<=now+60) "
+        "or redis.call('PTTL',KEYS[1])<=0 or redis.call('EXISTS',KEYS[2])~=0 "
+        "or type(v.subject)~='table' or v.subject.userId~=ARGV[1] "
+        "or v.subject.status~='active' or type(v.source_etag)~='string' "
+        "or v.source_etag~=v.subject.etag then return 0 end; return 1";
+    char *lease = g_strconcat (key, ":lease", NULL);
+    reply = redisCommand (client, "EVAL %s 2 %s %s %s %s", script, key, lease,
+                          json_string_value (user), generation);
+    g_free (lease);
+    if (reply && reply->type == REDIS_REPLY_INTEGER && reply->integer == 1) result = 0;
+out:
+    if (reply) freeReplyObject (reply);
+    if (client) redisFree (client);
+    if (root) json_decref (root);
+    g_free (host); g_free (password); g_free (prefix);
+    free (encoded); g_free (digest); g_free (key);
     return result;
 }
 
@@ -664,6 +757,12 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -1;
+    }
+
+    if (scopes_json && cloudfile_check_context (mgr, scopes_json) < 0) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return -2;
     }
 
     sql = "UPDATE Branch SET commit_id = ? "

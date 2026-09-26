@@ -2837,7 +2837,8 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     if (!condition_json || strlen (condition_json) > 16384)
         goto invalid;
     condition = json_loads (condition_json, JSON_REJECT_DUPLICATES, NULL);
-    if (!json_is_object (condition) || json_object_size (condition) != 2)
+    if (!json_is_object (condition) || (json_object_size (condition) != 2 &&
+                                      json_object_size (condition) != 3))
         goto invalid;
     json_t *head = json_object_get (condition, "head_id");
     json_t *array = json_object_get (condition, "scopes");
@@ -2845,7 +2846,10 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         !is_object_id_valid (json_string_value (head)) || !json_is_array (array) ||
         json_array_size (array) < 2 || json_array_size (array) > 16)
         goto invalid;
-    scopes = json_dumps (array, JSON_COMPACT | JSON_SORT_KEYS);
+    json_t *context = json_object_get (condition, "context");
+    if (json_object_size (condition) == 3 && !json_is_object (context))
+        goto invalid;
+    scopes = json_dumps (context ? condition : array, JSON_COMPACT | JSON_SORT_KEYS);
     if (!scopes)
         goto invalid;
     /* Scopes must be assembled by a trusted caller. This is a local barrier

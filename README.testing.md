@@ -35,7 +35,24 @@ coordination, a public upload endpoint or an enabled edit capability.
 
 Add `--check-barriers` with the new Hub source package on `PYTHONPATH` to exercise
 `seafile_cloudfile_put_file_with_barriers` against actual Hub JobStore SQL effects.
-Its sixth argument is bounded JSON containing exactly `head_id` and `scopes`.
+Its sixth argument is bounded JSON containing `head_id` and `scopes`, optionally
+with `context: {"provider": "directory", "userId": "...", "epoch": "32 lowercase hex"}`.
+Context-bearing calls also require the exact provider scope. They check current
+Redis ready generation after GC and Branch locking, before publication, using
+the same SQL scopes as Hub refresh begin/publish. Configure `subject_redis_host`,
+`subject_redis_port`, `subject_redis_prefix` (e.g. `cf:subjects:`) and optionally
+`subject_redis_password` in `[cloudfile]`; there is no implicit Redis fallback.
+Use a private trusted Redis transport; this adapter does not implement TLS or
+Redis ACL username authentication. Connection and command timeouts are one second.
+Only Redis DB 0 is currently supported. Prefix must match the Hub deployment.
+The key digest is SHA256 of compact UTF-8 JSON `[provider,userId]`, without ASCII
+escaping. Older non-ASCII subject keys become cache misses, not database migration.
+With explicit isolated `CF_TEST_REDIS_HOST/PORT`, the probe verifies missing,
+wrong-user/epoch, refreshing, expired, persistent and lease-held snapshots,
+Unicode parity, current write/no-op and rejection after generation change.
+Snapshot input is a fixture: not real IdP/directory or full ACL evidence.
+Barrier-only two-field calls remain internal compatibility primitives, not
+current-context protected calls. Ordinary CE/Go entry points are not covered.
 Scopes use the job scope contract; at least a user scope and this repository's
 scope are mandatory. **Trusted runtime assembles scopes; they are not grants.**
 Scope acquisition shares one five-second monotonic budget, rounded down to

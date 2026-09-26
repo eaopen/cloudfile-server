@@ -9,6 +9,7 @@ import argparse
 from contextlib import ExitStack, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -442,11 +443,14 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
                    autocommit=True, charset="utf8mb4", connect_timeout=5, read_timeout=10)
     scopes = [{"type": "repo", "provider": "cloudfile", "external_id": repo},
               {"type": "user", "provider": "directory", "external_id": "员工:a:b"}]
-    def write(path, head, selected=scopes, *, username=actor):
+    def write(path, head, selected=scopes, *, username=actor, context=None):
         client = ServerThreadedRpcClient(str(data / "seafile.sock"))
         try:
+            condition = {"head_id": head, "scopes": selected}
+            if context is not None:
+                condition["context"] = context
             result = client.cloudfile_put_file_with_barriers(repo, str(path), "/", "probe.txt", username,
-                json.dumps({"head_id": head, "scopes": selected}, ensure_ascii=False))
+                json.dumps(condition, ensure_ascii=False))
             return result
         except SearpcError:
             return None
@@ -569,6 +573,48 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
                     cursor.execute("SELECT RELEASE_LOCK(%s)", (name,))
         assert api.get_repo(repo).head_cmmt_id == head
         assert write(original, head)
+        if os.environ.get("CF_TEST_REDIS_PORT"):
+            import redis
+            cache = redis.Redis(host=os.environ.get("CF_TEST_REDIS_HOST", "127.0.0.1"),
+                                port=int(os.environ["CF_TEST_REDIS_PORT"]))
+            # Snapshot fixture exercises native final comparison, not source auth.
+            user_id = scopes[1]["external_id"]
+            epoch = "a" * 32
+            context = dict(provider="directory", userId=user_id, epoch=epoch)
+            guarded = [*scopes, dict(type="provider", provider="directory", external_id="directory")]
+            digest = hashlib.sha256(json.dumps(["directory", user_id], ensure_ascii=False,
+                separators=(",", ":")).encode()).hexdigest()
+            key = "cf:subjects:" + digest
+            cache.delete(key, key + ":lease")
+            head = api.get_repo(repo).head_cmmt_id
+            assert write(changed, head, guarded, context=context) is None
+            now = time.time()
+            snapshot = dict(userId=user_id, context_epoch=epoch, status="ready",
+                expires_at=now + 120, fetched_at=now, source_etag="fixture",
+                subject=dict(userId=user_id, status="active", etag="fixture"))
+            try:
+                for field, bad in (("context_epoch", "b" * 32), ("status", "refreshing"),
+                                   ("expires_at", now - 1), ("userId", "other")):
+                    cache.set(key, json.dumps({**snapshot, field: bad}), ex=120)
+                    assert write(changed, head, guarded, context=context) is None
+                    assert api.get_repo(repo).head_cmmt_id == head
+                cache.set(key, json.dumps(snapshot))  # Persistent keys are not valid cache authority.
+                assert write(changed, head, guarded, context=context) is None
+                cache.set(key, json.dumps(snapshot), ex=120)
+                cache.set(key + ":lease", epoch, ex=30)
+                assert write(changed, head, guarded, context=context) is None
+                cache.delete(key + ":lease")
+                assert write(original, head, guarded, context=context)  # compare-only same guard
+                assert api.get_repo(repo).head_cmmt_id == head
+                assert write(changed, head, guarded, context=context)
+                head = api.get_repo(repo).head_cmmt_id
+                cache.set(key, json.dumps({**snapshot, "context_epoch": "b" * 32}), ex=120)
+                assert write(original, head, guarded, context=context) is None
+                assert api.get_repo(repo).head_cmmt_id == head
+            finally:
+                cache.delete(key, key + ":lease")
+                cache.close()
+            assert write(original, api.get_repo(repo).head_cmmt_id)
 
         def submit(scope, key):
             return store.submit(actor="admin", actor_kind="user", kind="authorization.refresh", scope=scope,
@@ -712,7 +758,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "native_scope_total_wait_budget_rejected_without_publish": True,
             "native_role_group_provision_readback_and_retry": True,
             "native_department_provision_hierarchy_and_retry": True,
-            "native_membership_apply_remove_preserve_and_retry": True}
+            "native_membership_apply_remove_preserve_and_retry": True,
+            "native_context_epoch_ready_ttl_lease_unicode_write_noop": bool(os.environ.get("CF_TEST_REDIS_PORT"))}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
@@ -771,6 +818,10 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
             if check_barriers:
                 with (config / "seafile.conf").open("a") as handle:
                     handle.write("\n[cloudfile]\nidentity_database=" + databases[2] + "\n")
+                    if os.environ.get("CF_TEST_REDIS_PORT"):
+                        handle.write("subject_redis_host=" + os.environ.get("CF_TEST_REDIS_HOST", "127.0.0.1")
+                            + "\nsubject_redis_port=" + os.environ["CF_TEST_REDIS_PORT"]
+                            + "\nsubject_redis_prefix=cf:subjects:\n")
             (config / "seafile.conf").chmod(0o600)
             environment = {**os.environ, "SEAFILE_MYSQL_DB_CCNET_DB_NAME": databases[0],
                            "SEAFILE_MYSQL_DB_SEAFILE_DB_NAME": databases[1], "JWT_PRIVATE_KEY": secrets.token_urlsafe(32),
