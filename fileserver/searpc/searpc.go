@@ -102,14 +102,20 @@ func (c *Client) call(deadline time.Time, funcname string, params ...interface{}
 
 	header := make([]byte, 4)
 	binary.LittleEndian.PutUint32(header, uint32(len(jsonstr)))
-	_, err = conn.Write([]byte(header))
+	n, err := conn.Write(header)
+	if err == nil && n != len(header) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
 		hasErr = true
 		err := fmt.Errorf("Failed to write rpc request header : %v", err)
 		return nil, err
 	}
 
-	_, err = conn.Write([]byte(jsonstr))
+	n, err = conn.Write(jsonstr)
+	if err == nil && n != len(jsonstr) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
 		hasErr = true
 		err := fmt.Errorf("Failed to write rpc request body : %v", err)
