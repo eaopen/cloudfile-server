@@ -1675,6 +1675,16 @@ seafile_cloudfile_check_read_transfer (const char *token, GError **error)
     }
     return seaf_web_at_manager_check_read_transfer (seaf->web_at_mgr, token);
 }
+
+int
+seafile_cloudfile_end_read_transfer (const char *token, GError **error)
+{
+    if (!token || !is_uuid_valid (token)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile transfer reference");
+        return -1;
+    }
+    return seaf_web_at_manager_end_read_transfer (seaf->web_at_mgr, token);
+}
 #endif
 
 char *

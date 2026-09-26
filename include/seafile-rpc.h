@@ -514,6 +514,7 @@ char *seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path
     const char *username, const char *conditions, GError **error);
 GObject *seafile_cloudfile_consume_read_ticket (const char *token, GError **error);
 int seafile_cloudfile_check_read_transfer (const char *token, GError **error);
+int seafile_cloudfile_end_read_transfer (const char *token, GError **error);
 #endif
 
 char *

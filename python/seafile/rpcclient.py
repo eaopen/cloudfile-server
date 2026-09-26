@@ -798,6 +798,10 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def seafile_cloudfile_check_read_transfer(token):
         pass
 
+    @searpc_func("int", ["string"])
+    def seafile_cloudfile_end_read_transfer(token):
+        pass
+
     @searpc_func("string", ["string", "string", "string", "string", "int"])
     def seafile_web_get_access_token(repo_id, obj_id, op, username, use_onetime=1):
         pass

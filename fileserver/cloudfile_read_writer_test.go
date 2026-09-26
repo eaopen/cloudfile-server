@@ -49,3 +49,14 @@ func TestGuardedReadWriterPreservesCompleteContent(t *testing.T) {
 		t.Fatal("complete guarded content changed")
 	}
 }
+
+func TestGuardedReadWriterCloseIsSingleAttemptAndBlocksWrites(t *testing.T) {
+	ends := 0
+	w := &cloudFileReadWriter{end: func() error { ends++; return errCloudFileReadEnded }}
+	if w.Close() != errCloudFileReadEnded || w.Close() != errCloudFileReadEnded || ends != 1 {
+		t.Fatal("cleanup failure lost or repeated")
+	}
+	if n, err := w.Write([]byte("private")); n != 0 || err != errCloudFileReadEnded {
+		t.Fatal("closed transfer resumed")
+	}
+}

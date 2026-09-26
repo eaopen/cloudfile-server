@@ -270,6 +270,19 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 }
 
 #ifdef FULL_FEATURE
+int
+seaf_web_at_manager_end_read_transfer (SeafWebAccessTokenManager *mgr, const char *token)
+{
+    if (!mgr || !token || strlen (token) != TOKEN_LEN) return -1;
+    int result = 0;
+    pthread_mutex_lock (&mgr->priv->lock);
+    AccessInfo *info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (info && (!info->conditions || !info->transferred)) result = -1;
+    else if (info) g_hash_table_remove (mgr->priv->access_token_hash, token);
+    pthread_mutex_unlock (&mgr->priv->lock);
+    return result;
+}
+
 SeafileWebAccess *
 seaf_web_at_manager_consume_read_ticket (SeafWebAccessTokenManager *mgr,
     const char *token, GError **error)
