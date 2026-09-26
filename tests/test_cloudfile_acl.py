@@ -79,6 +79,15 @@ class CloudfileAclTest(unittest.TestCase):
             if "rules" in changes:
                 self.assertEqual(self.evaluate(changes), self.evaluate({**changes, "rules": list(reversed(changes["rules"]))}))
 
+    def test_non_boolean_native_context_flags_fail_closed(self):
+        # Do not treat malformed SQL/RPC integer flags as authenticated truth.
+        for field in ("context_ready", "account_active", "repo_hard_readonly", "barrier_active"):
+            for invalid in (-1, 2, 2147483647):
+                with self.subTest(field=field, invalid=invalid):
+                    status, result = self.evaluate({field: invalid, "ce_permission": "rw"})
+                    self.assertEqual(status, -1)
+                    self.assertEqual(result, {"visible": False, "read": False, "write": False})
+
     def test_file_deny_and_segment_boundaries(self):
         rule = {"path": "/parts/model.prt", "kind": "file", "subject_type": "user",
                 "subject_id": "u1", "permission": "none", "inherit": True}

@@ -110,7 +110,11 @@ int cf_acl_evaluate(const struct cf_acl_context *ctx, const char *path, int kind
         (kind != CF_DIRECTORY && kind != CF_FILE) || (kind == CF_FILE && strcmp(path, "/") == 0) ||
         count > CF_ACL_LIMIT || (count && !rules) ||
         ctx->department_count > CF_ACL_LIMIT || ctx->group_count > CF_ACL_LIMIT ||
-        (ctx->department_count && !ctx->departments) || (ctx->group_count && !ctx->groups)) return -1;
+        (ctx->department_count && !ctx->departments) || (ctx->group_count && !ctx->groups) ||
+        (ctx->ready != 0 && ctx->ready != 1) ||
+        (ctx->active != 0 && ctx->active != 1) ||
+        (ctx->hard_readonly != 0 && ctx->hard_readonly != 1) ||
+        (ctx->barrier_active != 0 && ctx->barrier_active != 1)) return -1;
     for (size_t i = 0; i < ctx->department_count; ++i)
         if (!ctx->departments[i] || !*ctx->departments[i]) return -1;
     for (size_t i = 0; i < ctx->group_count; ++i)
