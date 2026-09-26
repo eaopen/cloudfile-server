@@ -126,11 +126,8 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 		return err
 	}
 	defer transaction.Rollback()
-	// A nontransactional table could preserve only half of the fact. Missing or
-	// wrongly configured tables deny the transfer rather than degrading logging.
-	var engines int
-	if err = transaction.QueryRowContext(deadline, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('cf_event_outbox','cf_audit_event') AND engine='InnoDB'").Scan(&engines); err != nil || engines != 2 {
-		return errors.New("transactional read audit schema unavailable")
+	if err = requireCloudFileReadAuditSchema(deadline, transaction); err != nil {
+		return err
 	}
 	now := time.Now().UTC()
 	eventID := uuid.New().String()
@@ -163,3 +160,56 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 	}
 	return transaction.Commit()
 }
+
+func requireCloudFileReadAuditSchema(ctx context.Context, transaction *sql.Tx) error {
+	failure := errors.New("transactional read audit schema unavailable")
+	var engines int
+	if transaction.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('cf_schema_migration','cf_event_outbox','cf_audit_event') AND engine='InnoDB'").Scan(&engines) != nil || engines != 3 {
+		return failure
+	}
+	// Shared ledger locks keep concurrent downloads from serializing each
+	// other, while preventing a migration writer changing these rows mid-append.
+	rows, err := transaction.QueryContext(ctx, "SELECT version,step FROM cf_schema_migration WHERE version IN ('003_outbox','004_audit') AND state='applied' LOCK IN SHARE MODE")
+	if err != nil {
+		return failure
+	}
+	versions := make(map[string]int)
+	for rows.Next() {
+		var version string
+		var step int
+		if rows.Scan(&version, &step) != nil {
+			rows.Close()
+			return failure
+		}
+		if _, duplicate := versions[version]; duplicate {
+			rows.Close()
+			return failure
+		}
+		versions[version] = step
+	}
+	readError := rows.Err()
+	closeError := rows.Close()
+	if readError != nil || closeError != nil || len(versions) != 2 || versions["003_outbox"] != 1 || versions["004_audit"] != 16 {
+		return failure
+	}
+	// Inspect actual types and complete unique indexes, not just the ledger.
+	var valid int
+	if transaction.QueryRowContext(ctx, cloudFileReadAuditSchemaSQL).Scan(&valid) != nil || valid != 1 {
+		return failure
+	}
+	return nil
+}
+
+const cloudFileReadAuditSchemaSQL = `SELECT IF(
+ (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND column_name IN ('event_id','sequence','stream','schema_version','payload','created_at','audit_state','resource_state','resource_owner','resource_expiry','resource_epoch','resource_attempts','resource_next_at','resource_error','search_state','search_owner','search_expiry','search_epoch','search_attempts','search_next_at','search_error'))=21
+ AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND column_name='sequence' AND data_type='bigint' AND column_type LIKE '%unsigned' AND extra LIKE '%auto_increment%')=1
+ AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('event_payload','source_path','target_path') AND data_type='longtext')=3
+ AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('occurred_at','recorded_at') AND data_type='datetime' AND datetime_precision=6)=2
+ AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('event_id','schema_version','request_id','actor_user_id','actor_kind','delegator','resource_uid'))=7
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='PRIMARY')=1
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='PRIMARY' AND column_name='event_id' AND non_unique=0 AND sub_part IS NULL)=1
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='outbox_sequence')=1
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='outbox_sequence' AND column_name='sequence' AND non_unique=0 AND sub_part IS NULL)=1
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND index_name='audit_event_identity')=1
+ AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND index_name='audit_event_identity' AND column_name='event_id' AND non_unique=0 AND sub_part IS NULL)=1
+,1,0)`
