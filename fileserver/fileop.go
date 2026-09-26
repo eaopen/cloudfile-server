@@ -441,11 +441,16 @@ func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID
 				err := fmt.Errorf("failed to decrypt block %s: %v", blkID, err)
 				return &appError{err, "", http.StatusInternalServerError}
 			}
-			_, err = rsp.Write(decoded)
+			err = writeRangeChunk(rsp, decoded)
 			if err != nil {
 				return nil
 			}
 		}
+		oper := "web-file-download"
+		if operation == "download-link" {
+			oper = "link-file-download"
+		}
+		sendStatisticMsg(repo.StoreID, user, oper, file.FileSize)
 		return nil
 	}
 
@@ -521,6 +526,9 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 	rsp.Header().Set("Content-Range", conRange)
 
 	rsp.WriteHeader(http.StatusPartialContent)
+	if r.Method == "HEAD" {
+		return nil
+	}
 
 	var blkSize []uint64
 	if file.FileSize > cacheBlockMapThreshold {
@@ -654,6 +662,9 @@ func writeRangeChunk(writer io.Writer, content []byte) error {
 }
 
 func parseRange(byteRanges string, fileSize uint64) (uint64, uint64, bool) {
+	if fileSize == 0 || !strings.HasPrefix(byteRanges, "bytes=") || strings.Contains(byteRanges, ",") {
+		return 0, 0, false
+	}
 	start := strings.Index(byteRanges, "=")
 	end := strings.Index(byteRanges, "-")
 
@@ -668,7 +679,11 @@ func parseRange(byteRanges string, fileSize uint64) (uint64, uint64, bool) {
 		if err != nil || retByte == 0 {
 			return 0, 0, false
 		}
-		startByte = fileSize - retByte
+		if retByte >= fileSize {
+			startByte = 0
+		} else {
+			startByte = fileSize - retByte
+		}
 		endByte = fileSize - 1
 	} else if end+1 == len(byteRanges) {
 		firstByte, err := strconv.ParseUint(byteRanges[start+1:end], 10, 64)
