@@ -47,6 +47,10 @@ tables and checks C RPC read-back, empty members and idempotent retry. Its
 management guard/audit hook are explicit fixtures, not production authorization.
 Native department roots and children are also created with GroupStructure and
 checked through C RPC parent IDs, empty members and idempotent retry.
+The same-connection membership projector is checked through real C group reads:
+managed additions/removals, preservation of a manual group and no-op retry.
+Its generation assertion/audit policy are fixtures; this is not Redis readiness
+or complete login/data-entry enforcement evidence.
 The probe uses the real schema runner and checks Unicode key parity, missing
 schema failure, failed/cancelled barriers, changed-content/no-op rejection, both
 barrier/publication orderings, final read-only change and native connection loss.

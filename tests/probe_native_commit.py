@@ -487,6 +487,35 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         assert created and ccnet_api.get_group(child_id).parent_group_id == root_id
         assert provisioner.ensure_department(**child_request) == (child_id, False)
         assert ccnet_api.get_group_members(child_id) == []
+        # Same-connection membership changes must be visible through real C RPC;
+        # Redis generation assertion and audit policy remain explicit fixtures.
+        from datetime import datetime, timezone
+        from cloudfile_extensions.directory.project import NativeMembershipProjector
+        new_role_id, _ = provisioner.ensure(**{**request, "external_id": "new-role"})
+        manual_id = ccnet_api.create_group("Manual probe group", "system admin", 0)
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE cf_probe_member_audit(user_id VARCHAR(225)) ENGINE=InnoDB")
+            for member_id in (group_id, manual_id):
+                cursor.execute("INSERT INTO `" + account_database + "`.GroupUser(group_id,user_name,is_staff) VALUES(%s,%s,0)", (member_id, actor))
+        context_epoch = uuid4().hex
+        def generation_fixture(user_id, epoch):
+            assert user_id == "员工:a:b" and epoch == context_epoch
+        def member_audit_fixture(cursor, event):
+            cursor.execute("INSERT INTO cf_probe_member_audit VALUES(%s)", (event["actor"],))
+        projector = NativeMembershipProjector(connection, native_schema=account_database,
+            identity_schema=identity_database, provider="directory",
+            assert_generation=generation_fixture, audit_hook=member_audit_fixture)
+        subject = dict(userId="员工:a:b", status="active", attributes={},
+                       organizations=[dict(namespace="department", external_id="child-dept", is_primary=True)],
+                       organization_ancestors=[dict(namespace="department", external_id="root-dept")],
+                       roles=[dict(namespace="role", external_id="new-role")], etag="probe",
+                       generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        membership = projector.apply(subject, context_epoch, native_username=actor)
+        assert membership.remove == (group_id,)
+        expected_groups = {root_id, child_id, new_role_id, manual_id}
+        assert {group.id for group in ccnet_api.get_groups(actor)} == expected_groups
+        retry = projector.apply(subject, context_epoch, native_username=actor)
+        assert not retry.add and not retry.remove
         with connection.cursor() as cursor:
             cursor.execute("INSERT IGNORE INTO GCID(repo_id,gc_id) VALUES(%s,%s)", (repo, uuid4().hex))
         store = JobStore(connection)
@@ -682,7 +711,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "barrier_final_readonly_race_rejected": True,
             "native_scope_total_wait_budget_rejected_without_publish": True,
             "native_role_group_provision_readback_and_retry": True,
-            "native_department_provision_hierarchy_and_retry": True}
+            "native_department_provision_hierarchy_and_retry": True,
+            "native_membership_apply_remove_preserve_and_retry": True}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
