@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -20,6 +21,60 @@ import (
 type cloudFileReadAuditFact struct {
 	RequestID, UserID, RepoID, Path, HeadID, Epoch, Operation string
 	Outcome                                                   cloudFileReadOutcome
+}
+
+func captureCloudFileReadAudit(token, requestID string) (cloudFileReadAuditFact, error) {
+	if rpcclient == nil || !canonicalTicketUUID(token) || !canonicalTicketUUID(requestID) {
+		return cloudFileReadAuditFact{}, errors.New("read audit metadata unavailable")
+	}
+	value, err := rpcclient.CallWithTimeout(5*time.Second, "seafile_cloudfile_read_transfer_fact", token)
+	encoded, ok := value.(string)
+	if err != nil || !ok {
+		return cloudFileReadAuditFact{}, errors.New("read audit metadata unavailable")
+	}
+	return decodeCloudFileReadAudit(encoded, requestID)
+}
+
+func decodeCloudFileReadAudit(encoded, requestID string) (cloudFileReadAuditFact, error) {
+	failure := errors.New("read audit metadata unavailable")
+	if len(encoded) > 16384 {
+		return cloudFileReadAuditFact{}, failure
+	}
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return cloudFileReadAuditFact{}, failure
+	}
+	fields := make(map[string]string)
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, ok := key.(string)
+		if err != nil || !ok {
+			return cloudFileReadAuditFact{}, failure
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return cloudFileReadAuditFact{}, failure
+		}
+		var value string
+		if decoder.Decode(&value) != nil {
+			return cloudFileReadAuditFact{}, failure
+		}
+		fields[name] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(fields) != 6 {
+		return cloudFileReadAuditFact{}, failure
+	}
+	if _, err = decoder.Token(); err != io.EOF {
+		return cloudFileReadAuditFact{}, failure
+	}
+	fact := cloudFileReadAuditFact{RequestID: requestID, UserID: fields["user_id"], RepoID: fields["repo_id"],
+		Path: fields["path"], HeadID: fields["head_id"], Epoch: fields["epoch"], Operation: fields["operation"],
+		Outcome: cloudFileReadOutcome{Result: "failed"}}
+	if !fact.valid() {
+		return cloudFileReadAuditFact{}, failure
+	}
+	return fact, nil
 }
 
 func (f cloudFileReadAuditFact) valid() bool {

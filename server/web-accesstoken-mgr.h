@@ -51,6 +51,8 @@ int seaf_web_at_manager_check_read_transfer (SeafWebAccessTokenManager *mgr,
     const char *token);
 /* Idempotent after consumed transfer deletion; never removes legacy/unconsumed. */
 int seaf_web_at_manager_end_read_transfer (SeafWebAccessTokenManager *mgr, const char *token);
+/* Private audit snapshot, not authorization; contains no bearer or conditions. */
+char *seaf_web_at_manager_read_transfer_fact (SeafWebAccessTokenManager *mgr, const char *token);
 /* Internal single-file path/head/object-bound ticket. Legacy query explicitly
  * refuses it. No RPC/HTTP registration until the current consumption guard is
  * connected; a signed-off issuance is never a future permission grant. */

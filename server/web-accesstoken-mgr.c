@@ -14,6 +14,7 @@
 
 #include "log.h"
 #ifdef FULL_FEATURE
+#include <jansson.h>
 #include "cloudfile-acl.h"
 #include "branch-mgr.h"
 #endif
@@ -270,6 +271,37 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 }
 
 #ifdef FULL_FEATURE
+/* Audit metadata only, never a read grant. Capture immediately after consume
+ * and before cleanup/expiry sweep. All fields come from stored native state. */
+char *
+seaf_web_at_manager_read_transfer_fact (SeafWebAccessTokenManager *mgr, const char *token)
+{
+    char *result = NULL;
+    if (!mgr || !token || strlen (token) != TOKEN_LEN) return NULL;
+    pthread_mutex_lock (&mgr->priv->lock);
+    AccessInfo *info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (info && info->conditions && info->transferred && info->expire_time > (long)time (NULL)) {
+        json_t *conditions = json_loads (info->conditions, JSON_REJECT_DUPLICATES, NULL);
+        json_t *context = conditions ? json_object_get (conditions, "context") : NULL;
+        const char *user = json_string_value (json_object_get (context, "userId"));
+        const char *epoch = json_string_value (json_object_get (context, "epoch"));
+        if (user && epoch && info->repo_id && info->path && info->head_id && info->op) {
+            json_t *fact = json_pack ("{s:s,s:s,s:s,s:s,s:s,s:s}",
+                "user_id", user, "repo_id", info->repo_id, "path", info->path,
+                "head_id", info->head_id, "epoch", epoch, "operation", info->op);
+            if (fact) {
+                char *encoded = json_dumps (fact, JSON_COMPACT);
+                result = g_strdup (encoded);
+                free (encoded);
+                json_decref (fact);
+            }
+        }
+        if (conditions) json_decref (conditions);
+    }
+    pthread_mutex_unlock (&mgr->priv->lock);
+    return result;
+}
+
 int
 seaf_web_at_manager_end_read_transfer (SeafWebAccessTokenManager *mgr, const char *token)
 {

@@ -606,6 +606,9 @@ static void start_rpc_service (const char *seafile_dir,
     searpc_server_register_function ("seafserv-threaded-rpcserver",
         seafile_cloudfile_end_read_transfer, "seafile_cloudfile_end_read_transfer",
         searpc_signature_int__string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+        seafile_cloudfile_read_transfer_fact, "seafile_cloudfile_read_transfer_fact",
+        searpc_signature_string__string());
 #endif
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_web_get_access_token,
