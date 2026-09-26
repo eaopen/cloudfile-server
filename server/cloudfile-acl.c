@@ -7,6 +7,8 @@
 #define CF_ACL_LIMIT 4096
 #define CF_PATH_LIMIT 4096
 
+int cf_acl_abi_version(void) { return 1; }
+
 static int canonical(const char *path)
 {
     const char *segment;

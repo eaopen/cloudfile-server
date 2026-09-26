@@ -18,6 +18,10 @@ AM_CFLAGS = -DPKGDATADIR=\"$(pkgdatadir)\" \
 
 bin_PROGRAMS = seaf-server
 
+pkglib_LTLIBRARIES = libcloudfile_acl.la
+libcloudfile_acl_la_SOURCES = cloudfile-acl.c
+libcloudfile_acl_la_LDFLAGS = -version-info 1:0:0 -no-undefined
+
 noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	repo-mgr.h \
 	cloudfile-acl.h \
@@ -53,7 +57,6 @@ seaf_server_SOURCES = \
 	quota-mgr.c \
 	repo-op.c \
 	repo-perm.c \
-	cloudfile-acl.c \
 	cloudfile-policy.c \
 	size-sched.c \
 	virtual-repo.c \
@@ -93,6 +96,7 @@ seaf_server_SOURCES = \
 	../common/block-tx-utils.c
 
 seaf_server_LDADD = $(top_builddir)/lib/libseafile_common.la \
+	libcloudfile_acl.la \
 	@GLIB2_LIBS@ @GOBJECT_LIBS@ @SSL_LIBS@ @LIB_RT@ @LIB_UUID@ -lsqlite3 @LIBEVENT_LIBS@ @EVHTP_LIBS@ \
 	$(top_builddir)/common/cdc/libcdc.la \
 	@SEARPC_LIBS@ @JANSSON_LIBS@ ${LIB_WS32} @ZLIB_LIBS@ \

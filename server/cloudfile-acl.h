@@ -32,6 +32,8 @@ struct cf_acl_context {
 };
 struct cf_acl_result { int visible; int read; int write; };
 
+int cf_acl_abi_version(void);
+
 /* 0 = evaluated; -1 = invalid input/allocation failure, result stays denied.
  * Does not implement manage delegation, persistence, caching or final commit.
  */
