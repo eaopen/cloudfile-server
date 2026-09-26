@@ -498,6 +498,11 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 		rsp.Header().Set("Content-Range", conRange)
 		return &appError{nil, "", http.StatusRequestedRangeNotSatisfiable}
 	}
+	rangeLength := end - start + 1
+	oper := "web-file-download"
+	if operation == "download-link" {
+		oper = "link-file-download"
+	}
 
 	rsp.Header().Set("Accept-Ranges", "bytes")
 
@@ -576,7 +581,10 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 				return nil
 			}
 			recvBuf := buf.Bytes()
-			rsp.Write(recvBuf[pos : pos+end-start+1])
+			if err := writeRangeChunk(rsp, recvBuf[pos:pos+end-start+1]); err != nil {
+				return nil
+			}
+			sendStatisticMsg(repo.StoreID, user, oper, rangeLength)
 			return nil
 		}
 
@@ -588,7 +596,7 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 			return nil
 		}
 		recvBuf := buf.Bytes()
-		_, err = rsp.Write(recvBuf[pos:])
+		err = writeRangeChunk(rsp, recvBuf[pos:])
 		if err != nil {
 			return nil
 		}
@@ -610,7 +618,7 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 				return nil
 			}
 			recvBuf := buf.Bytes()
-			_, err = rsp.Write(recvBuf[:end-start+1])
+			err = writeRangeChunk(rsp, recvBuf[:end-start+1])
 			if err != nil {
 				return nil
 			}
@@ -627,12 +635,21 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 		}
 	}
 
-	oper := "web-file-download"
-	if operation == "download-link" {
-		oper = "link-file-download"
-	}
-	sendStatisticMsg(repo.StoreID, user, oper, end-start+1)
+	sendStatisticMsg(repo.StoreID, user, oper, rangeLength)
 
+	return nil
+}
+
+// A short HTTP write is not successful delivery of the requested range.
+// Statistics describe bytes accepted by the server writer, not client receipt.
+func writeRangeChunk(writer io.Writer, content []byte) error {
+	n, err := writer.Write(content)
+	if err != nil {
+		return err
+	}
+	if n != len(content) {
+		return io.ErrShortWrite
+	}
 	return nil
 }
 
