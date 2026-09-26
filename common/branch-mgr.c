@@ -1046,6 +1046,35 @@ cloudfile_oidc_identifier (json_t *object, const char *name, size_t maximum)
 }
 
 static int
+cloudfile_check_oidc_schema (SeafDBTrans *trans)
+{
+    gboolean error = FALSE;
+    const char *versions[] = {"012_oidc_sessions", "013_oidc_logout_fences", "014_oidc_scope_expiry"};
+    for (int i = 0; i < 3; ++i) {
+        if (!seaf_db_trans_check_for_existence (trans,
+            "SELECT version FROM cf_schema_migration WHERE version=? AND state='applied' AND step=1 FOR UPDATE",
+            &error, 1, "string", versions[i]) || error) return -1;
+    }
+    const char *tables[] = {"cf_oidc_session", "cf_oidc_logout_fence"};
+    for (int i = 0; i < 2; ++i) {
+        if (!seaf_db_trans_check_for_existence (trans,
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=? AND engine='InnoDB'",
+            &error, 1, "string", tables[i]) || error) return -1;
+    }
+    /* Verify exact non-prefix index axes, not merely an index bearing the
+     * expected name. Hub's require_current additionally checks all checksums
+     * and migration structures; this native gate does not replace that. */
+    const char *checks[] = {
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_session' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=2 AND SUM(non_unique=0 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='session_key')))=2",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_logout_fence' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(non_unique=0 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='target_type') OR (seq_in_index=3 AND column_name='target_hash')))=3",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_session' AND index_name='oidc_scope_expiry' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(non_unique=1 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='expires_at') OR (seq_in_index=3 AND column_name='session_key')))=3"
+    };
+    for (int i = 0; i < 3; ++i)
+        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
+    return 0;
+}
+
+static int
 cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json_t *root)
 {
     json_t *reference = json_object_get (root, "oidc_session");
@@ -1072,7 +1101,7 @@ cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json
             !g_strcmp0 (json_string_value (json_object_get (candidate, "provider")), provider) &&
             !g_strcmp0 (json_string_value (json_object_get (candidate, "external_id")), provider)) locked_scope = TRUE;
     }
-    if (!locked_scope) return -1;
+    if (!locked_scope || cloudfile_check_oidc_schema (trans) < 0) return -1;
     gboolean error = FALSE;
     if (!seaf_db_trans_check_for_existence (trans,
         "SELECT session_key FROM cf_oidc_session WHERE scope_hash=? AND session_key=? "
