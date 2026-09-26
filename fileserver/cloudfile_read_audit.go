@@ -116,8 +116,8 @@ func lowerHex(value string, length int) bool {
 	return true
 }
 
-// Atomic outbox+audit append on the existing native database. Explicitly not
-// called by the unregistered managed handler; release gates remain outstanding.
+// Atomic outbox+audit append on the existing native database, called by the
+// unregistered managed handler; release gates remain outstanding.
 // A failed/uncertain commit is not retried under a fresh event identity.
 func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudFileReadAuditFact) error {
 	if ctx == nil || database == nil || !fact.valid() {
