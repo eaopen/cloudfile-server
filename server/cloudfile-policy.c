@@ -105,13 +105,15 @@ static gboolean schema_count (SeafDBRow *row, void *data)
     int *value = data; *value = seaf_db_row_get_column_int (row, 0); return FALSE;
 }
 
-int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,
+static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
                           const char *provider, const char *user, json_t *snapshot,
-                          int ce_permission)
+                          int ce_permission, int kind, gboolean write)
 {
     int result = -1;
     if (!path || !g_utf8_validate (path, -1, NULL) || *path != '/' || strlen (path) > 4096 ||
-        strlen (path) < 2 || path[strlen (path)-1] == '/' || !valid_id (provider, 32) ||
+        (kind != CF_FILE && kind != CF_DIRECTORY) ||
+        (strlen (path) == 1 && kind != CF_DIRECTORY) ||
+        (strlen (path) > 1 && path[strlen (path)-1] == '/') || !valid_id (provider, 32) ||
         !valid_id (user, 225) || (ce_permission != 1 && ce_permission != 2)) return -1;
     RuleRows rows = {g_array_new (FALSE, FALSE, sizeof (struct cf_acl_rule)),
                     g_ptr_array_new_with_free_func (g_free),
@@ -167,11 +169,28 @@ int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *pat
         (const char *const *)groups->pdata, groups->len,
         ce_permission == 2 ? CF_WRITE : CF_READ, 1, 1, 0, 0};
     struct cf_acl_result evaluated;
-    if (cf_acl_evaluate (&context, path, CF_FILE, (struct cf_acl_rule *)rows.rules->data,
-                         rows.rules->len, &evaluated) == 0 && evaluated.write) result = 0;
+    if (cf_acl_evaluate (&context, path, kind, (struct cf_acl_rule *)rows.rules->data,
+                         rows.rules->len, &evaluated) == 0 &&
+        (write ? evaluated.write : evaluated.read)) result = 0;
 out:
     g_hash_table_destroy (seen); g_ptr_array_free (departments, TRUE); g_ptr_array_free (groups, TRUE);
     g_hash_table_destroy (rows.paths); g_array_free (rows.rules, TRUE); g_ptr_array_free (rows.owned, TRUE);
     free (identity); g_free (current); g_free (sql);
     return result;
+}
+
+int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,
+                          const char *provider, const char *user, json_t *snapshot,
+                          int ce_permission)
+{
+    return policy_check (trans, repo, path, provider, user, snapshot,
+                         ce_permission, CF_FILE, TRUE);
+}
+
+int cf_policy_check_read (SeafDBTrans *trans, const char *repo, const char *path,
+                         const char *provider, const char *user, json_t *snapshot,
+                         int ce_permission, int kind)
+{
+    return policy_check (trans, repo, path, provider, user, snapshot,
+                         ce_permission, kind, FALSE);
 }

@@ -9,4 +9,12 @@
 int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,
                            const char *provider, const char *user, json_t *snapshot,
                            int ce_permission);
+
+/* Shared read policy for an actual file/directory target (CF_FILE/CF_DIRECTORY).
+ * Caller must establish native active/current subject, barriers, CE library
+ * qualification and target existence on this same final transaction. This
+ * adapter does not authenticate a snapshot or issue/consume a web ticket. */
+int cf_policy_check_read (SeafDBTrans *trans, const char *repo, const char *path,
+                         const char *provider, const char *user, json_t *snapshot,
+                         int ce_permission, int kind);
 #endif
