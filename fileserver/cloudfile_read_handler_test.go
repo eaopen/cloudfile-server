@@ -55,6 +55,47 @@ func TestTrackedReadCountsOnlyAcceptedBytes(t *testing.T) {
 	}
 }
 
+func TestTrackedReadFinalStatusCannotBeOverwritten(t *testing.T) {
+	tracked := &cloudFileTrackedResponse{ResponseWriter: httptest.NewRecorder()}
+	tracked.WriteHeader(http.StatusEarlyHints)
+	if tracked.committed || tracked.status != 0 {
+		t.Fatal("informational response committed a transfer")
+	}
+	tracked.WriteHeader(http.StatusPartialContent)
+	tracked.WriteHeader(http.StatusInternalServerError)
+	if tracked.status != http.StatusPartialContent {
+		t.Fatal("later status overwrote the committed response")
+	}
+}
+
+func TestReadOutcomeDoesNotClaimClientReceipt(t *testing.T) {
+	for _, fixture := range []struct {
+		method           string
+		status           int
+		bytes, expected  uint64
+		known, cancelled bool
+		failure          error
+		result           string
+	}{
+		{http.MethodGet, 200, 3, 3, true, false, nil, "stream_completed"},
+		{http.MethodGet, 206, 2, 2, true, false, nil, "stream_completed"},
+		{http.MethodGet, 200, 0, 0, true, false, nil, "stream_completed"},
+		{http.MethodGet, 200, 2, 3, true, false, nil, "interrupted"},
+		{http.MethodGet, 200, 3, 3, false, false, nil, "interrupted"},
+		{http.MethodGet, 200, 3, 3, true, true, nil, "interrupted"},
+		{http.MethodGet, 200, 3, 3, true, false, errCloudFileReadEnded, "interrupted"},
+		{http.MethodGet, 404, 3, 3, true, false, nil, "failed"},
+		{http.MethodGet, 0, 0, 0, false, false, errCloudFileReadEnded, "failed"},
+		{http.MethodHead, 200, 0, 3, true, false, nil, "succeeded"},
+	} {
+		tracked := &cloudFileTrackedResponse{status: fixture.status, committed: fixture.status != 0, bytes: fixture.bytes}
+		value := tracked.outcome(fixture.method, fixture.expected, fixture.known, fixture.failure, fixture.cancelled)
+		if value.Result != fixture.result || value.Status != fixture.status || value.BytesSent != fixture.bytes {
+			t.Fatalf("unexpected terminal observation: %#v for %#v", value, fixture)
+		}
+	}
+}
+
 func TestManagedReadDoesNotInheritLegacyCORS(t *testing.T) {
 	for _, explicitHeader := range []bool{false, true} {
 		response := httptest.NewRecorder()

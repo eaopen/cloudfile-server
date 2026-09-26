@@ -117,22 +117,61 @@ type cloudFileTrackedResponse struct {
 	http.ResponseWriter
 	committed bool
 	bytes     uint64
+	status    int
 }
 
 func (w *cloudFileTrackedResponse) WriteHeader(status int) {
+	// Match net/http: informational responses do not commit the final status;
+	// repeated final WriteHeader calls cannot rewrite the recorded outcome.
+	if w.committed {
+		return
+	}
 	cloudFileReadSecurityHeaders(w.Header())
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	w.committed = true
+	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
 
 func (w *cloudFileTrackedResponse) Write(data []byte) (int, error) {
 	cloudFileReadSecurityHeaders(w.Header())
+	if !w.committed {
+		w.status = http.StatusOK
+	}
 	w.committed = true
 	n, err := w.ResponseWriter.Write(data)
 	if n > 0 && n <= len(data) {
 		w.bytes += uint64(n)
 	}
 	return n, err
+}
+
+// A server-side observation, not a client receipt or persisted audit event.
+// Call only once the native reader has returned. The durable audit adapter
+// must derive actor/path from native transfer state, never request headers.
+type cloudFileReadOutcome struct {
+	Result    string
+	Status    int
+	BytesSent uint64
+}
+
+func (w *cloudFileTrackedResponse) outcome(method string, expected uint64, expectedKnown bool, failure error, cancelled bool) cloudFileReadOutcome {
+	result := "failed"
+	if cancelled || (failure != nil && w.committed) {
+		result = "interrupted"
+	} else if failure == nil && w.committed && (w.status == http.StatusOK || w.status == http.StatusPartialContent) {
+		if method == http.MethodHead && w.bytes == 0 {
+			result = "succeeded"
+		} else if method == http.MethodGet && expectedKnown && w.bytes == expected {
+			result = "stream_completed"
+		} else {
+			result = "interrupted"
+		}
+	}
+	return cloudFileReadOutcome{Result: result, Status: w.status, BytesSent: w.bytes}
 }
 
 // Native readers also serve legacy public links and set permissive CORS.
