@@ -20,6 +20,7 @@ bin_PROGRAMS = seaf-server
 
 noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	repo-mgr.h \
+	cloudfile-acl.h \
 	share-mgr.h \
 	passwd-mgr.h \
 	quota-mgr.h \
@@ -51,6 +52,7 @@ seaf_server_SOURCES = \
 	quota-mgr.c \
 	repo-op.c \
 	repo-perm.c \
+	cloudfile-acl.c \
 	size-sched.c \
 	virtual-repo.c \
 	copy-mgr.c \
