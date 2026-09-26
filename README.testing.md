@@ -63,10 +63,18 @@ implicit department ancestors are checked against locked parent/path rows.
 REPEATABLE-READ or SERIALIZABLE is required to protect absent personal shares and
 membership ranges, including a concurrent restrictive insertion. Qualification
 is followed by the Redis final check, not the other way around.
-Until the ACL loader is connected this internal path requires CE write; this is
-an incomplete staging guard, not the final v2 policy. The ACL integration must
-use CE read/write only as library qualification and allow approved directory
-rw elevation while retaining native suspension/hard-readonly constraints.
+The internal context path now uses CE read/write as qualification and loads
+persisted cf_dir_acl rules from the same transaction into the shared C core.
+Directory rw may elevate CE read; file none/invisible and hidden ancestors deny.
+Native suspension/hard-readonly still reject before policy. The target is derived
+from normalized RPC parent/file parameters, not supplied as a separate grant.
+Snapshot departments include inline ancestors, roles use exact provider/namespace
+identities; user namespace is fixed to `user`, external ID remains business userId.
+Candidate lookup pins metadata, checks full indexes/InnoDB, then locks at most
+4096 indexed ancestor rules; no library-wide rule scan. Context is checked again
+after policy reads so expiry during waits rejects. This is still one internal
+replacement primitive, not protection of ordinary CE/Go/WebDAV or complete
+lifecycle/lock/facts enforcement. Development is unbuilt/unverified.
 The extended probe source covers personal-read precedence, group write and
 implicit ancestors, but execution is deferred until overall feature verification.
 Scopes use the job scope contract; at least a user scope and this repository's
