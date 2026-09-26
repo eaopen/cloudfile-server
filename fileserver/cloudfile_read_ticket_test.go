@@ -8,13 +8,13 @@ import (
 func TestCloudFileTicketResponseBoundaries(t *testing.T) {
 	valid := map[string]interface{}{
 		"repo-id": "12345678-1234-4234-8234-123456789abc",
-		"obj-id": strings.Repeat("a", 40), "op": "download", "username": "fixture@invalid.test",
+		"obj-id":  strings.Repeat("a", 40), "op": "download", "username": "fixture@invalid.test",
 	}
 	if result, err := decodeCloudFileReadTicket(valid); err != nil || result.user != valid["username"] {
 		t.Fatal("valid fixed read metadata rejected")
 	}
 	for _, fixture := range []struct {
-		key string
+		key   string
 		value interface{}
 	}{
 		{"repo-id", "invalid"}, {"obj-id", strings.Repeat("A", 40)},
@@ -23,7 +23,9 @@ func TestCloudFileTicketResponseBoundaries(t *testing.T) {
 		{"username", 123}, {"obj-id", nil},
 	} {
 		candidate := make(map[string]interface{})
-		for key, value := range valid { candidate[key] = value }
+		for key, value := range valid {
+			candidate[key] = value
+		}
 		candidate[fixture.key] = fixture.value
 		if result, err := decodeCloudFileReadTicket(candidate); result != nil || err == nil {
 			t.Errorf("invalid %s accepted", fixture.key)

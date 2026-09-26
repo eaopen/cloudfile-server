@@ -3,9 +3,9 @@ package main
 import (
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
-	"time"
 
 	"github.com/haiwen/seafile-server/fileserver/utils"
 )

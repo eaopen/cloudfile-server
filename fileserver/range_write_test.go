@@ -7,7 +7,7 @@ import (
 )
 
 type rangeFixtureWriter struct {
-	n int
+	n   int
 	err error
 }
 
@@ -19,7 +19,7 @@ func TestRangeChunkRequiresCompleteWrite(t *testing.T) {
 	failure := errors.New("fixture disconnect")
 	for _, fixture := range []struct {
 		writer rangeFixtureWriter
-		want error
+		want   error
 	}{
 		{rangeFixtureWriter{3, nil}, nil},
 		{rangeFixtureWriter{2, nil}, io.ErrShortWrite},
@@ -35,10 +35,10 @@ func TestRangeChunkRequiresCompleteWrite(t *testing.T) {
 func TestSingleRangeBoundaries(t *testing.T) {
 	for _, fixture := range []struct {
 		header string
-		size uint64
-		start uint64
-		end uint64
-		ok bool
+		size   uint64
+		start  uint64
+		end    uint64
+		ok     bool
 	}{
 		{"bytes=0-9", 10, 0, 9, true},
 		{"bytes=3-", 10, 3, 9, true},
