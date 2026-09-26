@@ -13,6 +13,10 @@
 #include "utils.h"
 
 #include "log.h"
+#ifdef FULL_FEATURE
+#include "cloudfile-acl.h"
+#include "branch-mgr.h"
+#endif
 
 #define CLEANING_INTERVAL_MSEC 1000*300	/* 5 minutes */
 #define TOKEN_EXPIRE_TIME 3600	        /* 1 hour */
@@ -36,6 +40,10 @@ typedef struct {
     char *username;
     long expire_time;
     gboolean use_onetime;
+    /* Non-NULL means CloudFile path-bound: legacy query must not downgrade. */
+    char *conditions;
+    char *path;
+    char *head_id;
 } AccessInfo;
 
 static void
@@ -48,6 +56,9 @@ free_access_info (AccessInfo *info)
     g_free (info->obj_id);
     g_free (info->op);
     g_free (info->username);
+    g_free (info->conditions);
+    g_free (info->path);
+    g_free (info->head_id);
     g_free (info);
 }
 
@@ -229,7 +240,7 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
     pthread_mutex_lock (&mgr->priv->lock);
     info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
 
-    if (info != NULL) {
+    if (info != NULL && info->conditions == NULL) {
         long expire_time = info->expire_time;
         long now = (long)time(NULL);        
 
@@ -255,3 +266,51 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
     pthread_mutex_unlock (&mgr->priv->lock);
     return NULL;
 }
+
+#ifdef FULL_FEATURE
+char *
+seaf_web_at_manager_issue_read_ticket (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *path, const char *head_id, const char *object_id,
+    const char *op, const char *username, const char *conditions, GError **error)
+{
+    char *token = NULL;
+    SeafDBTrans *trans = NULL;
+    if (!mgr || !op || (strcmp (op, "view") && strcmp (op, "download")))
+        goto denied;
+    trans = seaf_db_begin_transaction (mgr->seaf->db);
+    if (!trans || seaf_branch_manager_check_read_target (mgr->seaf->branch_mgr, trans,
+            repo_id, path, CF_FILE, head_id, object_id, conditions, username) < 0)
+        goto denied;
+    AccessInfo *info = g_new0 (AccessInfo, 1);
+    info->repo_id = g_strdup (repo_id);
+    info->obj_id = g_strdup (object_id);
+    info->op = g_strdup (op);
+    info->username = g_strdup (username);
+    info->path = g_strdup (path);
+    info->head_id = g_strdup (head_id);
+    info->conditions = g_strdup (conditions);
+    info->use_onetime = TRUE;
+    info->expire_time = (long)time (NULL) + 60;
+    pthread_mutex_lock (&mgr->priv->lock);
+    token = gen_new_token (mgr->priv->access_token_hash);
+    g_hash_table_insert (mgr->priv->access_token_hash, g_strdup (token), info);
+    /* Do not publish a usable token before its final SQL guard commits. */
+    if (seaf_db_commit (trans) < 0) {
+        g_hash_table_remove (mgr->priv->access_token_hash, token);
+        g_free (token);
+        token = NULL;
+    }
+    pthread_mutex_unlock (&mgr->priv->lock);
+    if (token) {
+        seaf_db_trans_close (trans);
+        return token;
+    }
+denied:
+    if (trans) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+    }
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "CloudFile read ticket unavailable");
+    return NULL;
+}
+#endif

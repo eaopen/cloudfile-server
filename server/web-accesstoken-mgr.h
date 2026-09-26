@@ -38,5 +38,13 @@ SeafileWebAccess *
 seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                         const char *token);
 
-#endif /* WEB_ACCESSTOKEN_MGR_H */
+#ifdef FULL_FEATURE
+/* Internal single-file path/head/object-bound ticket. Legacy query explicitly
+ * refuses it. No RPC/HTTP registration until the current consumption guard is
+ * connected; a signed-off issuance is never a future permission grant. */
+char *seaf_web_at_manager_issue_read_ticket (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *path, const char *head_id, const char *object_id,
+    const char *op, const char *username, const char *conditions, GError **error);
+#endif
 
+#endif /* WEB_ACCESSTOKEN_MGR_H */
