@@ -631,6 +631,52 @@ cloudfile_check_context (SeafBranchManager *mgr, const char *conditions, json_t 
     reply = redisCommand (client, "EVAL %s 2 %s %s %s %s", script, key, lease,
                           json_string_value (user), generation);
     g_free (lease);
+    /* A trusted delegation host must attach the verified token's immutable
+     * service/jti/lifetime. The local RPC socket is the trust boundary; this
+     * is not a public JWT verifier or permission grant. Recheck with Redis
+     * server time on every context check, including each transfer chunk. */
+    json_t *delegation = json_object_get (root, "user_delegation");
+    if (delegation) {
+        json_t *service = json_object_get (delegation, "service_id");
+        json_t *token = json_object_get (delegation, "token_id");
+        json_t *issued = json_object_get (delegation, "issued_at");
+        json_t *expires = json_object_get (delegation, "expires_at");
+        if (!json_is_object (delegation) || json_object_size (delegation) != 4 ||
+            !scope_identifier (service) || !scope_identifier (token) ||
+            json_string_length (token) > 128 || !json_is_integer (issued) ||
+            !json_is_integer (expires) || json_integer_value (issued) < 0 ||
+            json_integer_value (expires) <= json_integer_value (issued) ||
+            json_integer_value (expires) - json_integer_value (issued) > 60)
+            goto out;
+        char *revocation_prefix = g_key_file_get_string (config, "cloudfile",
+            "delegation_revocation_prefix", NULL);
+        if (!revocation_prefix || strlen (revocation_prefix) > 128 ||
+            !g_str_has_prefix (revocation_prefix, "cf:") ||
+            !g_str_has_suffix (revocation_prefix, ":")) {
+            g_free (revocation_prefix);
+            goto out;
+        }
+        json_t *identity = json_array ();
+        json_array_append (identity, service);
+        json_array_append (identity, token);
+        char *serialized = json_dumps (identity, JSON_COMPACT);
+        json_decref (identity);
+        if (!serialized) { g_free (revocation_prefix); goto out; }
+        char *revocation_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, serialized, -1);
+        char *revocation_key = g_strconcat (revocation_prefix, revocation_hash, NULL);
+        free (serialized); g_free (revocation_hash); g_free (revocation_prefix);
+        redisReply *active = redisCommand (client,
+            "EVAL %s 1 %s %lld %lld",
+            "local t=redis.call('TIME'); local now=tonumber(t[1])+tonumber(t[2])/1000000; "
+            "if tonumber(ARGV[1])>now+30 or tonumber(ARGV[2])<=now "
+            "or redis.call('EXISTS',KEYS[1])~=0 then return 0 end; return 1",
+            revocation_key, (long long)json_integer_value (issued),
+            (long long)json_integer_value (expires));
+        g_free (revocation_key);
+        gboolean allowed = active && active->type == REDIS_REPLY_INTEGER && active->integer == 1;
+        if (active) freeReplyObject (active);
+        if (!allowed) goto out;
+    }
     if (reply && reply->type == REDIS_REPLY_STRING && reply->len <= 1048576) {
         json_t *value = json_loadb (reply->str, reply->len, JSON_REJECT_DUPLICATES, NULL);
         if (json_is_object (value)) {
