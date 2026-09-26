@@ -45,6 +45,8 @@ waiting and keeps repo held; publication must fail within the shared budget.
 It also runs the Hub's internal flat-role provisioner on real CE-created Group
 tables and checks C RPC read-back, empty members and idempotent retry. Its
 management guard/audit hook are explicit fixtures, not production authorization.
+Native department roots and children are also created with GroupStructure and
+checked through C RPC parent IDs, empty members and idempotent retry.
 The probe uses the real schema runner and checks Unicode key parity, missing
 schema failure, failed/cancelled barriers, changed-content/no-op rejection, both
 barrier/publication orderings, final read-only change and native connection loss.

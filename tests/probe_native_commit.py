@@ -479,6 +479,14 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         assert native_group.id == group_id and native_group.group_name == request["name"]
         assert ccnet_api.get_group_members(group_id) == []
         assert provisioner.ensure(**request) == (group_id, False)
+        department = {**request, "namespace": "department", "external_id": "root-dept"}
+        root_id, created = provisioner.ensure_department(**department)
+        assert created and ccnet_api.get_group(root_id).parent_group_id == -1
+        child_request = {**department, "external_id": "child-dept", "parent": "root-dept"}
+        child_id, created = provisioner.ensure_department(**child_request)
+        assert created and ccnet_api.get_group(child_id).parent_group_id == root_id
+        assert provisioner.ensure_department(**child_request) == (child_id, False)
+        assert ccnet_api.get_group_members(child_id) == []
         with connection.cursor() as cursor:
             cursor.execute("INSERT IGNORE INTO GCID(repo_id,gc_id) VALUES(%s,%s)", (repo, uuid4().hex))
         store = JobStore(connection)
@@ -673,7 +681,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
             "barrier_final_readonly_race_rejected": True,
             "native_scope_total_wait_budget_rejected_without_publish": True,
-            "native_role_group_provision_readback_and_retry": True}
+            "native_role_group_provision_readback_and_retry": True,
+            "native_department_provision_hierarchy_and_retry": True}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
