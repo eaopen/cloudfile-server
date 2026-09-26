@@ -80,6 +80,11 @@ seaf_db_get_string (SeafDB *db, const char *sql);
 SeafDBTrans *
 seaf_db_begin_transaction (SeafDB *db);
 
+/* MySQL scope lock on this transaction's connection, released only by close.
+ * Not transferable to an RPC/different SQL connection or a Redis projection. */
+int
+seaf_db_trans_acquire_scope_lock (SeafDBTrans *trans, const char *name, int timeout);
+
 void
 seaf_db_trans_close (SeafDBTrans *trans);
 

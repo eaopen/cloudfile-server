@@ -438,7 +438,7 @@ gen_merge_description (SeafRepo *repo,
 }
 
 static int
-gen_new_commit (const char *repo_id,
+gen_new_commit_guarded (const char *repo_id,
                 SeafCommit *base,
                 const char *new_root,
                 const char *user,
@@ -447,7 +447,8 @@ gen_new_commit (const char *repo_id,
                 gboolean handle_concurrent_update,
                 gboolean check_gc,
                 const char *last_gc_id,
-                GError **error)
+                GError **error,
+                const char *scopes_json)
 {
 #define MAX_RETRY_COUNT 10
 
@@ -568,14 +569,21 @@ retry:
     if (check_gc)
         gc_conflict = FALSE;
 
-    if (seaf_branch_manager_test_and_update_branch(seaf->branch_mgr,
-                                                   repo->head,
-                                                   current_head->commit_id,
-                                                   check_gc,
-                                                   last_gc_id,
-                                                   repo->store_id,
-                                                   &gc_conflict) < 0)
+    int published = scopes_json ?
+        seaf_branch_manager_test_and_update_branch_with_barriers (seaf->branch_mgr,
+            repo->head, current_head->commit_id, check_gc, last_gc_id,
+            repo->store_id, &gc_conflict, scopes_json) :
+        seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
+            repo->head, current_head->commit_id, check_gc, last_gc_id,
+            repo->store_id, &gc_conflict);
+    if (published < 0)
     {
+        if (published == -2) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "CloudFile authority unavailable or fenced");
+            ret = -1;
+            goto out;
+        }
         if (check_gc && gc_conflict) {
             seaf_warning ("Head branch update for repo %s conflicts with GC.\n",
                           repo->id);
@@ -625,6 +633,16 @@ out:
     seaf_commit_unref (merged_commit);
     seaf_repo_unref (repo);
     return ret;
+}
+
+static int
+gen_new_commit (const char *repo_id, SeafCommit *base, const char *new_root,
+                const char *user, const char *desc, char *new_commit_id,
+                gboolean handle_concurrent_update, gboolean check_gc,
+                const char *last_gc_id, GError **error)
+{
+    return gen_new_commit_guarded (repo_id, base, new_root, user, desc, new_commit_id,
+                                   handle_concurrent_update, check_gc, last_gc_id, error, NULL);
 }
 
 static void
@@ -4338,6 +4356,7 @@ put_file_with_condition (SeafRepoManager *mgr,
                             const char *head_id,
                             gint64 mtime,
                             gboolean strict_head,
+                            const char *scopes_json,
                             char **new_file_id,
                             GError **error)
 {
@@ -4460,12 +4479,19 @@ put_file_with_condition (SeafRepoManager *mgr,
             /* A no-op must still linearize against the live head. Never return
              * an old file ID merely because it matches the requested base. */
             seaf_branch_set_commit (repo->head, head_commit->commit_id);
-            if (seaf_branch_manager_test_and_update_branch (
+            int published = scopes_json ?
+                seaf_branch_manager_test_and_update_branch_with_barriers (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
-                    repo->store_id, &gc_conflict) < 0) {
+                    repo->store_id, &gc_conflict, scopes_json) :
+                seaf_branch_manager_test_and_update_branch (
+                    seaf->branch_mgr, repo->head, head_commit->commit_id,
+                    seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
+                    repo->store_id, &gc_conflict);
+            if (published < 0) {
                 g_set_error (error, SEAFILE_DOMAIN,
-                             gc_conflict ? SEAF_ERR_GC_CONFLICT : SEAF_ERR_CONCURRENT_UPLOAD,
+                             published == -2 ? SEAF_ERR_GENERAL :
+                             (gc_conflict ? SEAF_ERR_GC_CONFLICT : SEAF_ERR_CONCURRENT_UPLOAD),
                              "Conditional no-op could not be committed");
                 ret = -1;
                 goto out;
@@ -4488,7 +4514,8 @@ put_file_with_condition (SeafRepoManager *mgr,
 
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
-    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, NULL, !strict_head, TRUE, gc_id, error) < 0) {
+    if (gen_new_commit_guarded (repo_id, head_commit, root_id, user, buf, NULL,
+                               !strict_head, TRUE, gc_id, error, scopes_json) < 0) {
         ret = -1;
         goto out;       
     }
@@ -4525,7 +4552,7 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr, const char *repo_id,
                            gint64 mtime, char **new_file_id, GError **error)
 {
     return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
-                                    file_name, user, head_id, mtime, FALSE, new_file_id, error);
+                                    file_name, user, head_id, mtime, FALSE, NULL, new_file_id, error);
 }
 
 int
@@ -4537,7 +4564,21 @@ seaf_repo_manager_put_file_if_head (SeafRepoManager *mgr, const char *repo_id,
     /* Internal version primitive, not a substitute for CloudFile's final
      * authorization, lifecycle, barrier and lease checks. */
     return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
-                                    file_name, user, head_id, mtime, TRUE, new_file_id, error);
+                                    file_name, user, head_id, mtime, TRUE, NULL, new_file_id, error);
+}
+
+int
+seaf_repo_manager_put_file_with_barriers (SeafRepoManager *mgr, const char *repo_id,
+    const char *temp_file_path, const char *parent_dir, const char *file_name,
+    const char *user, const char *head_id, const char *scopes_json,
+    char **new_file_id, GError **error)
+{
+    if (!scopes_json) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "CloudFile scopes required");
+        return -1;
+    }
+    return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
+                                    file_name, user, head_id, 0, TRUE, scopes_json, new_file_id, error);
 }
 
 static char *

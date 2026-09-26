@@ -33,6 +33,20 @@ It conservatively conditions on the **whole repository head**. It neither change
 legacy `seafile_put_file` nor provides CloudFile permission/lifecycle/barrier/lease
 coordination, a public upload endpoint or an enabled edit capability.
 
+Add `--check-barriers` with the new Hub source package on `PYTHONPATH` to exercise
+`seafile_cloudfile_put_file_with_barriers` against actual Hub JobStore SQL effects.
+Its sixth argument is bounded JSON containing exactly `head_id` and `scopes`.
+Scopes use the job scope contract; at least a user scope and this repository's
+scope are mandatory. **Trusted runtime assembles scopes; they are not grants.**
+The probe uses the real schema runner and checks Unicode key parity, missing
+schema failure, failed/cancelled barriers, changed-content/no-op rejection, both
+barrier/publication orderings, final read-only change and native connection loss.
+Actual `metadata_locks`/`data_lock_waits` evidence is required before each race.
+It only kills the identified SQL thread belonging to its random native account.
+Barrier completion uses an explicitly test-only reconciliation proof; native
+account/context/ACL/lifecycle/lock reconciliation is not claimed. Run without
+Python `-O`; disabling assertions is rejected before creating any test schemas.
+
 ## Run it locally
 
 To run the tests, you need to install pytest first:

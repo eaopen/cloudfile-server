@@ -419,6 +419,12 @@ seaf_repo_manager_put_file_if_head (SeafRepoManager *mgr, const char *repo_id,
                                    const char *file_name, const char *user, const char *head_id,
                                    gint64 mtime, char **new_file_id, GError **error);
 
+int
+seaf_repo_manager_put_file_with_barriers (SeafRepoManager *mgr, const char *repo_id,
+    const char *temp_file_path, const char *parent_dir, const char *file_name,
+    const char *user, const char *head_id, const char *scopes_json,
+    char **new_file_id, GError **error);
+
 /* int */
 /* seaf_repo_manager_put_file_blocks (SeafRepoManager *mgr, */
 /*                                    const char *repo_id, */

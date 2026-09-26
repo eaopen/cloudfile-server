@@ -739,6 +739,12 @@ seafile_cloudfile_put_file_if_head (const char *repo_id, const char *temp_file_p
                                    const char *parent_dir, const char *file_name,
                                    const char *user, const char *head_id, GError **error);
 
+/* Internal barrier/whole-head primitive; not a complete authorization guard. */
+char *
+seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_file_path,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error);
+
 /**
  * Add file blocks at once.
  *

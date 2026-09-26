@@ -6,7 +6,7 @@ credentials, repository IDs or server endpoints are accepted.
 """
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -164,11 +164,203 @@ def check_strict_primitive(api, repo, actor, root, data, original, changed, stal
             "strict_gc_race_write_and_noop_rejected": True}
 
 
-def run(server_binary, fileserver_binary, *, check_strict=False):
+def wait_sql(admin, sql, params, pending, *, seconds=3):
+    deadline = time.monotonic() + seconds
+    while True:
+        with admin.cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        if pending.done() or time.monotonic() >= deadline:
+            raise RuntimeError("expected native/worker SQL lock wait was not observed")
+        time.sleep(0.02)
+
+
+def check_barrier_primitive(api, repo, actor, data, original, changed, admin, database, native_user):
+    """Actual Hub JobStore and C branch transaction, not fixture publication.
+
+    Completion proof below is explicitly a fixture: account/context/projection
+    reconciliation is not claimed. Scopes are privileged inputs, not user grants.
+    """
+    import pymysql
+    from pysearpc import SearpcError
+    from seafile import ServerThreadedRpcClient
+    from cloudfile_extensions.jobs.authority import canonical_scope, lock_name, scope_locks
+    from cloudfile_extensions.jobs.store import BarrierProof, JobStore
+    from cloudfile_extensions.schema.runner import SchemaRunner
+    options = dict(host=admin.host, port=admin.port, user="root", password="", database=database,
+                   autocommit=True, charset="utf8mb4", connect_timeout=5, read_timeout=10)
+    scopes = [{"type": "repo", "provider": "cloudfile", "external_id": repo},
+              {"type": "user", "provider": "directory", "external_id": "员工:a:b"}]
+    def write(path, head, selected=scopes):
+        client = ServerThreadedRpcClient(str(data / "seafile.sock"))
+        try:
+            result = client.cloudfile_put_file_with_barriers(repo, str(path), "/", "probe.txt", actor,
+                json.dumps({"head_id": head, "scopes": selected}, ensure_ascii=False))
+            return result
+        except SearpcError:
+            return None
+    api.put_file(repo, str(original), "/", "probe.txt", actor, api.get_repo(repo).head_cmmt_id)
+    initial = api.get_repo(repo).head_cmmt_id
+    assert write(changed, initial) is None  # Missing barrier schema fails closed.
+    assert api.get_repo(repo).head_cmmt_id == initial
+    with ExitStack() as cleanup:
+        connection = pymysql.connect(**options)
+        cleanup.callback(connection.close)
+        SchemaRunner(connection).apply()
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT IGNORE INTO GCID(repo_id,gc_id) VALUES(%s,%s)", (repo, uuid4().hex))
+        store = JobStore(connection)
+        assert write(original, initial) == api.get_file_id_by_path(repo, "/probe.txt")
+        assert write(changed, initial) == api.get_file_id_by_path(repo, "/probe.txt")
+        assert write(original, api.get_repo(repo).head_cmmt_id)
+        for selected in ([scopes[0]], [scopes[1], {**scopes[0], "external_id": str(uuid4())}],
+                         [scopes[0], {**scopes[1], "unexpected": "x"}],
+                         [scopes[0], {**scopes[1], "external_id": "bad\x00id"}]):
+            assert write(changed, api.get_repo(repo).head_cmmt_id, selected) is None
+
+        def submit(scope, key):
+            return store.submit(actor="admin", actor_kind="user", kind="authorization.refresh", scope=scope,
+                                request={}, idempotency_key=key, barrier=True)[0]
+        @contextmanager
+        def reconciliation_fixture(claim):
+            yield BarrierProof(claim.job_id, claim.epoch)
+        # Already-durable barrier rejects content changes and same-content no-op,
+        # even after failure/cancel. Other users are not globally frozen.
+        job = submit(scopes[1], "subject-barrier")
+        head = api.get_repo(repo).head_cmmt_id
+        assert write(changed, head) is None and write(original, head) is None
+        other = [scopes[0], {**scopes[1], "external_id": "other-user"}]
+        assert write(original, head, other)
+        claim = store.claim("probe-worker", kinds=("authorization.refresh",))
+        store.fail(claim, code="PROBE_FAILED")
+        store.cancel(job, actor="admin", actor_kind="user")
+        assert write(original, head) is None
+        store.retry(job, actor="admin", actor_kind="user")
+        claim = store.claim("probe-worker", kinds=("authorization.refresh",))
+        store.complete(claim, barrier_guard=reconciliation_fixture)
+        assert write(original, head)
+
+        # Read-only wins during indexing/commit: confirm the native transaction
+        # is waiting on RepoInfo, then change its status on the blocking SQL
+        # connection. Early in-memory status was writable; final read must deny.
+        blocker = pymysql.connect(**{**options, "autocommit": False})
+        cleanup.callback(blocker.close)
+        with blocker.cursor() as cursor:
+            cursor.execute("SELECT status FROM RepoInfo WHERE repo_id=%s FOR UPDATE", (repo,))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(write, changed, head)
+            try:
+                wait_sql(admin,
+                    "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                    "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                    "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                    "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='RepoInfo' AND t.PROCESSLIST_USER=%s",
+                    (database, native_user), pending)
+                with blocker.cursor() as cursor:
+                    cursor.execute("UPDATE RepoInfo SET status=1 WHERE repo_id=%s", (repo,))
+                blocker.commit()
+            finally:
+                blocker.rollback()
+            assert pending.result(timeout=10) is None
+        assert api.get_repo(repo).head_cmmt_id == head
+        api.set_repo_status(repo, 0)
+        assert write(original, head)
+
+        # Barrier wins: native must wait for the exact Hub scope lock. Publish
+        # the barrier on that same SQL connection before releasing ownership.
+        user_name = lock_name(database, canonical_scope(scopes[1]))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with scope_locks(connection, [scopes[1]]):
+                pending = pool.submit(write, changed, head)
+                wait_sql(admin,
+                    "SELECT COUNT(*) FROM performance_schema.metadata_locks l "
+                    "JOIN performance_schema.threads t ON t.THREAD_ID=l.OWNER_THREAD_ID "
+                    "WHERE l.OBJECT_TYPE='USER LEVEL LOCK' AND l.OBJECT_NAME=%s "
+                    "AND l.LOCK_STATUS='PENDING' AND t.PROCESSLIST_USER=%s", (user_name, native_user), pending)
+                job = submit(scopes[1], "barrier-wins")
+            assert pending.result(timeout=10) is None
+        assert api.get_repo(repo).head_cmmt_id == head
+        claim = store.claim("probe-worker", kinds=("authorization.refresh",))
+        store.complete(claim, barrier_guard=reconciliation_fixture)
+
+        # Publication wins: pause the real native transaction at GCID *after*
+        # it acquired all authority scopes. Hub cannot establish its repo barrier
+        # until native publication committed and released those scopes.
+        blocker = pymysql.connect(**{**options, "autocommit": False})
+        cleanup.callback(blocker.close)
+        with blocker.cursor() as cursor:
+            cursor.execute("SELECT gc_id FROM GCID WHERE repo_id=%s FOR UPDATE", (repo,))
+        job_connection = pymysql.connect(**options)
+        cleanup.callback(job_connection.close)
+        with job_connection.cursor() as cursor:
+            cursor.execute("SELECT CONNECTION_ID()")
+            job_owner = cursor.fetchone()[0]
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                native = pool.submit(write, changed, head)
+                wait_sql(admin,
+                    "SELECT t.PROCESSLIST_ID FROM performance_schema.data_lock_waits w "
+                    "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                    "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                    "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='GCID' AND t.PROCESSLIST_USER=%s",
+                    (database, native_user), native)
+                job_store = JobStore(job_connection)
+                job_future = pool.submit(job_store.submit, actor="admin", actor_kind="user",
+                    kind="authorization.refresh", scope=scopes[0], request={}, idempotency_key="publication-wins", barrier=True)
+                try:
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.metadata_locks l "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.OWNER_THREAD_ID "
+                        "WHERE l.OBJECT_TYPE='USER LEVEL LOCK' AND l.OBJECT_NAME=%s "
+                        "AND l.LOCK_STATUS='PENDING' AND t.PROCESSLIST_ID=%s",
+                        (lock_name(database, canonical_scope(scopes[0])), job_owner), job_future)
+                finally:
+                    blocker.rollback()
+                assert native.result(timeout=10)
+                job_future.result(timeout=10)
+        finally:
+            blocker.rollback()
+        assert api.get_repo(repo).head_cmmt_id != head and store.active_barrier(scopes[0])
+        assert write(original, api.get_repo(repo).head_cmmt_id) is None
+        claim = store.claim("probe-worker", kinds=("authorization.refresh",))
+        store.complete(claim, barrier_guard=reconciliation_fixture)
+
+        # Kill only this probe's identified native SQL transaction while it owns
+        # authority scopes. No connection retry may publish after losing them.
+        head = api.get_repo(repo).head_cmmt_id
+        with blocker.cursor() as cursor:
+            cursor.execute("SELECT gc_id FROM GCID WHERE repo_id=%s FOR UPDATE", (repo,))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(write, original, head)
+            try:
+                owner = wait_sql(admin,
+                    "SELECT t.PROCESSLIST_ID FROM performance_schema.data_lock_waits w "
+                    "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                    "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                    "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='GCID' AND t.PROCESSLIST_USER=%s",
+                    (database, native_user), pending)
+                with admin.cursor() as cursor:
+                    cursor.execute("KILL CONNECTION " + str(int(owner)))
+            finally:
+                blocker.rollback()
+            assert pending.result(timeout=10) is None
+        assert api.get_repo(repo).head_cmmt_id == head
+        assert write(original, head)
+    return {"barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
+            "barrier_failed_cancelled_still_fenced": True, "barrier_and_publish_both_orders_serialized": True,
+            "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
+            "barrier_final_readonly_race_rejected": True}
+
+
+def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
     import pymysql
     from pymysql.constants import CLIENT
     if os.environ.get("CF_TEST_NATIVE_COMMIT") != "1":
         raise ValueError("explicit isolated native probe opt-in is required")
+    if not __debug__:
+        raise ValueError("native evidence probe cannot run with assertions disabled")
     port = int(os.environ["CF_TEST_DB_PORT"])
     if not 1 <= port <= 65535 or not all(Path(item).is_absolute() and Path(item).is_file()
                                        for item in (server_binary, fileserver_binary)):
@@ -263,6 +455,9 @@ def run(server_binary, fileserver_binary, *, check_strict=False):
                 if check_strict:
                     results.update(check_strict_primitive(api, repo, actor, root, data, original, changed, stale,
                                                          admin, databases[1], user))
+                if check_barriers:
+                    results.update(check_barrier_primitive(api, repo, actor, data, original, changed,
+                                                          admin, databases[1], user))
 
                 fileserver = subprocess.Popen([fileserver_binary, "-F", str(config), "-d", str(data),
                                                "-l", str(root / "fileserver.log")], env=environment,
@@ -306,5 +501,7 @@ if __name__ == "__main__":
     parser.add_argument("--server-binary", required=True)
     parser.add_argument("--fileserver-binary", required=True)
     parser.add_argument("--check-strict", action="store_true")
+    parser.add_argument("--check-barriers", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(args.server_binary, args.fileserver_binary, check_strict=args.check_strict), sort_keys=True))
+    print(json.dumps(run(args.server_binary, args.fileserver_binary, check_strict=args.check_strict,
+                         check_barriers=args.check_barriers), sort_keys=True))

@@ -38,6 +38,8 @@ struct SeafDBRow {
 struct SeafDBTrans {
     DBConnection *conn;
     gboolean need_close;
+    int db_type;
+    GList *named_locks;
 };
 
 typedef struct DBOperations {
@@ -642,13 +644,49 @@ seaf_db_begin_transaction (SeafDB *db)
 
     trans = g_new0 (SeafDBTrans, 1);
     trans->conn = conn;
+    trans->db_type = seaf_db_type (db);
 
     return trans;
+}
+
+static gboolean
+named_lock_result (SeafDBRow *row, void *data)
+{
+    int *result = data;
+    *result = seaf_db_row_get_column_int (row, 0);
+    return FALSE;
+}
+
+int
+seaf_db_trans_acquire_scope_lock (SeafDBTrans *trans, const char *name, int timeout)
+{
+    int result = -1;
+    if (trans->need_close || trans->db_type != SEAF_DB_TYPE_MYSQL ||
+        !name || !g_str_has_prefix (name, "cf.auth.") || strlen (name) != 64 ||
+        timeout < 0 || timeout > 5)
+        return -1;
+    if (seaf_db_trans_foreach_selected_row (trans, "SELECT GET_LOCK(?,?)",
+                                           named_lock_result, &result,
+                                           2, "string", name, "int", timeout) < 0 || result != 1)
+        return -1;
+    /* Retain ownership on this exact connection through COMMIT/ROLLBACK. */
+    trans->named_locks = g_list_prepend (trans->named_locks, g_strdup (name));
+    return 0;
 }
 
 void
 seaf_db_trans_close (SeafDBTrans *trans)
 {
+    for (GList *p = trans->named_locks; p && !trans->need_close; p = p->next) {
+        int result = -1;
+        if (seaf_db_trans_foreach_selected_row (trans, "SELECT RELEASE_LOCK(?)",
+                                               named_lock_result, &result,
+                                               1, "string", p->data) < 0 || result != 1)
+            trans->need_close = TRUE;
+    }
+    /* Unknown ownership/SQL failure destroys the connection, never pooling it
+     * with a lock held. Transaction queries do not reconnect or retry. */
+    g_list_free_full (trans->named_locks, g_free);
     db_ops.release_connection (trans->conn, trans->need_close);
     g_free (trans);
 }

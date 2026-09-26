@@ -2751,6 +2751,7 @@ put_file_rpc (const char *repo_id, const char *temp_file_path,
                   const char *parent_dir, const char *file_name,
                   const char *user, const char *head_id,
                   gboolean strict_head,
+                  const char *scopes_json,
                   GError **error)
 {
     char *norm_parent_dir = NULL, *norm_file_name = NULL, *rpath = NULL;
@@ -2783,7 +2784,11 @@ put_file_rpc (const char *repo_id, const char *temp_file_path,
 
     rpath = format_dir_path (norm_parent_dir);
 
-    if (strict_head)
+    if (scopes_json)
+        seaf_repo_manager_put_file_with_barriers (seaf->repo_mgr, repo_id,
+            temp_file_path, rpath, norm_file_name, user, head_id, scopes_json,
+            &new_file_id, error);
+    else if (strict_head)
         seaf_repo_manager_put_file_if_head (seaf->repo_mgr, repo_id,
                                             temp_file_path, rpath, norm_file_name,
                                             user, head_id, 0, &new_file_id, error);
@@ -2808,7 +2813,7 @@ seafile_put_file (const char *repo_id, const char *temp_file_path,
                   const char *user, const char *head_id, GError **error)
 {
     return put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
-                         user, head_id, FALSE, error);
+                         user, head_id, FALSE, NULL, error);
 }
 
 char *
@@ -2819,7 +2824,42 @@ seafile_cloudfile_put_file_if_head (const char *repo_id, const char *temp_file_p
     /* Privileged local RPC primitive only; not exposed by HTTP or capability
      * declarations until the authoritative CloudFile guard is connected. */
     return put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
-                         user, head_id, TRUE, error);
+                         user, head_id, TRUE, NULL, error);
+}
+
+char *
+seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_file_path,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error)
+{
+    json_t *condition = NULL;
+    char *scopes = NULL, *result = NULL;
+    if (!condition_json || strlen (condition_json) > 16384)
+        goto invalid;
+    condition = json_loads (condition_json, JSON_REJECT_DUPLICATES, NULL);
+    if (!json_is_object (condition) || json_object_size (condition) != 2)
+        goto invalid;
+    json_t *head = json_object_get (condition, "head_id");
+    json_t *array = json_object_get (condition, "scopes");
+    if (!json_is_string (head) || json_string_length (head) != 40 ||
+        !is_object_id_valid (json_string_value (head)) || !json_is_array (array) ||
+        json_array_size (array) < 2 || json_array_size (array) > 16)
+        goto invalid;
+    scopes = json_dumps (array, JSON_COMPACT | JSON_SORT_KEYS);
+    if (!scopes)
+        goto invalid;
+    /* Scopes must be assembled by a trusted caller. This is a local barrier
+     * primitive, not authentication, projection fencing or an ACL grant. */
+    result = put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
+                           user, json_string_value (head), TRUE, scopes, error);
+    goto out;
+invalid:
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid CloudFile commit condition");
+out:
+    free (scopes);
+    if (condition)
+        json_decref (condition);
+    return result;
 }
 
 /* char * */

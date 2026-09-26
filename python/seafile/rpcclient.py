@@ -127,6 +127,12 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     cloudfile_put_file_if_head = seafile_cloudfile_put_file_if_head
 
+    # Trusted scopes + durable barriers; still not a complete business guard.
+    @searpc_func("string", ["string", "string", "string", "string", "string", "string"])
+    def seafile_cloudfile_put_file_with_barriers(repo_id, tmp_file_path, parent_dir, filename, user, condition_json):
+        pass
+    cloudfile_put_file_with_barriers = seafile_cloudfile_put_file_with_barriers
+
     @searpc_func("int", ["string", "string", "string", "string"])
     def seafile_del_file(repo_id, parent_dir, filename, user):
         pass

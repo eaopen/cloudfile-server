@@ -15,6 +15,9 @@
 #endif
 
 #include "branch-mgr.h"
+#ifdef SEAFILE_SERVER
+#include <jansson.h>
+#endif
 
 #define BRANCH_DB "branch.db"
 
@@ -385,14 +388,186 @@ get_gc_id (SeafDBRow *row, void *data)
     return FALSE;
 }
 
-int
-seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
+typedef struct {
+    int rank;
+    char *canonical;
+    const char *type;
+    gboolean blocked;
+} CloudFileScope;
+
+static void
+cloudfile_scope_free (gpointer data)
+{
+    CloudFileScope *scope = data;
+    free (scope->canonical);
+    g_free (scope);
+}
+
+static gint
+cloudfile_scope_compare (gconstpointer a, gconstpointer b)
+{
+    const CloudFileScope *one = *(CloudFileScope * const *)a;
+    const CloudFileScope *two = *(CloudFileScope * const *)b;
+    return one->rank != two->rank ? one->rank - two->rank : strcmp (one->canonical, two->canonical);
+}
+
+static gboolean
+scope_identifier (json_t *value)
+{
+    if (!json_is_string (value))
+        return FALSE;
+    const char *text = json_string_value (value);
+    return json_string_length (value) == strlen (text) && *text &&
+           g_utf8_validate (text, -1, NULL) && g_utf8_strlen (text, -1) <= 255;
+}
+
+static gboolean
+scope_is_exact (SeafDBRow *row, void *data)
+{
+    /* Hash lookup never substitutes for comparing the complete scope. */
+    CloudFileScope *scope = data;
+    if (g_strcmp0 (seaf_db_row_get_column_text (row, 0), scope->canonical) == 0)
+        scope->blocked = TRUE;
+    return TRUE;
+}
+
+static int
+cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *scopes_json)
+{
+    json_t *scopes = NULL;
+    GPtrArray *ordered = g_ptr_array_new_with_free_func (cloudfile_scope_free);
+    char *database = NULL;
+    int result = -1;
+    gboolean has_user = FALSE, has_repo = FALSE;
+    if (strlen (scopes_json) > 16384)
+        goto out;
+    scopes = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+    if (!json_is_array (scopes) || json_array_size (scopes) < 2 || json_array_size (scopes) > 16)
+        goto out;
+    for (size_t i = 0; i < json_array_size (scopes); ++i) {
+        json_t *value = json_array_get (scopes, i);
+        const char *key;
+        json_t *field;
+        if (!json_is_object (value))
+            goto out;
+        json_object_foreach (value, key, field) {
+            if ((strcmp (key, "type") && strcmp (key, "provider") &&
+                 strcmp (key, "external_id") && strcmp (key, "namespace")) || !scope_identifier (field))
+                goto out;
+        }
+        if (!scope_identifier (json_object_get (value, "type")) ||
+            !scope_identifier (json_object_get (value, "provider")) ||
+            !scope_identifier (json_object_get (value, "external_id")))
+            goto out;
+        const char *type = json_string_value (json_object_get (value, "type"));
+        int rank;
+        if (strcmp (type, "provider") == 0)
+            rank = 0;
+        else if (strcmp (type, "user") == 0 || strcmp (type, "subject") == 0) {
+            rank = 1;
+            if (strcmp (type, "subject") == 0 && !json_object_get (value, "namespace"))
+                goto out;
+            has_user |= strcmp (type, "user") == 0;
+        } else if (strcmp (type, "repo") == 0) {
+            rank = 2;
+            /* This primitive publishes exactly one non-virtual repository. */
+            if (strcmp (json_string_value (json_object_get (value, "external_id")), repo_id) != 0)
+                goto out;
+            has_repo = TRUE;
+        } else
+            goto out;
+        CloudFileScope *scope = g_new0 (CloudFileScope, 1);
+        scope->rank = rank;
+        scope->type = type;
+        scope->canonical = json_dumps (value, JSON_COMPACT | JSON_SORT_KEYS);
+        if (!scope->canonical) {
+            g_free (scope);
+            goto out;
+        }
+        g_ptr_array_add (ordered, scope);
+    }
+    if (!has_user || !has_repo)
+        goto out;
+    g_ptr_array_sort (ordered, cloudfile_scope_compare);
+    if (seaf_db_trans_foreach_selected_row (trans, "SELECT DATABASE()", get_gc_id,
+                                           &database, 0) != 1 || !database || strchr (database, '\n'))
+        goto out;
+    for (guint i = 0; i < ordered->len; ++i) {
+        CloudFileScope *scope = g_ptr_array_index (ordered, i);
+        if (i > 0 && strcmp (scope->canonical, ((CloudFileScope *)g_ptr_array_index (ordered, i-1))->canonical) == 0)
+            continue;
+        char *text = g_strdup_printf ("%s\n%s", database, scope->canonical);
+        char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, text, -1);
+        char *name = g_strdup_printf ("cf.auth.%.56s", digest);
+        int locked = seaf_db_trans_acquire_scope_lock (trans, name, 5);
+        g_free (name);
+        g_free (digest);
+        g_free (text);
+        if (locked < 0)
+            goto out;
+    }
+    /* Current/locking reads, after all authority locks and before GC/Branch.
+     * JobStore establishes and clears barriers under these exact SQL locks. */
+    for (guint i = 0; i < ordered->len; ++i) {
+        CloudFileScope *scope = g_ptr_array_index (ordered, i);
+        char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, scope->canonical, -1);
+        int rows = seaf_db_trans_foreach_selected_row (
+            trans, "SELECT scope_id FROM cf_background_job WHERE scope_type=? AND scope_hash=? AND barrier_active=1 FOR UPDATE",
+            scope_is_exact, scope, 2, "string", scope->type, "string", digest);
+        g_free (digest);
+        if (rows < 0 || scope->blocked)
+            goto out;
+    }
+    result = 0;
+out:
+    g_free (database);
+    g_ptr_array_free (ordered, TRUE);
+    if (scopes)
+        json_decref (scopes);
+    return result;
+}
+
+static gboolean
+cloudfile_repo_status (SeafDBRow *row, void *data)
+{
+    gboolean *writable = data;
+    const char *status = seaf_db_row_get_column_text (row, 0);
+    *writable = status && strcmp (status, "0") == 0;
+    return FALSE;
+}
+
+static int
+cloudfile_check_repo (SeafDBTrans *trans, const char *repo_id)
+{
+    gboolean error = FALSE, writable = FALSE;
+    /* These native rows share the branch transaction. Suspension, deletion or
+     * conversion after indexing cannot bypass the final current/locking read.
+     * Row order inside the repository scope: Repo -> RepoInfo -> VirtualRepo,
+     * then GCID -> Branch. No Hub callback while these rows are held. */
+    if (!seaf_db_trans_check_for_existence (trans,
+            "SELECT repo_id FROM Repo WHERE repo_id=? FOR UPDATE", &error,
+            1, "string", repo_id) || error)
+        return -1;
+    if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT status FROM RepoInfo WHERE repo_id=? FOR UPDATE",
+            cloudfile_repo_status, &writable, 1, "string", repo_id) != 1 || !writable)
+        return -1;
+    if (seaf_db_trans_check_for_existence (trans,
+            "SELECT repo_id FROM VirtualRepo WHERE repo_id=? FOR UPDATE", &error,
+            1, "string", repo_id) || error)
+        return -1;
+    return 0;
+}
+
+static int
+test_and_update_branch (SeafBranchManager *mgr,
                                             SeafBranch *branch,
                                             const char *old_commit_id,
                                             gboolean check_gc,
                                             const char *last_gc_id,
                                             const char *origin_repo_id,
-                                            gboolean *gc_conflict)
+                                            gboolean *gc_conflict,
+                                            const char *scopes_json)
 {
     SeafDBTrans *trans;
     char *sql;
@@ -405,6 +580,13 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
     trans = seaf_db_begin_transaction (mgr->seaf->db);
     if (!trans)
         return -1;
+
+    if (scopes_json && (cloudfile_check_barriers (trans, branch->repo_id, scopes_json) < 0 ||
+                       cloudfile_check_repo (trans, branch->repo_id) < 0)) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return -2;
+    }
 
     if (check_gc) {
         sql = "SELECT gc_id FROM GCID WHERE repo_id = ? FOR UPDATE";
@@ -489,6 +671,27 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
         on_branch_updated (mgr, branch);
 
     return 0;
+}
+
+int
+seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr, SeafBranch *branch,
+    const char *old_commit_id, gboolean check_gc, const char *last_gc_id,
+    const char *origin_repo_id, gboolean *gc_conflict)
+{
+    return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
+                                   origin_repo_id, gc_conflict, NULL);
+}
+
+int
+seaf_branch_manager_test_and_update_branch_with_barriers (SeafBranchManager *mgr,
+    SeafBranch *branch, const char *old_commit_id, gboolean check_gc,
+    const char *last_gc_id, const char *origin_repo_id, gboolean *gc_conflict,
+    const char *scopes_json)
+{
+    if (!scopes_json || seaf_db_type (mgr->seaf->db) != SEAF_DB_TYPE_MYSQL)
+        return -2;
+    return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
+                                   origin_repo_id, gc_conflict, scopes_json);
 }
 
 #endif
