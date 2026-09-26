@@ -2844,7 +2844,11 @@ put_file_rpc (const char *repo_id, const char *temp_file_path,
     if (scopes_json && scopes_json[0] == '{') {
         json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         char *target = g_build_path ("/", rpath, norm_file_name, NULL);
+        json_t *expected_path = json_object_get (conditions, "path");
         if (!json_is_object (conditions) || !target ||
+            (expected_path && (!json_is_string (expected_path) ||
+                json_string_length (expected_path) != strlen (target) ||
+                strcmp (json_string_value (expected_path), target) != 0)) ||
             json_object_set_new (conditions, "path", json_string (target)) < 0) {
             if (conditions) json_decref (conditions);
             g_free (target);
@@ -2911,8 +2915,11 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     if (!condition_json || strlen (condition_json) > 16384)
         goto invalid;
     condition = json_loads (condition_json, JSON_REJECT_DUPLICATES, NULL);
-    if (!json_is_object (condition) || (json_object_size (condition) != 2 &&
-                                      json_object_size (condition) != 3))
+    if (!json_is_object (condition))
+        goto invalid;
+    size_t fields = json_object_size (condition);
+    gboolean leased = fields == 6;
+    if (fields != 2 && fields != 3 && !leased)
         goto invalid;
     json_t *head = json_object_get (condition, "head_id");
     json_t *array = json_object_get (condition, "scopes");
@@ -2921,8 +2928,21 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         json_array_size (array) < 2 || json_array_size (array) > 16)
         goto invalid;
     json_t *context = json_object_get (condition, "context");
-    if (json_object_size (condition) == 3 && !json_is_object (context))
+    if ((fields == 3 || leased) && !json_is_object (context))
         goto invalid;
+    if (leased) {
+        json_t *path = json_object_get (condition, "path");
+        if (!json_is_object (json_object_get (condition, "lease")) ||
+            !json_is_object (json_object_get (condition, "oidc_session")) ||
+            !json_is_string (path) || json_string_length (path) == 0 ||
+            json_string_length (path) > 4096 ||
+            json_string_length (path) != strlen (json_string_value (path)) ||
+            json_string_value (path)[0] != '/')
+            goto invalid;
+        /* Six exact required keys leave no room for an unknown field. Every
+         * credential, lifecycle, expiry and version is rechecked in the final
+         * Branch transaction, including a byte-identical replacement. */
+    }
     scopes = json_dumps (context ? condition : array, JSON_COMPACT | JSON_SORT_KEYS);
     if (!scopes)
         goto invalid;
