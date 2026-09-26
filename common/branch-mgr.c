@@ -1353,6 +1353,28 @@ test_and_update_branch (SeafBranchManager *mgr,
         return -2;
     }
 
+    if (scopes_json && scopes_json[0] == '{') {
+        json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        json_t *context = json_object_get (conditions, "context");
+        /* SQL row locks prevent refresh/logout/release mutations, but do not
+         * stop the database clock. Re-read natural session and lease expiry
+         * after all earlier authority/resource waits, immediately before the
+         * publication statement. An omitted lease still checks active locks.
+         * This also covers compare-only/no-op publication through this path. */
+        gboolean current = json_is_object (conditions) &&
+            cloudfile_check_oidc_reference (mgr, trans, conditions) == 0 &&
+            cf_policy_check_lease_write (trans, branch->repo_id,
+                json_string_value (json_object_get (conditions, "path")),
+                json_string_value (json_object_get (context, "userId")),
+                json_object_get (conditions, "lease")) == 0;
+        if (conditions) json_decref (conditions);
+        if (!current) {
+            seaf_db_rollback (trans);
+            seaf_db_trans_close (trans);
+            return -2;
+        }
+    }
+
     sql = "UPDATE Branch SET commit_id = ? "
         "WHERE name = ? AND repo_id = ?";
     if (seaf_db_trans_query (trans, sql, 3, "string", branch->commit_id,
