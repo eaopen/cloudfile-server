@@ -1,12 +1,14 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/haiwen/seafile-server/fileserver/option"
 	"github.com/haiwen/seafile-server/fileserver/repomgr"
 )
 
@@ -18,7 +20,7 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		return &appError{nil, "Read requires GET or HEAD", http.StatusMethodNotAllowed}
 	}
-	if r.TLS == nil {
+	if !cloudFileSecureTransport(r, option.CloudFileTrustedTLSProxies) {
 		return &appError{nil, "Secure read transport required", http.StatusUnauthorized}
 	}
 	if r.URL.RawQuery != "" || len(r.Header.Values("Cookie")) != 0 ||
@@ -83,6 +85,32 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, "Read transfer ended", http.StatusServiceUnavailable}
 	}
 	return failure
+}
+
+func cloudFileSecureTransport(r *http.Request, proxies []*net.IPNet) bool {
+	if r.TLS != nil {
+		return true
+	}
+	// Only the actual TCP peer can attest TLS termination. Forwarded client
+	// addresses/Host never select trust; proxies must overwrite this header.
+	protocol := r.Header.Values("X-Forwarded-Proto")
+	if len(protocol) != 1 || protocol[0] != "https" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range proxies {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 type cloudFileTrackedResponse struct {

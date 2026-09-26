@@ -2,6 +2,7 @@ package option
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,9 @@ import (
 
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
+
+// Explicit startup-only trust for managed reads; absent means direct TLS only.
+var CloudFileTrustedTLSProxies []*net.IPNet
 
 // Storage unit.
 const (
@@ -131,6 +135,26 @@ func LoadFileServerOptions(centralDir string) {
 		log.Fatalf("Failed to load seafile.conf: %v", err)
 	}
 	CloudMode = false
+	CloudFileTrustedTLSProxies = nil
+	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
+		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {
+			entries := strings.Split(key.String(), ",")
+			if len(key.String()) > 4096 || len(entries) > 32 {
+				log.Fatal("CloudFile TLS proxy configuration exceeds budget")
+			}
+			for _, entry := range entries {
+				_, network, parseErr := net.ParseCIDR(strings.TrimSpace(entry))
+				if parseErr != nil {
+					log.Fatal("CloudFile TLS proxies require explicit CIDRs")
+				}
+				ones, _ := network.Mask.Size()
+				if ones == 0 {
+					log.Fatal("CloudFile TLS proxies must not trust all addresses")
+				}
+				CloudFileTrustedTLSProxies = append(CloudFileTrustedTLSProxies, network)
+			}
+		}
+	}
 	if section, err := config.GetSection("general"); err == nil {
 		if key, err := section.GetKey("cloud_mode"); err == nil {
 			CloudMode, _ = key.Bool()
