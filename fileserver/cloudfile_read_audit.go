@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,28 @@ type cloudFileReadAuditFact struct {
 	RequestID, UserID, RepoID, Path, HeadID, Epoch, Operation string
 	Reason                                                    string
 	Outcome                                                   cloudFileReadOutcome
+}
+
+// Cleanup and audit are independent facts: bytes already accepted cannot be
+// recalled. The handler retains the original panic and handles error delivery.
+func finishCloudFileReadAudit(request *http.Request, tracked *cloudFileTrackedResponse,
+	writer *cloudFileReadWriter, database *sql.DB, fact cloudFileReadAuditFact, readerFailed bool) error {
+	cleanupError := writer.Close()
+	if cleanupError != nil {
+		fact.Reason = "transfer_cleanup_unconfirmed"
+	}
+	failure := writer.failed
+	if readerFailed {
+		failure = errCloudFileReadEnded
+	}
+	expected, lengthError := strconv.ParseUint(tracked.Header().Get("Content-Length"), 10, 64)
+	fact.Outcome = tracked.outcome(request.Method, expected, lengthError == nil,
+		failure, request.Context().Err() != nil)
+	// A disconnected client must not cancel this independently bounded append.
+	if err := appendCloudFileReadAudit(context.Background(), database, fact); err != nil {
+		return err
+	}
+	return cleanupError
 }
 
 func captureCloudFileReadAudit(token, requestID string) (cloudFileReadAuditFact, error) {

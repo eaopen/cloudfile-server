@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"net"
 	"net/http"
 	"strconv"
@@ -66,27 +65,12 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 	}
 	defer func() {
 		interruption := recover()
-		// End the native transfer before recording terminal state. The earlier
-		// unconditional defer still covers failures before audit setup; Close is
-		// idempotent and never retries an uncertain native cleanup.
-		cleanupError := writer.Close()
-		if cleanupError != nil {
-			fact.Reason = "transfer_cleanup_unconfirmed"
-		}
-		observedFailure := writer.failed
-		if returned != nil || interruption != nil {
-			observedFailure = errCloudFileReadEnded
-		}
-		expected, lengthError := strconv.ParseUint(tracked.Header().Get("Content-Length"), 10, 64)
-		fact.Outcome = tracked.outcome(r.Method, expected, lengthError == nil,
-			observedFailure, r.Context().Err() != nil)
-		// Client disconnect must not cancel the server's terminal audit. This
-		// independent SQL operation remains bounded by its own five-second limit.
-		auditError := appendCloudFileReadAudit(context.Background(), seafileDB, fact)
+		completionError := finishCloudFileReadAudit(r, tracked, writer, seafileDB, fact,
+			returned != nil || interruption != nil)
 		if interruption != nil {
 			panic(interruption)
 		}
-		if auditError != nil || cleanupError != nil {
+		if completionError != nil {
 			if tracked.committed {
 				panic(http.ErrAbortHandler)
 			}

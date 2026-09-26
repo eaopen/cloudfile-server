@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,61 @@ func TestReadAuditSQLCommitUsesOneTransactionAndNeverRetries(t *testing.T) {
 		}
 		if payload["event_id"] != fixture.execArgs[0][0].Value || fixture.execArgs[2][6].Value != payload["event_id"] {
 			t.Fatal("outbox and audit identity differ")
+		}
+	}
+}
+
+func TestReadAuditFinalizationKeepsDeliveryAndCleanupFactsDistinct(t *testing.T) {
+	for _, fixture := range []struct {
+		cancelled, cleanupFails, readerFails, auditFails bool
+		result                                           string
+	}{
+		{result: "stream_completed"},
+		{cancelled: true, result: "interrupted"},
+		{cleanupFails: true, result: "stream_completed"},
+		{readerFails: true, result: "interrupted"},
+		{auditFails: true, result: "stream_completed"},
+	} {
+		store := &readAuditSQLFixture{}
+		if fixture.auditFails {
+			store.failExec = 3
+		}
+		database := sql.OpenDB(readAuditConnector{store})
+		request := httptest.NewRequest("GET", "https://fixture.invalid/read", nil)
+		ctx, cancel := context.WithCancel(request.Context())
+		request = request.WithContext(ctx)
+		if fixture.cancelled {
+			cancel()
+		}
+		response := &cloudFileTrackedResponse{ResponseWriter: httptest.NewRecorder(), committed: true, status: 200, bytes: 3}
+		response.Header().Set("Content-Length", "3")
+		ends := 0
+		writer := &cloudFileReadWriter{end: func() error {
+			ends++
+			if fixture.cleanupFails {
+				return errCloudFileReadEnded
+			}
+			return nil
+		}}
+		err := finishCloudFileReadAudit(request, response, writer, database, sqlReadAuditFact(), fixture.readerFails)
+		cancel()
+		writer.Close()
+		database.Close()
+		if (err != nil) != (fixture.cleanupFails || fixture.auditFails) || ends != 1 || !writer.closed {
+			t.Fatal("cleanup or terminal failure lost")
+		}
+		if fixture.auditFails {
+			if store.commits != 0 || store.rollbacks != 1 {
+				t.Fatal("failed terminal audit committed")
+			}
+			continue
+		}
+		var payload map[string]interface{}
+		if json.Unmarshal([]byte(store.execArgs[1][0].Value.(string)), &payload) != nil || payload["result"] != fixture.result || payload["bytes_sent"] != float64(3) {
+			t.Fatal("delivery observation changed")
+		}
+		if fixture.cleanupFails && payload["reason"] != "transfer_cleanup_unconfirmed" {
+			t.Fatal("cleanup uncertainty omitted")
 		}
 	}
 }
