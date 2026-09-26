@@ -1,5 +1,25 @@
 # Seafile Server Tests
 
+## Isolated CloudFile Commit Diagnostic
+
+`tests/probe_native_commit.py` starts newly built C Server and Go fileserver against
+an explicitly isolated MySQL test container. It requires `CF_TEST_NATIVE_COMMIT=1`,
+`CF_TEST_DB_PORT` and optionally `CF_TEST_DB_HOST`; the test admin is root with an
+empty password in that disposable container only. Never point these variables at
+a project database. Supply absolute `--server-binary` and `--fileserver-binary`
+paths and the new Server's Python bindings/libsearpc on `PYTHONPATH`.
+
+The probe creates random schemas, a random test account and temporary libraries,
+then stops both processes before removing their data and drops only those schemas
+and account. No existing database name, library ID or HTTP endpoint is accepted.
+`pymysql` is required by the harness; it is not a new Server runtime dependency.
+
+The JSON records whether baseline stale-head writes are accepted, including the
+same-content early-return path and two concurrent C RPC writers. These are risk
+diagnostics, **not** passing authorization, file-lock or conditional-edit tests.
+Running them in a fresh process is required because native Python RPC configuration
+is loaded at import time. Full original upstream tests remain separate.
+
 ## Run it locally
 
 To run the tests, you need to install pytest first:
