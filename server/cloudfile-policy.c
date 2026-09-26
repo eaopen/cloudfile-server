@@ -53,6 +53,41 @@ lease_schema (SeafDBTrans *trans)
     return 0;
 }
 
+typedef struct {
+    const char *path;
+    const char *expected_uid;
+    gboolean valid;
+} LeaseResourceLocation;
+
+static gboolean
+lease_resource_row (SeafDBRow *row, void *data)
+{
+    LeaseResourceLocation *location = data;
+    const char *uid = seaf_db_row_get_column_text (row, 0);
+    const char *path = seaf_db_row_get_column_text (row, 1);
+    if (!uid || strlen (uid) != 36 || g_strcmp0 (path, location->path) ||
+        (location->expected_uid && g_strcmp0 (uid, location->expected_uid)))
+        location->valid = FALSE;
+    return TRUE;
+}
+
+static int
+lease_resource_location (SeafDBTrans *trans, const char *repo,
+                         const char *path, const char *hash, const char *uid)
+{
+    LeaseResourceLocation location = {path, uid, TRUE};
+    /* Hash is an indexed locator, never identity. Read at most two CURRENT
+     * rows before joining a lease: a collision or duplicate active lifecycle
+     * must not be hidden by the UID-specific join or EXISTS short circuit.
+     * The repository authority scope serializes supported resource mutations.
+     * This does not replace native lifecycle reconciliation. */
+    int count = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT uid,path FROM cf_resource WHERE repo_id=? AND path_hash=? "
+        "AND kind='file' AND state='active' LIMIT 2 FOR UPDATE",
+        lease_resource_row, &location, 2, "string", repo, "string", hash);
+    return count >= 0 && count <= 1 && location.valid && (!uid || count == 1) ? 0 : -1;
+}
+
 int
 cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
 {
@@ -61,9 +96,14 @@ cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char
         !g_utf8_validate (path, -1, NULL) || lease_schema (trans) < 0) return -1;
     char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     if (!digest) return -1;
+    if (lease_resource_location (trans, repo, path, digest, NULL) < 0) {
+        g_free (digest);
+        return -1;
+    }
     /* Current locking read, not a preflight/RR snapshot. The actual sparse UID
      * and lease rows stay locked until the caller's Branch transaction ends.
-     * Any unreadable/orphaned active lookup fails conservatively via SQL error.
+     * SQL errors fail closed; orphan/lifecycle reconciliation remains a
+     * separate native integration prerequisite, not proven by this join.
      * Exact stored path is compared after hashing to avoid digest-only identity.
      */
     gboolean locked = seaf_db_trans_check_for_existence (trans,
@@ -115,6 +155,11 @@ cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *p
     if (lease_schema (trans) < 0) return -1;
     char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     char *token_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, token, -1);
+    if (!path_hash || !token_hash || lease_resource_location (trans, repo, path, path_hash, uid) < 0) {
+        g_free (path_hash);
+        g_free (token_hash);
+        return -1;
+    }
     gboolean matches = seaf_db_trans_check_for_existence (trans,
         "SELECT r.uid FROM cf_resource r JOIN cf_lock_lease l ON l.resource_uid=r.uid "
         "WHERE r.uid=? AND r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
