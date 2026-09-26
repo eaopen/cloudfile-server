@@ -132,7 +132,9 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 	now := time.Now().UTC()
 	eventID := uuid.New().String()
 	stream := "repo." + fact.RepoID
-	result, err := transaction.ExecContext(deadline, "INSERT INTO cf_event_outbox(event_id,stream,schema_version,payload,created_at,audit_state,resource_state,resource_next_at,search_state,search_next_at) VALUES(?,?,1,'{}',UTC_TIMESTAMP(6),'done','queued',UTC_TIMESTAMP(6),'queued',UTC_TIMESTAMP(6))", eventID, stream)
+	// Reads never mutate resource attributes/lifecycles or search documents.
+	// Keep the durable ordered event without enqueueing no-op projections.
+	result, err := transaction.ExecContext(deadline, "INSERT INTO cf_event_outbox(event_id,stream,schema_version,payload,created_at,audit_state,resource_state,resource_next_at,search_state,search_next_at) VALUES(?,?,1,'{}',UTC_TIMESTAMP(6),'done','done',UTC_TIMESTAMP(6),'done',UTC_TIMESTAMP(6))", eventID, stream)
 	if err != nil {
 		return err
 	}
