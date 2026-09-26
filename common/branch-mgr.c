@@ -1046,7 +1046,7 @@ cloudfile_oidc_identifier (json_t *object, const char *name, size_t maximum)
 }
 
 static int
-cloudfile_check_oidc_reference (SeafDBTrans *trans, json_t *root)
+cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json_t *root)
 {
     json_t *reference = json_object_get (root, "oidc_session");
     if (!reference) return 0;
@@ -1089,7 +1089,10 @@ cloudfile_check_oidc_reference (SeafDBTrans *trans, json_t *root)
             4, "string", scope, "string", types[i], "string", targets[i],
             "int64", (gint64)json_integer_value (issued)) || error) return -1;
     }
-    return 0;
+    /* Locking read, not an RR snapshot: local flush must invalidate a transfer
+     * even when subsequent index cleanup fails. Signed reference verification
+     * remains the trusted Hub's responsibility before ticket issuance. */
+    return ccnet_user_manager_lock_live_session (mgr->seaf->user_mgr, trans, key);
 }
 
 int
@@ -1108,7 +1111,7 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
             kind, conditions, native_username) < 0)
         return -2;
     json_t *reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
-    int reference_result = cloudfile_check_oidc_reference (trans, reference_root);
+    int reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) return -2;
     /* Pin the actual master row after repository/authority locks. A cached
@@ -1134,7 +1137,7 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         cloudfile_check_context (mgr, conditions, NULL) < 0)
         goto out;
     reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
-    reference_result = cloudfile_check_oidc_reference (trans, reference_root);
+    reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) goto out;
     result = 0;

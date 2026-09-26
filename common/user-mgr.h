@@ -165,4 +165,10 @@ int
 ccnet_user_manager_lock_business_identity (CcnetUserManager *manager,
                                           struct SeafDBTrans *trans,
                                           const char *username, const char *user_id);
+/* Current native DB-session existence only; not signature/identity proof.
+ * The trusted Hub must supply its signed reference and the OIDC scope lock. */
+int
+ccnet_user_manager_lock_live_session (CcnetUserManager *manager,
+                                     struct SeafDBTrans *trans,
+                                     const char *session_key);
 #endif

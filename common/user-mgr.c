@@ -771,6 +771,43 @@ out:
     return result;
 }
 
+int
+ccnet_user_manager_lock_live_session (CcnetUserManager *manager,
+                                     SeafDBTrans *trans, const char *session_key)
+{
+    char *schema = g_key_file_get_string (manager->session->config,
+        "cloudfile", "identity_database", NULL);
+    int result = -1;
+    if (!schema || !*schema || !g_utf8_validate (schema, -1, NULL) ||
+        g_utf8_strlen (schema, -1) > 64 || !session_key ||
+        strlen (session_key) != 32 ||
+        strspn (session_key, "0123456789abcdefghijklmnopqrstuvwxyz") != 32)
+        goto out;
+    GString *qualified = g_string_new ("`");
+    for (const char *p = schema; *p; ++p) {
+        if (*p == '`') g_string_append_c (qualified, '`');
+        g_string_append_c (qualified, *p);
+    }
+    g_string_append (qualified, "`.django_session");
+    char *sql = g_strdup_printf ("SELECT session_key FROM %s WHERE "
+        "session_key=? AND expire_date>UTC_TIMESTAMP(6) FOR UPDATE", qualified->str);
+    gboolean error = FALSE;
+    gboolean live = seaf_db_trans_check_for_existence (trans, sql, &error,
+        1, "string", session_key);
+    g_free (sql);
+    g_string_free (qualified, TRUE);
+    if (!live || error) goto out;
+    gboolean innodb = FALSE;
+    if (seaf_db_trans_foreach_selected_row (trans,
+        "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name='django_session'",
+        cloudfile_account_engine, &innodb, 1, "string", schema) != 1 || !innodb)
+        goto out;
+    result = 0;
+out:
+    g_free (schema);
+    return result;
+}
+
 static char*
 ccnet_user_manager_get_role_emailuser (CcnetUserManager *manager,
                                      const char* email);
