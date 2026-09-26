@@ -20,6 +20,7 @@ import (
 // the consumed transfer, never from HTTP identity/path headers.
 type cloudFileReadAuditFact struct {
 	RequestID, UserID, RepoID, Path, HeadID, Epoch, Operation string
+	Reason                                                    string
 	Outcome                                                   cloudFileReadOutcome
 }
 
@@ -78,6 +79,9 @@ func decodeCloudFileReadAudit(encoded, requestID string) (cloudFileReadAuditFact
 }
 
 func (f cloudFileReadAuditFact) valid() bool {
+	if f.Reason != "" && f.Reason != "transfer_cleanup_unconfirmed" {
+		return false
+	}
 	if !canonicalTicketUUID(f.RequestID) || !canonicalTicketUUID(f.RepoID) ||
 		f.UserID == "" || len([]rune(f.UserID)) > 225 || !utf8.ValidString(f.UserID) ||
 		strings.IndexFunc(f.UserID, unicode.IsControl) >= 0 ||
@@ -142,13 +146,17 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 	if err != nil || sequence < 1 {
 		return errors.New("read audit sequence unavailable")
 	}
-	payload, err := json.Marshal(map[string]interface{}{
+	event := map[string]interface{}{
 		"event_id": eventID, "occurred_at": now.Format(time.RFC3339Nano), "recorded_at": now.Format(time.RFC3339Nano),
 		"request_id": fact.RequestID, "actor_user_id": fact.UserID, "actor_kind": "user", "source": "fileserver",
 		"action": "file." + fact.Operation, "result": fact.Outcome.Result, "repo_id": fact.RepoID, "path": fact.Path,
 		"resource_kind": "file", "content_version": fact.HeadID, "subject_revision": fact.Epoch,
 		"bytes_sent": fact.Outcome.BytesSent, "schema_version": 1, "stream": stream, "sequence": strconv.FormatInt(sequence, 10),
-	})
+	}
+	if fact.Reason != "" {
+		event["reason"] = fact.Reason
+	}
+	payload, err := json.Marshal(event)
 	if err != nil || len(payload) > 65536 {
 		return errors.New("read audit payload unavailable")
 	}

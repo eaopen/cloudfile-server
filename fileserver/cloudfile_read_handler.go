@@ -66,6 +66,13 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 	}
 	defer func() {
 		interruption := recover()
+		// End the native transfer before recording terminal state. The earlier
+		// unconditional defer still covers failures before audit setup; Close is
+		// idempotent and never retries an uncertain native cleanup.
+		cleanupError := writer.Close()
+		if cleanupError != nil {
+			fact.Reason = "transfer_cleanup_unconfirmed"
+		}
 		observedFailure := writer.failed
 		if returned != nil || interruption != nil {
 			observedFailure = errCloudFileReadEnded
@@ -79,13 +86,13 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 		if interruption != nil {
 			panic(interruption)
 		}
-		if auditError != nil {
+		if auditError != nil || cleanupError != nil {
 			if tracked.committed {
 				panic(http.ErrAbortHandler)
 			}
 			tracked.Header().Del("Content-Length")
 			tracked.Header().Del("Content-Disposition")
-			returned = &appError{nil, "Read audit unavailable", http.StatusServiceUnavailable}
+			returned = &appError{nil, "Read completion unavailable", http.StatusServiceUnavailable}
 		}
 	}()
 	repo := repomgr.Get(info.repoID)

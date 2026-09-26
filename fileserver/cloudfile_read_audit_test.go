@@ -38,6 +38,11 @@ func TestCloudFileReadAuditFactBoundaries(t *testing.T) {
 	if !attempt.valid() {
 		t.Fatal("pre-release attempt fact rejected")
 	}
+	cleanupUnconfirmed := valid
+	cleanupUnconfirmed.Reason = "transfer_cleanup_unconfirmed"
+	if !cleanupUnconfirmed.valid() {
+		t.Fatal("bounded cleanup failure reason rejected")
+	}
 	for _, change := range []func(*cloudFileReadAuditFact){
 		func(f *cloudFileReadAuditFact) { f.RequestID = "client-selected" },
 		func(f *cloudFileReadAuditFact) { f.UserID = "" },
@@ -52,6 +57,7 @@ func TestCloudFileReadAuditFactBoundaries(t *testing.T) {
 		func(f *cloudFileReadAuditFact) { f.Outcome.Result = "client_received" },
 		func(f *cloudFileReadAuditFact) { f.Outcome.Status = 103 },
 		func(f *cloudFileReadAuditFact) { f.Outcome.BytesSent = uint64(math.MaxInt64) + 1 },
+		func(f *cloudFileReadAuditFact) { f.Reason = "raw RPC error containing credentials" },
 	} {
 		fact := valid
 		change(&fact)
