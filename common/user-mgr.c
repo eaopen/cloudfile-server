@@ -711,6 +711,66 @@ ccnet_user_manager_lock_active_account (CcnetUserManager *manager,
     return 0;
 }
 
+typedef struct {
+    const char *username;
+    const char *user_id;
+    gboolean exact;
+} CloudFileIdentity;
+
+static gboolean
+cloudfile_exact_identity (SeafDBRow *row, void *data)
+{
+    CloudFileIdentity *identity = data;
+    identity->exact = g_strcmp0 (seaf_db_row_get_column_text (row, 0), identity->username) == 0 &&
+                      g_strcmp0 (seaf_db_row_get_column_text (row, 1), identity->user_id) == 0;
+    return TRUE;
+}
+
+int
+ccnet_user_manager_lock_business_identity (CcnetUserManager *manager,
+                                          SeafDBTrans *trans,
+                                          const char *username, const char *user_id)
+{
+    /* Explicit deployment configuration: actual Hub schema on this same MySQL
+     * server. Never infer identity from email/contact_email/employee number. */
+    char *schema = g_key_file_get_string (manager->session->config, "cloudfile", "identity_database", NULL);
+    int result = -1;
+    if (!schema || !*schema || !g_utf8_validate (schema, -1, NULL) ||
+        g_utf8_strlen (schema, -1) > 64 || !username || !*username ||
+        !g_utf8_validate (username, -1, NULL) || g_utf8_strlen (username, -1) > 255 ||
+        !user_id || !*user_id ||
+        !g_utf8_validate (user_id, -1, NULL) || g_utf8_strlen (user_id, -1) > 225)
+        goto out;
+    GString *qualified = g_string_new ("`");
+    for (const char *p = schema; *p; ++p) {
+        if (*p == '`')
+            g_string_append_c (qualified, '`');
+        g_string_append_c (qualified, *p);
+    }
+    g_string_append (qualified, "`.profile_profile");
+    /* Lock both unique identity axes, detecting legacy uniqueness drift in
+     * either direction. Locking reads see the latest committed binding. */
+    char *sql = g_strdup_printf ("SELECT user,login_id FROM %s WHERE login_id=? OR user=? FOR UPDATE", qualified->str);
+    CloudFileIdentity identity = { username, user_id, FALSE };
+    int rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_exact_identity,
+                                                  &identity, 2, "string", user_id, "string", username);
+    g_free (sql);
+    g_string_free (qualified, TRUE);
+    if (rows != 1 || !identity.exact)
+        goto out;
+    gboolean innodb = FALSE;
+    if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name='profile_profile'",
+            cloudfile_account_engine, &innodb, 1, "string", schema) != 1 || !innodb)
+        goto out;
+    result = 0;
+out:
+    if (result < 0)
+        seaf_warning ("CloudFile identity gate: configured native binding unavailable or mismatched.\n");
+    g_free (schema);
+    return result;
+}
+
 static char*
 ccnet_user_manager_get_role_emailuser (CcnetUserManager *manager,
                                      const char* email);

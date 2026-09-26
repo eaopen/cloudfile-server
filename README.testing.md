@@ -52,8 +52,24 @@ publication. No account or authorization table is added. The probe tests both
 suspension/publication orders, including the real CE account-management RPC,
 nontransactional tables and revoked database access. RPC integer flags use 0/1,
 not JSON booleans.
-Barrier completion uses an explicitly test-only reconciliation proof; business
-identity/context/ACL/lifecycle/lock reconciliation is not claimed. Run without
+The same final transaction then locks the exact Hub `profile_profile` binding:
+all user scopes must carry one business userId, matching `login_id`, and `user`
+must match the native username. Configure the actual Hub schema explicitly:
+
+```ini
+[cloudfile]
+identity_database = seahub_db
+```
+
+There is no default or email-based fallback. Hub must share the transaction's
+MySQL server and credentials; the runtime user needs SELECT permission and the
+table must be InnoDB. Missing, duplicate, case-mismatched, unbound or unreadable
+bindings reject changed-content and no-op requests. This does not create users
+or prove OIDC subject, current Redis epoch, qualification or ACL. The probe uses
+a minimal CE-shaped Profile SQL fixture, not a full Django deployment, and
+observes actual SQL waits for both unbind/publication orderings, including no-op.
+Barrier completion uses an explicitly test-only reconciliation proof;
+context/ACL/lifecycle/lock reconciliation is not claimed. Run without
 Python `-O`; disabling assertions is rejected before creating any test schemas.
 
 ## Run it locally

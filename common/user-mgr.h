@@ -158,4 +158,11 @@ int
 ccnet_user_manager_lock_active_account (CcnetUserManager *manager,
                                        struct SeafDBTrans *trans,
                                        const char *username);
+/* Exact Profile.login_id/user binding on the same final transaction.
+ * Requires explicit [cloudfile] identity_database, shared MySQL and InnoDB.
+ * This is a binding check, not an OIDC/context/ACL grant. */
+int
+ccnet_user_manager_lock_business_identity (CcnetUserManager *manager,
+                                          struct SeafDBTrans *trans,
+                                          const char *username, const char *user_id);
 #endif

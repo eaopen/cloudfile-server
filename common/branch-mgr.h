@@ -66,8 +66,8 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
                                             gboolean *gc_conflict);
 
 /* Privileged internal primitive. Scopes are trusted by the caller; this
- * serializes durable barriers and rechecks the native account, but is not a
- * business identity/context/ACL/lifecycle/lock proof.
+ * serializes durable barriers and rechecks the native account and exact
+ * Profile business binding, but is not an OIDC/context/ACL/lifecycle/lock proof.
  * Returns -2 for invalid/unavailable/fenced scope coordination. */
 int
 seaf_branch_manager_test_and_update_branch_with_barriers (

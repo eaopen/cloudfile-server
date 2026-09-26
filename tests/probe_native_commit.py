@@ -305,7 +305,128 @@ def check_account_gate(api, repo, actor, original, changed, admin, database, acc
             "native_account_publish_wins_serialized_with_ce_management": True}
 
 
-def check_barrier_primitive(api, repo, actor, data, original, changed, admin, database, account_database, native_user):
+def check_identity_gate(api, repo, actor, original, changed, admin, database, native_user, scopes, write, *, file_database):
+    """Actual C final transaction and CE-shaped Profile SQL, not full Hub ORM."""
+    import pymysql
+    table = database + ".profile_profile"
+    user_id = scopes[1]["external_id"]
+    head = api.get_repo(repo).head_cmmt_id
+    def binding(value):
+        with admin.cursor() as cursor:
+            cursor.execute("UPDATE " + table + " SET login_id=%s WHERE user=%s", (value, actor))
+    for value in (None, "", "another-user", user_id.upper()):
+        binding(value)
+        assert write(changed, head) is None and write(original, head) is None
+    binding(user_id)
+    assert write(original, head)
+    assert write(changed, head, [*scopes, {**scopes[1], "external_id": "other-user"}]) is None
+    with admin.cursor() as cursor:
+        cursor.execute("ALTER TABLE " + table + " MODIFY user VARCHAR(200) NOT NULL, ENGINE=MyISAM")
+    try:
+        assert write(changed, head) is None and write(original, head) is None
+    finally:
+        with admin.cursor() as cursor:
+            cursor.execute("ALTER TABLE " + table + " ENGINE=InnoDB, MODIFY user VARCHAR(254) NOT NULL")
+    # Missing table and lost database privilege must not fall back to username.
+    with admin.cursor() as cursor:
+        cursor.execute("RENAME TABLE " + table + " TO " + database + ".profile_unavailable")
+    try:
+        assert write(original, head) is None
+    finally:
+        with admin.cursor() as cursor:
+            cursor.execute("RENAME TABLE " + database + ".profile_unavailable TO " + table)
+    with admin.cursor() as cursor:
+        cursor.execute("REVOKE SELECT ON " + database + ".* FROM %s@'%%'", (native_user,))
+    try:
+        assert write(changed, head) is None
+    finally:
+        with admin.cursor() as cursor:
+            cursor.execute("GRANT SELECT ON " + database + ".* TO %s@'%%'", (native_user,))
+    # Detect uniqueness drift on both identity axes, not just first-row match.
+    for index, alternate in (("user", "another-user"), ("login_id", user_id)):
+        with admin.cursor() as cursor:
+            cursor.execute("ALTER TABLE " + table + " DROP INDEX " + index)
+            cursor.execute("INSERT INTO " + table + "(user,login_id) VALUES(%s,%s)",
+                           (actor if index == "user" else "other@example.invalid", alternate))
+            duplicate = cursor.lastrowid
+        try:
+            assert write(original, head) is None and write(changed, head) is None
+        finally:
+            with admin.cursor() as cursor:
+                cursor.execute("DELETE FROM " + table + " WHERE id=%s", (duplicate,))
+                cursor.execute("ALTER TABLE " + table + " ADD UNIQUE INDEX " + index + "(" + index + ")")
+    # Binding change wins: observe real native Profile row wait, then unbind.
+    blocker = pymysql.connect(host=admin.host, port=admin.port, user="root", password="",
+                              autocommit=False, charset="utf8mb4", read_timeout=10)
+    try:
+        for path in (changed, original):
+            with blocker.cursor() as cursor:
+                cursor.execute("SELECT login_id FROM " + table + " WHERE user=%s FOR UPDATE", (actor,))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(write, path, head)
+                try:
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                        "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                        "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='profile_profile' AND t.PROCESSLIST_USER=%s",
+                        (database, native_user), pending)
+                    with blocker.cursor() as cursor:
+                        cursor.execute("UPDATE " + table + " SET login_id=NULL WHERE user=%s", (actor,))
+                    blocker.commit()
+                finally:
+                    blocker.rollback()
+                assert pending.result(timeout=10) is None
+            assert api.get_repo(repo).head_cmmt_id == head
+            binding(user_id)
+        # Publication wins: once C holds Profile, an actual binding UPDATE on a
+        # separate SQL connection waits until Branch publication finishes.
+        def unbind():
+            connection = pymysql.connect(host=admin.host, port=admin.port, user="root", password="",
+                                          autocommit=True, charset="utf8mb4", read_timeout=10)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("UPDATE " + table + " SET login_id=NULL WHERE user=%s", (actor,))
+                    return cursor.rowcount
+            finally:
+                connection.close()
+        for path in (changed, original):
+            head = api.get_repo(repo).head_cmmt_id
+            with blocker.cursor() as cursor:
+                cursor.execute("SELECT gc_id FROM " + file_database + ".GCID WHERE repo_id=%s FOR UPDATE", (repo,))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending = pool.submit(write, path, head)
+                try:
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                        "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                        "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='GCID' AND t.PROCESSLIST_USER=%s",
+                        (file_database, native_user), pending)
+                    removed = pool.submit(unbind)
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                        "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                        "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='profile_profile' AND t.PROCESSLIST_USER='root'",
+                        (database,), removed)
+                finally:
+                    blocker.rollback()
+                assert pending.result(timeout=10)
+                assert removed.result(timeout=10) == 1
+            assert write(original, api.get_repo(repo).head_cmmt_id) is None
+            binding(user_id)
+            assert write(original, api.get_repo(repo).head_cmmt_id)
+    finally:
+        blocker.close()
+        binding(user_id)
+    return {"native_business_identity_exact_and_unique": True,
+            "native_business_identity_missing_schema_db_failure_rejected": True,
+            "native_business_identity_unbind_wins_write_and_noop_rejected": True,
+            "native_business_identity_publish_wins_write_and_noop_serialized": True}
+
+
+def check_barrier_primitive(api, repo, actor, data, original, changed, admin, database, account_database, identity_database, native_user):
     """Actual Hub JobStore and C branch transaction, not fixture publication.
 
     Completion proof below is explicitly a fixture: account/context/projection
@@ -357,6 +478,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             assert write(changed, api.get_repo(repo).head_cmmt_id, selected) is None
         account_results = check_account_gate(api, repo, actor, original, changed, admin,
                                             database, account_database, native_user, write)
+        identity_results = check_identity_gate(api, repo, actor, original, changed, admin,
+                                              identity_database, native_user, scopes, write, file_database=database)
 
         def submit(scope, key):
             return store.submit(actor="admin", actor_kind="user", kind="authorization.refresh", scope=scope,
@@ -370,7 +493,14 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         head = api.get_repo(repo).head_cmmt_id
         assert write(changed, head) is None and write(original, head) is None
         other = [scopes[0], {**scopes[1], "external_id": "other-user"}]
-        assert write(original, head, other)
+        assert write(original, head, other) is None  # Cannot claim another userId.
+        from seaserv import ccnet_api
+        other_actor = "other-probe@example.invalid"
+        assert ccnet_api.add_emailuser(other_actor, secrets.token_urlsafe(32), 0, 1) == 0
+        with admin.cursor() as cursor:
+            cursor.execute("INSERT INTO " + identity_database + ".profile_profile(user,login_id) VALUES(%s,%s)",
+                           (other_actor, "other-user"))
+        assert write(original, head, other, username=other_actor)
         claim = store.claim("probe-worker", kinds=("authorization.refresh",))
         store.fail(claim, code="PROBE_FAILED")
         store.cancel(job, actor="admin", actor_kind="user")
@@ -486,7 +616,7 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             assert pending.result(timeout=10) is None
         assert api.get_repo(repo).head_cmmt_id == head
         assert write(original, head)
-    return {**account_results, "barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
+    return {**account_results, **identity_results, "barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
             "barrier_failed_cancelled_still_fenced": True, "barrier_and_publish_both_orders_serialized": True,
             "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
             "barrier_final_readonly_race_rejected": True}
@@ -516,14 +646,21 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
         with admin.cursor() as cursor:
             cursor.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (user, password))
             account_created = True
-            for kind in ("ccnet", "seafile"):
+            for kind in (("ccnet", "seafile", "seahub") if check_barriers else ("ccnet", "seafile")):
                 database = "cf_native_probe_" + token + "_" + kind
                 cursor.execute("CREATE DATABASE " + database)
                 databases.append(database)
                 cursor.execute("GRANT ALL ON " + database + ".* TO %s@'%%'", (user,))
                 cursor.execute("USE " + database)
-                schema = Path(__file__).resolve().parents[1] / "scripts/sql/mysql" / (kind + ".sql")
-                cursor.execute(schema.read_text())
+                if kind == "seahub":
+                    # Actual CE Profile table/identity columns, minimal native
+                    # SQL fixture; not a complete Django/Hub deployment.
+                    cursor.execute("CREATE TABLE profile_profile(id BIGINT PRIMARY KEY AUTO_INCREMENT,"
+                                   "user VARCHAR(254) UNIQUE NOT NULL,login_id VARCHAR(225) UNIQUE NULL) "
+                                   "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci")
+                else:
+                    schema = Path(__file__).resolve().parents[1] / "scripts/sql/mysql" / (kind + ".sql")
+                    cursor.execute(schema.read_text())
                 while cursor.nextset():
                     pass
         with tempfile.TemporaryDirectory(prefix="cf_native_probe_") as temporary:
@@ -538,6 +675,9 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
                 "[database]\ntype=mysql\nhost=" + host + "\nport=" + str(port) + "\nuser=" + user
                 + "\npassword=" + password + "\ndb_name=" + databases[1]
                 + "\n[fileserver]\nuse_go_fileserver=true\nhost=127.0.0.1\nport=" + str(http_port) + "\n")
+            if check_barriers:
+                with (config / "seafile.conf").open("a") as handle:
+                    handle.write("\n[cloudfile]\nidentity_database=" + databases[2] + "\n")
             (config / "seafile.conf").chmod(0o600)
             environment = {**os.environ, "SEAFILE_MYSQL_DB_CCNET_DB_NAME": databases[0],
                            "SEAFILE_MYSQL_DB_SEAFILE_DB_NAME": databases[1], "JWT_PRIVATE_KEY": secrets.token_urlsafe(32),
@@ -561,6 +701,9 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
                 with admin.cursor() as cursor:
                     cursor.execute("SELECT is_active FROM " + databases[0] + ".EmailUser WHERE email=%s", (actor,))
                     assert cursor.fetchone() == (1,)
+                    if check_barriers:
+                        cursor.execute("INSERT INTO " + databases[2] + ".profile_profile(user,login_id) VALUES(%s,%s)",
+                                       (actor, "员工:a:b"))
                 repo = api.create_repo("native probe", "isolated diagnostic", actor)
                 original = root / "original"
                 changed = root / "changed"
@@ -599,7 +742,7 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
                                                          admin, databases[1], user))
                 if check_barriers:
                     results.update(check_barrier_primitive(api, repo, actor, data, original, changed,
-                                                          admin, databases[1], databases[0], user))
+                                                          admin, databases[1], databases[0], databases[2], user))
 
                 fileserver = subprocess.Popen([fileserver_binary, "-F", str(config), "-d", str(data),
                                                "-l", str(root / "fileserver.log")], env=environment,

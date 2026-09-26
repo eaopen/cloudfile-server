@@ -432,13 +432,15 @@ scope_is_exact (SeafDBRow *row, void *data)
 }
 
 static int
-cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *scopes_json)
+cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *scopes_json,
+                         CcnetUserManager *user_mgr, const char *native_username)
 {
     json_t *scopes = NULL;
     GPtrArray *ordered = g_ptr_array_new_with_free_func (cloudfile_scope_free);
     char *database = NULL;
     int result = -1;
     gboolean has_user = FALSE, has_repo = FALSE;
+    const char *user_id = NULL;
     if (strlen (scopes_json) > 16384)
         goto out;
     scopes = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
@@ -468,6 +470,12 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
             if (strcmp (type, "subject") == 0 && !json_object_get (value, "namespace"))
                 goto out;
             has_user |= strcmp (type, "user") == 0;
+            if (strcmp (type, "user") == 0) {
+                const char *candidate = json_string_value (json_object_get (value, "external_id"));
+                if (user_id && strcmp (user_id, candidate))
+                    goto out;
+                user_id = candidate;
+            }
         } else if (strcmp (type, "repo") == 0) {
             rank = 2;
             /* This primitive publishes exactly one non-virtual repository. */
@@ -518,6 +526,9 @@ cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *s
         if (rows < 0 || scope->blocked)
             goto out;
     }
+    if (ccnet_user_manager_lock_active_account (user_mgr, trans, native_username) < 0 ||
+        ccnet_user_manager_lock_business_identity (user_mgr, trans, native_username, user_id) < 0)
+        goto out;
     result = 0;
 out:
     g_free (database);
@@ -582,8 +593,8 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (!trans)
         return -1;
 
-    if (scopes_json && (cloudfile_check_barriers (trans, branch->repo_id, scopes_json) < 0 ||
-                       ccnet_user_manager_lock_active_account (mgr->seaf->user_mgr, trans, native_username) < 0 ||
+    if (scopes_json && (cloudfile_check_barriers (trans, branch->repo_id, scopes_json,
+                                               mgr->seaf->user_mgr, native_username) < 0 ||
                        cloudfile_check_repo (trans, branch->repo_id) < 0)) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
