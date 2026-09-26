@@ -71,7 +71,8 @@ class WebTicketConcurrencyTests(unittest.TestCase):
         request = [self.repo_id, "/file.txt", "0" * 40, "0" * 40,
             "download", self.owner, "{}"]
         for position, value in ((0, "invalid-repo"), (2, "invalid-head"),
-                (3, "invalid-object"), (4, "upload"), (6, "x" * 16385), (6, "{}")):
+                (3, "invalid-object"), (4, "upload"), (6, "x" * 16385), (6, "{}"),
+                (6, '{"read_transfer_expires_at":9999999999}')):
             candidate = list(request)
             candidate[position] = value
             with self.subTest(position=position, length=len(value)):
