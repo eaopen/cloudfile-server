@@ -5,6 +5,39 @@
 #include <string.h>
 #include <stdlib.h>
 
+int
+cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
+{
+    gboolean error = FALSE;
+    if (!repo || !path || path[0] != '/' || strlen (path) > 4096 ||
+        !g_utf8_validate (path, -1, NULL)) return -1;
+    /* Missing/old lock schema is not an unlocked file. These metadata gates
+     * supplement, not replace, Hub's exact constraint/checksum validation. */
+    if (!seaf_db_trans_check_for_existence (trans,
+        "SELECT version FROM cf_schema_migration WHERE version='029_lock_leases' AND state='applied' AND step=2 FOR UPDATE",
+        &error, 0) || error) return -1;
+    const char *tables[] = {"cf_resource", "cf_lock_lease", "cf_lock_repo_revision"};
+    for (int i = 0; i < 3; ++i) {
+        if (!seaf_db_trans_check_for_existence (trans,
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=? AND engine='InnoDB'",
+            &error, 1, "string", tables[i]) || error) return -1;
+    }
+    char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
+    if (!digest) return -1;
+    /* Current locking read, not a preflight/RR snapshot. The actual sparse UID
+     * and lease rows stay locked until the caller's Branch transaction ends.
+     * Any unreadable/orphaned active lookup fails conservatively via SQL error.
+     * Exact stored path is compared after hashing to avoid digest-only identity.
+     */
+    gboolean locked = seaf_db_trans_check_for_existence (trans,
+        "SELECT r.uid FROM cf_resource r JOIN cf_lock_lease l ON l.resource_uid=r.uid "
+        "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
+        "AND l.repo_id=? AND l.expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
+        &error, 4, "string", repo, "string", digest, "string", path, "string", repo);
+    g_free (digest);
+    return locked || error ? -1 : 0;
+}
+
 typedef struct {
     GArray *rules;
     GPtrArray *owned;

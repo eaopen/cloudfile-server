@@ -10,6 +10,11 @@ int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *pat
                            const char *provider, const char *user, json_t *snapshot,
                            int ce_permission);
 
+/* Ordinary conditional writes carry no lease proof: an active file lease must
+ * reject them, including writes by the owner. Held through Branch publication.
+ * Exclusive-edit proof and structural/legacy entry coverage are separate gates. */
+int cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path);
+
 /* Shared read policy for an actual file/directory target (CF_FILE/CF_DIRECTORY).
  * Caller must establish native active/current subject, barriers, CE library
  * qualification and target existence on this same final transaction. This

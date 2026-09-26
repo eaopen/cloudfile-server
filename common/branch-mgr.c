@@ -1328,7 +1328,8 @@ test_and_update_branch (SeafBranchManager *mgr,
             cloudfile_check_context (mgr, scopes_json, &snapshot) == 0 &&
             cf_policy_check_write (trans, branch->repo_id, path,
                 json_string_value (json_object_get (context, "provider")),
-                json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0;
+                json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0 &&
+            cf_policy_check_unleased_write (trans, branch->repo_id, path) == 0;
         if (snapshot) json_decref (snapshot);
         if (conditions) json_decref (conditions);
         if (!allowed) {
