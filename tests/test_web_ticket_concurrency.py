@@ -55,3 +55,25 @@ class WebTicketConcurrencyTests(unittest.TestCase):
     def test_missing_ticket_does_not_block_following_query(self):
         self.assertIsNone(self.rpc.seafile_web_query_access_token(str(uuid4())))
         self.assertIsNotNone(self.rpc.seafile_web_query_access_token(self.token(once=1)))
+
+    def test_guarded_consumer_never_downgrades_legacy_ticket(self):
+        from pysearpc import SearpcError
+        token = self.token(once=1)
+        with self.assertRaises(SearpcError):
+            self.rpc.seafile_cloudfile_consume_read_ticket(token)
+        # Rejected by the guarded consumer, not accidentally consumed as an
+        # older bearer grant; the original native path remains unchanged.
+        self.assertIsNotNone(self.rpc.seafile_web_query_access_token(token))
+        self.assertIsNone(self.rpc.seafile_web_query_access_token(token))
+
+    def test_guarded_issuer_rejects_invalid_target_and_context(self):
+        from pysearpc import SearpcError
+        request = [self.repo_id, "/file.txt", "0" * 40, "0" * 40,
+            "download", self.owner, "{}"]
+        for position, value in ((0, "invalid-repo"), (2, "invalid-head"),
+                (3, "invalid-object"), (4, "upload"), (6, "x" * 16385), (6, "{}")):
+            candidate = list(request)
+            candidate[position] = value
+            with self.subTest(position=position, length=len(value)):
+                with self.assertRaises(SearpcError):
+                    self.rpc.seafile_cloudfile_issue_read_ticket(*candidate)
