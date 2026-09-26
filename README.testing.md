@@ -20,6 +20,13 @@ diagnostics, **not** passing authorization, file-lock or conditional-edit tests.
 Running them in a fresh process is required because native Python RPC configuration
 is loaded at import time. Full original upstream tests remain separate.
 
+Add `--check-strict` to validate the separate local RPC version primitive
+`seafile_cloudfile_put_file_if_head`: current-head write/no-op, stale-head and
+invalid conditions, read-only/virtual rejection, and exactly one concurrent winner.
+It conservatively conditions on the **whole repository head**. It neither changes
+legacy `seafile_put_file` nor provides CloudFile permission/lifecycle/barrier/lease
+coordination, a public upload endpoint or an enabled edit capability.
+
 ## Run it locally
 
 To run the tests, you need to install pytest first:

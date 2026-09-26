@@ -732,6 +732,13 @@ seafile_put_file (const char *repo_id, const char *temp_file_path,
                   const char *user, const char *head_id,
                   GError **error);
 
+/* Internal conditional version primitive; caller must supply final CloudFile
+ * authorization/lifecycle/lock coordination before exposing business writes. */
+char *
+seafile_cloudfile_put_file_if_head (const char *repo_id, const char *temp_file_path,
+                                   const char *parent_dir, const char *file_name,
+                                   const char *user, const char *head_id, GError **error);
+
 /**
  * Add file blocks at once.
  *

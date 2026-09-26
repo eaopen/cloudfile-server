@@ -2746,10 +2746,11 @@ out:
     return ret_json;
 }
 
-char *
-seafile_put_file (const char *repo_id, const char *temp_file_path,
+static char *
+put_file_rpc (const char *repo_id, const char *temp_file_path,
                   const char *parent_dir, const char *file_name,
                   const char *user, const char *head_id,
+                  gboolean strict_head,
                   GError **error)
 {
     char *norm_parent_dir = NULL, *norm_file_name = NULL, *rpath = NULL;
@@ -2782,7 +2783,12 @@ seafile_put_file (const char *repo_id, const char *temp_file_path,
 
     rpath = format_dir_path (norm_parent_dir);
 
-    seaf_repo_manager_put_file (seaf->repo_mgr, repo_id,
+    if (strict_head)
+        seaf_repo_manager_put_file_if_head (seaf->repo_mgr, repo_id,
+                                            temp_file_path, rpath, norm_file_name,
+                                            user, head_id, 0, &new_file_id, error);
+    else
+        seaf_repo_manager_put_file (seaf->repo_mgr, repo_id,
                                 temp_file_path, rpath,
                                 norm_file_name, user, head_id,
                                 0,
@@ -2794,6 +2800,26 @@ out:
     g_free (rpath);
 
     return new_file_id;
+}
+
+char *
+seafile_put_file (const char *repo_id, const char *temp_file_path,
+                  const char *parent_dir, const char *file_name,
+                  const char *user, const char *head_id, GError **error)
+{
+    return put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
+                         user, head_id, FALSE, error);
+}
+
+char *
+seafile_cloudfile_put_file_if_head (const char *repo_id, const char *temp_file_path,
+                                   const char *parent_dir, const char *file_name,
+                                   const char *user, const char *head_id, GError **error)
+{
+    /* Privileged local RPC primitive only; not exposed by HTTP or capability
+     * declarations until the authoritative CloudFile guard is connected. */
+    return put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
+                         user, head_id, TRUE, error);
 }
 
 /* char * */

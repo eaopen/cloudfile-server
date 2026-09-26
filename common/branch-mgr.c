@@ -484,7 +484,9 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
 
     seaf_db_trans_close (trans);
 
-    on_branch_updated (mgr, branch);
+    /* A successful compare-only/no-op does not publish a new file fact. */
+    if (strcmp (old_commit_id, branch->commit_id) != 0)
+        on_branch_updated (mgr, branch);
 
     return 0;
 }

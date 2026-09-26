@@ -180,6 +180,11 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_put_file,
                                      "seafile_put_file",
                     searpc_signature_string__string_string_string_string_string_string());
+    /* Local privileged version primitive; no new public transfer endpoint. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cloudfile_put_file_if_head,
+                                     "seafile_cloudfile_put_file_if_head",
+                    searpc_signature_string__string_string_string_string_string_string());
     /* searpc_server_register_function ("seafserv-threaded-rpcserver", */
     /*                                  seafile_put_file_blocks, */
     /*                                  "seafile_put_file_blocks", */

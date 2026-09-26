@@ -58,7 +58,53 @@ def web_update(http, port, token, head, content):
         return response.status, response.read(1024).decode()
 
 
-def run(server_binary, fileserver_binary):
+def check_strict_primitive(api, repo, actor, root, data, original, changed, stale):
+    from pysearpc import SearpcError
+    from seafile import ServerThreadedRpcClient
+    client = ServerThreadedRpcClient(str(data / "seafile.sock"))
+    def rejected(path, expected, repo_id=repo):
+        try:
+            client.cloudfile_put_file_if_head(repo_id, str(path), "/", "probe.txt", actor, expected)
+        except SearpcError:
+            return True
+        return False
+    base = api.get_repo(repo).head_cmmt_id
+    result = client.cloudfile_put_file_if_head(repo, str(original), "/", "probe.txt", actor, base)
+    current = api.get_repo(repo).head_cmmt_id
+    assert current != base and result == api.get_file_id_by_path(repo, "/probe.txt")
+    assert rejected(changed, base) and rejected(original, base)
+    for invalid in (None, "", "*", "x" * 40):
+        assert rejected(stale, invalid)
+    assert api.get_repo(repo).head_cmmt_id == current
+    assert client.cloudfile_put_file_if_head(repo, str(original), "/", "probe.txt", actor, current) == result
+    assert api.get_repo(repo).head_cmmt_id == current
+    api.set_repo_status(repo, 1)
+    assert rejected(changed, current)
+    api.set_repo_status(repo, 0)
+
+    barrier = threading.Barrier(2)
+    def write(index):
+        path = root / ("strict-concurrent-" + str(index))
+        path.write_bytes(bytes([index]) * (2 * 1024 * 1024))
+        connection = ServerThreadedRpcClient(str(data / "seafile.sock"))
+        barrier.wait(timeout=5)
+        try:
+            connection.cloudfile_put_file_if_head(repo, str(path), "/", "probe.txt", actor, current)
+            return True
+        except SearpcError:
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winners = sum(pool.map(write, (1, 2)))
+    assert winners == 1
+    api.post_dir(repo, "/", "virtual-dir", actor)
+    virtual = api.create_virtual_repo(repo, "/virtual-dir", "probe virtual", "isolated", actor)
+    assert rejected(changed, api.get_repo(virtual).head_cmmt_id, virtual)
+    return {"strict_current_head_write": True, "strict_stale_write_and_noop_rejected": True,
+            "strict_invalid_head_rejected": True, "strict_current_noop_preserves_head": True,
+            "strict_readonly_and_virtual_rejected": True, "strict_concurrent_winners": winners}
+
+
+def run(server_binary, fileserver_binary, *, check_strict=False):
     import pymysql
     from pymysql.constants import CLIENT
     if os.environ.get("CF_TEST_NATIVE_COMMIT") != "1":
@@ -154,6 +200,8 @@ def run(server_binary, fileserver_binary):
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     responses = list(pool.map(write, (1, 2)))
                 results["c_concurrent_accepted_count"] = sum(isinstance(value, str) for value in responses)
+                if check_strict:
+                    results.update(check_strict_primitive(api, repo, actor, root, data, original, changed, stale))
 
                 fileserver = subprocess.Popen([fileserver_binary, "-F", str(config), "-d", str(data),
                                                "-l", str(root / "fileserver.log")], env=environment,
@@ -196,5 +244,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-binary", required=True)
     parser.add_argument("--fileserver-binary", required=True)
+    parser.add_argument("--check-strict", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(args.server_binary, args.fileserver_binary), sort_keys=True))
+    print(json.dumps(run(args.server_binary, args.fileserver_binary, check_strict=args.check_strict), sort_keys=True))

@@ -4328,8 +4328,8 @@ do_put_file (SeafRepo *repo,
     return put_file_recursive(repo, root_id, parent_dir, dent);
 }
 
-int
-seaf_repo_manager_put_file (SeafRepoManager *mgr,
+static int
+put_file_with_condition (SeafRepoManager *mgr,
                             const char *repo_id,
                             const char *temp_file_path,
                             const char *parent_dir,
@@ -4337,6 +4337,7 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
                             const char *user,
                             const char *head_id,
                             gint64 mtime,
+                            gboolean strict_head,
                             char **new_file_id,
                             GError **error)
 {
@@ -4353,6 +4354,12 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
     char *gc_id = NULL;
     int ret = 0;
 
+    if (strict_head && (!head_id || !is_object_id_valid (head_id))) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "An explicit valid expected head is required");
+        return -1;
+    }
+
     if (g_access (temp_file_path, R_OK) != 0) {
         seaf_warning ("[put file] File %s doesn't exist or not readable.\n",
                       temp_file_path);
@@ -4364,6 +4371,21 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
     GET_REPO_OR_FAIL(repo, repo_id);
     const char *base = head_id ? head_id : repo->head->commit_id;
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, base);
+
+    /* Early rejection saves indexing work; only the final branch transaction
+     * provides the condition. Virtual merges publish another repo asynchronously
+     * and therefore are outside this deliberately conservative primitive. */
+    if (strict_head && (repo->virtual_info || repo->status != REPO_STATUS_NORMAL)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Conditional replacement requires a writable non-virtual repository");
+        ret = -1;
+        goto out;
+    }
+    if (strict_head && strcmp (head_id, repo->head->commit_id) != 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_CONCURRENT_UPLOAD, "Concurrent upload");
+        ret = -1;
+        goto out;
+    }
 
     if (!canon_path)
         canon_path = get_canonical_path (parent_dir);
@@ -4433,6 +4455,22 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
                                                   fullpath, NULL, NULL);
 
     if (g_strcmp0(old_file_id, new_dent->id) == 0) {
+        if (strict_head) {
+            gboolean gc_conflict = FALSE;
+            /* A no-op must still linearize against the live head. Never return
+             * an old file ID merely because it matches the requested base. */
+            seaf_branch_set_commit (repo->head, head_commit->commit_id);
+            if (seaf_branch_manager_test_and_update_branch (
+                    seaf->branch_mgr, repo->head, head_commit->commit_id,
+                    seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
+                    repo->store_id, &gc_conflict) < 0) {
+                g_set_error (error, SEAFILE_DOMAIN,
+                             gc_conflict ? SEAF_ERR_GC_CONFLICT : SEAF_ERR_CONCURRENT_UPLOAD,
+                             "Conditional no-op could not be committed");
+                ret = -1;
+                goto out;
+            }
+        }
         if (new_file_id)
             *new_file_id = g_strdup(new_dent->id);
         goto out;
@@ -4450,7 +4488,7 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
 
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
-    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, NULL, !strict_head, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;       
     }
@@ -4478,6 +4516,28 @@ out:
     }
 
     return ret;
+}
+
+int
+seaf_repo_manager_put_file (SeafRepoManager *mgr, const char *repo_id,
+                           const char *temp_file_path, const char *parent_dir,
+                           const char *file_name, const char *user, const char *head_id,
+                           gint64 mtime, char **new_file_id, GError **error)
+{
+    return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
+                                    file_name, user, head_id, mtime, FALSE, new_file_id, error);
+}
+
+int
+seaf_repo_manager_put_file_if_head (SeafRepoManager *mgr, const char *repo_id,
+                                   const char *temp_file_path, const char *parent_dir,
+                                   const char *file_name, const char *user, const char *head_id,
+                                   gint64 mtime, char **new_file_id, GError **error)
+{
+    /* Internal version primitive, not a substitute for CloudFile's final
+     * authorization, lifecycle, barrier and lease checks. */
+    return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
+                                    file_name, user, head_id, mtime, TRUE, new_file_id, error);
 }
 
 static char *
@@ -6958,4 +7018,3 @@ seaf_repo_diff (SeafRepo *repo, const char *old, const char *new, int fold_dir_r
 
     return diff_entries;
 }
-

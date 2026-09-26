@@ -121,6 +121,12 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     put_file = seafile_put_file
 
+    # Internal version primitive, not a complete authorization or edit API.
+    @searpc_func("string", ["string", "string", "string", "string", "string", "string"])
+    def seafile_cloudfile_put_file_if_head(repo_id, tmp_file_path, parent_dir, filename, user, head_id):
+        pass
+    cloudfile_put_file_if_head = seafile_cloudfile_put_file_if_head
+
     @searpc_func("int", ["string", "string", "string", "string"])
     def seafile_del_file(repo_id, parent_dir, filename, user):
         pass
