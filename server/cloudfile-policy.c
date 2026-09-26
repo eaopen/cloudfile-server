@@ -6,12 +6,10 @@
 #include <stdlib.h>
 #include <errno.h>
 
-int
-cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
+static int
+lease_schema (SeafDBTrans *trans)
 {
     gboolean error = FALSE;
-    if (!repo || !path || path[0] != '/' || strlen (path) > 4096 ||
-        !g_utf8_validate (path, -1, NULL)) return -1;
     /* Missing/old lock schema is not an unlocked file. These metadata gates
      * supplement, not replace, Hub's exact constraint/checksum validation. */
     if (!seaf_db_trans_check_for_existence (trans,
@@ -23,6 +21,44 @@ cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char
             "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=? AND engine='InnoDB'",
             &error, 1, "string", tables[i]) || error) return -1;
     }
+    const char *pins[] = {
+        "SELECT uid FROM cf_resource LIMIT 0 FOR UPDATE",
+        "SELECT resource_uid FROM cf_lock_lease LIMIT 0 FOR UPDATE",
+        "SELECT repo_id FROM cf_lock_repo_revision LIMIT 0 FOR UPDATE"
+    };
+    for (int i = 0; i < 3; ++i) {
+        seaf_db_trans_check_for_existence (trans, pins[i], &error, 0);
+        if (error) return -1;
+    }
+    const char *checks[] = {
+        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' GROUP BY table_name HAVING COUNT(*)=8 AND SUM("
+        "(column_name IN ('resource_uid','repo_id') AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
+        "(column_name='fencing' AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO') OR "
+        "(column_name='owner_user_id' AND data_type='varchar' AND character_maximum_length=225 AND collation_name='utf8mb4_bin' AND is_nullable='YES') OR "
+        "(column_name='holder_id' AND data_type='varchar' AND character_maximum_length=128 AND collation_name='utf8mb4_bin' AND is_nullable='YES') OR "
+        "(column_name='token_digest' AND data_type='char' AND character_maximum_length=64 AND collation_name='ascii_bin' AND is_nullable='YES') OR "
+        "(column_name='base_version' AND data_type='char' AND character_maximum_length=40 AND collation_name='ascii_bin' AND is_nullable='YES') OR "
+        "(column_name='expires_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='YES'))=8",
+        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_lock_repo_revision' GROUP BY table_name HAVING COUNT(*)=2 AND SUM("
+        "(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
+        "(column_name='revision' AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO'))=2",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='resource_uid' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' AND index_name='repo_leases' GROUP BY index_name HAVING COUNT(*)=2 AND SUM(sub_part IS NULL AND non_unique=1 AND ((column_name='repo_id' AND seq_in_index=1) OR (column_name='resource_uid' AND seq_in_index=2)))=2",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_repo_revision' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='uid' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='resource_location' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(sub_part IS NULL AND non_unique=1 AND ((column_name='repo_id' AND seq_in_index=1) OR (column_name='path_hash' AND seq_in_index=2) OR (column_name='kind' AND seq_in_index=3)))=3"
+    };
+    for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
+        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
+    return 0;
+}
+
+int
+cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
+{
+    gboolean error = FALSE;
+    if (!repo || !path || path[0] != '/' || strlen (path) > 4096 ||
+        !g_utf8_validate (path, -1, NULL) || lease_schema (trans) < 0) return -1;
     char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     if (!digest) return -1;
     /* Current locking read, not a preflight/RR snapshot. The actual sparse UID
@@ -52,7 +88,8 @@ cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *p
                              const char *user, json_t *proof)
 {
     if (!proof) return cf_policy_check_unleased_write (trans, repo, path);
-    if (!json_is_object (proof) || json_object_size (proof) != 5 || !user || !*user) return -1;
+    if (!json_is_object (proof) || json_object_size (proof) != 5 || !user || !*user ||
+        !repo || !path || path[0] != '/' || strlen (path) > 4096 || !g_utf8_validate (path, -1, NULL)) return -1;
     const char *uid = lease_text (proof, "resource_uid", 36);
     const char *holder = lease_text (proof, "holder_id", 64);
     const char *token = lease_text (proof, "token", 64);
@@ -75,9 +112,7 @@ cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *p
     /* Reuse the schema gate, but not its 'unleased' decision. A live matching
      * lease is expected here; SQL failures and missing schema still reject. */
     gboolean error = FALSE;
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT version FROM cf_schema_migration WHERE version='029_lock_leases' AND state='applied' AND step=2 FOR UPDATE",
-        &error, 0) || error) return -1;
+    if (lease_schema (trans) < 0) return -1;
     char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     char *token_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, token, -1);
     gboolean matches = seaf_db_trans_check_for_existence (trans,
