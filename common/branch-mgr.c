@@ -668,6 +668,312 @@ cloudfile_check_repo (SeafDBTrans *trans, const char *repo_id)
     return 0;
 }
 
+typedef struct {
+    const char *username;
+    gboolean valid;
+    int permission;
+    GArray *groups;
+} CloudFileQualification;
+
+static gboolean
+cloudfile_owner_row (SeafDBRow *row, void *data)
+{
+    CloudFileQualification *q = data;
+    const char *owner = seaf_db_row_get_column_text (row, 0);
+    if (!owner || !*owner) q->valid = FALSE;
+    else if (strcmp (owner, q->username) == 0) q->permission = 2;
+    return TRUE;
+}
+
+static gboolean
+cloudfile_share_row (SeafDBRow *row, void *data)
+{
+    CloudFileQualification *q = data;
+    const char *permission = seaf_db_row_get_column_text (row, 0);
+    const char *target = seaf_db_row_get_column_text (row, 1);
+    if (target && strcmp (target, q->username) == 0) {
+        if (g_strcmp0 (permission, "rw") == 0) q->permission = MAX (q->permission, 2);
+        else if (g_strcmp0 (permission, "r") == 0) q->permission = MAX (q->permission, 1);
+        else q->valid = FALSE;
+    } else q->valid = FALSE;
+    return TRUE;
+}
+
+static gboolean
+cloudfile_group_member_row (SeafDBRow *row, void *data)
+{
+    CloudFileQualification *q = data;
+    const char *raw_id = seaf_db_row_get_column_text (row, 0);
+    char *end = NULL;
+    gint64 parsed = raw_id ? g_ascii_strtoll (raw_id, &end, 10) : 0;
+    int id = parsed > 0 && parsed <= G_MAXINT && end && !*end ? (int)parsed : 0;
+    const char *username = seaf_db_row_get_column_text (row, 1);
+    if (id <= 0 || g_strcmp0 (username, q->username) || q->groups->len >= 4096)
+        q->valid = FALSE;
+    else g_array_append_val (q->groups, id);
+    return q->valid;
+}
+
+typedef struct {
+    GHashTable *ids, *parents, *paths;
+    gboolean valid, collect;
+} CloudFileNativeGroups;
+
+static int
+cloudfile_native_integer (const char *text, int minimum)
+{
+    char *end = NULL;
+    gint64 number = text ? g_ascii_strtoll (text, &end, 10) : -2;
+    char canonical[32];
+    g_snprintf (canonical, sizeof canonical, "%" G_GINT64_FORMAT, number);
+    return !text || !end || *end || number < minimum || number > G_MAXINT ||
+           strcmp (text, canonical) ? -2 : (int)number;
+}
+
+static gboolean
+cloudfile_group_parent_row (SeafDBRow *row, void *data)
+{
+    CloudFileNativeGroups *g = data;
+    int id = cloudfile_native_integer (seaf_db_row_get_column_text (row, 0), 1);
+    int parent = cloudfile_native_integer (seaf_db_row_get_column_text (row, 1), -1);
+    if (id < 1 || parent < -1 || !g_hash_table_contains (g->ids, GINT_TO_POINTER (id)) ||
+        g_hash_table_contains (g->parents, GINT_TO_POINTER (id))) g->valid = FALSE;
+    else {
+        int *value = g_new (int, 1); *value = parent;
+        g_hash_table_insert (g->parents, GINT_TO_POINTER (id), value);
+    }
+    return g->valid;
+}
+
+static gboolean
+cloudfile_structure_row (SeafDBRow *row, void *data)
+{
+    CloudFileNativeGroups *g = data;
+    int id = cloudfile_native_integer (seaf_db_row_get_column_text (row, 0), 1);
+    const char *path = seaf_db_row_get_column_text (row, 1);
+    if (id < 1 || !path || !*path || strlen (path) > 1024 ||
+        !g_hash_table_contains (g->ids, GINT_TO_POINTER (id)) ||
+        g_hash_table_contains (g->paths, GINT_TO_POINTER (id))) { g->valid = FALSE; return FALSE; }
+    char **tokens = g_strsplit (path, ", ", -1);
+    guint length = g_strv_length (tokens);
+    int last = -2;
+    if (!length || length > 128) g->valid = FALSE;
+    for (guint i = 0; g->valid && i < length; ++i) {
+        last = cloudfile_native_integer (tokens[i], 1);
+        if (last < 1 || (!g_hash_table_contains (g->ids, GINT_TO_POINTER (last)) &&
+                        (!g->collect || g_hash_table_size (g->ids) >= 4096))) g->valid = FALSE;
+        else if (g->collect) g_hash_table_add (g->ids, GINT_TO_POINTER (last));
+    }
+    if (last != id) g->valid = FALSE;
+    g_strfreev (tokens);
+    if (g->valid) g_hash_table_insert (g->paths, GINT_TO_POINTER (id), g_strdup (path));
+    return g->valid;
+}
+
+static char *
+cloudfile_group_query (const char *prefix, GHashTable *ids)
+{
+    GString *query = g_string_new (prefix);
+    GHashTableIter iter; gpointer id; gboolean first = TRUE;
+    g_hash_table_iter_init (&iter, ids);
+    while (g_hash_table_iter_next (&iter, &id, NULL)) {
+        g_string_append_printf (query, "%s%d", first ? "" : ",", GPOINTER_TO_INT (id)); first = FALSE;
+    }
+    g_string_append (query, ") ORDER BY group_id LIMIT 4097 FOR UPDATE");
+    return g_string_free (query, FALSE);
+}
+
+static gboolean
+cloudfile_innodb_row (SeafDBRow *row, void *data)
+{
+    gboolean *valid = data;
+    *valid = g_strcmp0 (seaf_db_row_get_column_text (row, 0), "InnoDB") == 0;
+    return FALSE;
+}
+
+static gboolean
+cloudfile_qualification_isolation (SeafDBRow *row, void *data)
+{
+    gboolean *valid = data;
+    const char *isolation = seaf_db_row_get_column_text (row, 0);
+    *valid = g_strcmp0 (isolation, "REPEATABLE-READ") == 0 ||
+             g_strcmp0 (isolation, "SERIALIZABLE") == 0;
+    return FALSE;
+}
+
+static char *
+cloudfile_quote_identifier (const char *value)
+{
+    if (!value || !*value || !g_utf8_validate (value, -1, NULL) || g_utf8_strlen (value, -1) > 64)
+        return NULL;
+    GString *quoted = g_string_new ("`");
+    for (const char *p = value; *p; ++p) {
+        if (*p == '`') g_string_append_c (quoted, '`');
+        g_string_append_c (quoted, *p);
+    }
+    g_string_append_c (quoted, '`');
+    return g_string_free (quoted, FALSE);
+}
+
+/* Current, locking CE qualification. No cached RPC/group membership is trusted.
+ * Returns 0/1/2 for unqualified/read/write, -1 for ambiguous/unavailable state.
+ * Caller owns authority scopes, native account and repository locks. */
+static int
+cloudfile_library_qualification (SeafBranchManager *mgr, SeafDBTrans *trans,
+                                const char *repo, const char *username)
+{
+    CloudFileQualification q = {username, TRUE, 0, NULL};
+    int result = -1;
+    char *schema = NULL, *group_table = NULL, *sql = NULL;
+    GHashTable *all = NULL, *parents = NULL, *structures = NULL;
+    const char *native_schema = seaf_db_mysql_shared_database (mgr->seaf->db, mgr->seaf->ccnet_db);
+    const char *table = g_getenv ("SEAFILE_MYSQL_DB_GROUP_TABLE_NAME");
+    if (!table || !*table) table = "Group";
+    /* Lock metadata too: nontransactional legacy tables cannot prove authority. */
+    const char *tables[] = {"RepoOwner", "SharedRepo", "RepoGroup", "InnerPubRepo"};
+    gboolean isolation = FALSE;
+    int isolation_rows = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT @@transaction_isolation", cloudfile_qualification_isolation, &isolation, 0);
+    if (isolation_rows < 0)
+        isolation_rows = seaf_db_trans_foreach_selected_row (trans,
+            "SELECT @@tx_isolation", cloudfile_qualification_isolation, &isolation, 0);
+    /* Missing personal shares/memberships are also authority: protect absence
+     * against a concurrent restrictive share insertion, not just existing rows. */
+    if (isolation_rows != 1 || !isolation) goto out;
+    for (guint i = 0; i < G_N_ELEMENTS (tables); ++i) {
+        gboolean engine = FALSE;
+        if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?",
+            cloudfile_innodb_row, &engine, 1, "string", tables[i]) != 1 || !engine) goto out;
+    }
+    if (seaf_db_trans_foreach_selected_row (trans,
+        "SELECT owner_id FROM RepoOwner WHERE repo_id=? FOR UPDATE", cloudfile_owner_row,
+        &q, 1, "string", repo) != 1 || !q.valid) goto out;
+    if (q.permission) { result = q.permission; goto out; }
+    int rows = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT permission,to_email FROM SharedRepo WHERE repo_id=? AND to_email=? LIMIT 2 FOR UPDATE",
+        cloudfile_share_row, &q, 2, "string", repo, "string", username);
+    if (rows < 0 || rows > 1 || !q.valid) goto out;
+    if (rows) { result = q.permission; goto out; } /* Personal share dominates groups. */
+    schema = cloudfile_quote_identifier (native_schema);
+    group_table = cloudfile_quote_identifier (table);
+    if (!schema || !group_table) goto out;
+    const char *native_tables[] = {"GroupUser", "GroupStructure", table};
+    for (guint i = 0; i < G_N_ELEMENTS (native_tables); ++i) {
+        gboolean engine = FALSE;
+        if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name=?",
+            cloudfile_innodb_row, &engine, 2, "string", native_schema, "string", native_tables[i]) != 1 || !engine) goto out;
+    }
+    q.groups = g_array_new (FALSE, FALSE, sizeof (int));
+    sql = g_strdup_printf ("SELECT group_id,user_name FROM %s.GroupUser WHERE user_name=? ORDER BY group_id LIMIT 4097 FOR UPDATE", schema);
+    rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_group_member_row, &q, 1, "string", username);
+    g_free (sql); sql = NULL;
+    if (rows < 0 || !q.valid) goto out;
+    all = g_hash_table_new (g_direct_hash, g_direct_equal);
+    parents = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, g_free);
+    structures = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, g_free);
+    for (guint i = 0; i < q.groups->len; ++i)
+        g_hash_table_add (all, GINT_TO_POINTER (g_array_index (q.groups, int, i)));
+    CloudFileNativeGroups native = {all, parents, structures, TRUE, TRUE};
+    /* Four indexed batches instead of one SQL round trip per ancestor. Parent
+     * chains are validated from row-locked data entirely in bounded memory. */
+    if (g_hash_table_size (all)) {
+        char *prefix = g_strdup_printf ("SELECT group_id,path FROM %s.GroupStructure WHERE group_id IN (", schema);
+        sql = cloudfile_group_query (prefix, all); g_free (prefix);
+        rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_structure_row, &native, 0);
+        g_free (sql); sql = NULL;
+        if (rows < 0 || !native.valid) goto out;
+        prefix = g_strdup_printf ("SELECT group_id,parent_group_id FROM %s.%s WHERE group_id IN (", schema, group_table);
+        sql = cloudfile_group_query (prefix, all); g_free (prefix);
+        rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_group_parent_row, &native, 0);
+        g_free (sql); sql = NULL;
+        if (rows != (int)g_hash_table_size (all) || !native.valid) goto out;
+        g_hash_table_remove_all (structures);
+        native.collect = FALSE;
+        prefix = g_strdup_printf ("SELECT group_id,path FROM %s.GroupStructure WHERE group_id IN (", schema);
+        sql = cloudfile_group_query (prefix, all); g_free (prefix);
+        rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_structure_row, &native, 0);
+        g_free (sql); sql = NULL;
+        if (rows < 0 || !native.valid) goto out;
+    }
+    for (guint i = 0; i < q.groups->len; ++i) {
+        GArray *chain = g_array_new (FALSE, FALSE, sizeof (int));
+        int id = g_array_index (q.groups, int, i), parent = -2;
+        gboolean valid = TRUE;
+        while (id > 0) {
+            if (chain->len >= 128 || (!g_hash_table_contains (all, GINT_TO_POINTER (id)) &&
+                                     g_hash_table_size (all) >= 4096)) { valid = FALSE; break; }
+            for (guint j = 0; j < chain->len; ++j)
+                if (g_array_index (chain, int, j) == id) valid = FALSE;
+            if (!valid) break;
+            g_array_append_val (chain, id);
+            g_hash_table_add (all, GINT_TO_POINTER (id));
+            int *cached = g_hash_table_lookup (parents, GINT_TO_POINTER (id));
+            if (!cached) { valid = FALSE; break; }
+            parent = *cached;
+            id = parent;
+        }
+        if (valid && (chain->len > 1 || parent == -1)) {
+            if (parent != -1) valid = FALSE;
+            GString *expected = g_string_new ("");
+            for (guint j = chain->len; valid && j > 0; --j) {
+                id = g_array_index (chain, int, j - 1);
+                if (*expected->str) g_string_append (expected, ", ");
+                g_string_append_printf (expected, "%d", id);
+                if (g_strcmp0 (expected->str, g_hash_table_lookup (structures, GINT_TO_POINTER (id)))) valid = FALSE;
+            }
+            g_string_free (expected, TRUE);
+        }
+        g_array_free (chain, TRUE);
+        if (!valid) goto out;
+    }
+    if (g_hash_table_size (all)) {
+        GString *query = g_string_new ("SELECT permission,? FROM RepoGroup WHERE repo_id=? AND group_id IN (");
+        GHashTableIter iter; gpointer id; gboolean first = TRUE;
+        g_hash_table_iter_init (&iter, all);
+        while (g_hash_table_iter_next (&iter, &id, NULL)) {
+            g_string_append_printf (query, "%s%d", first ? "" : ",", GPOINTER_TO_INT (id)); first = FALSE;
+        }
+        g_string_append (query, ") ORDER BY group_id LIMIT 4097 FOR UPDATE");
+        rows = seaf_db_trans_foreach_selected_row (trans, query->str, cloudfile_share_row, &q,
+            2, "string", username, "string", repo);
+        g_string_free (query, TRUE);
+        if (rows < 0 || rows > 4096 || !q.valid) goto out;
+        if (q.permission) { result = q.permission; goto out; }
+    }
+    if (!mgr->seaf->cloud_mode) {
+        rows = seaf_db_trans_foreach_selected_row (trans,
+            "SELECT permission,? FROM InnerPubRepo WHERE repo_id=? LIMIT 2 FOR UPDATE",
+            cloudfile_share_row, &q, 2, "string", username, "string", repo);
+        if (rows < 0 || rows > 1 || !q.valid) goto out;
+    }
+    result = q.permission;
+out:
+    /* Check engines again after locking reads have pinned the table metadata.
+     * Information_schema before a read alone cannot exclude an ALTER race. */
+    for (guint i = 0; result >= 0 && i < G_N_ELEMENTS (tables); ++i) {
+        gboolean engine = FALSE;
+        if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?",
+            cloudfile_innodb_row, &engine, 1, "string", tables[i]) != 1 || !engine) result = -1;
+    }
+    const char *final_native_tables[] = {"GroupUser", "GroupStructure", table};
+    for (guint i = 0; result >= 0 && q.groups && i < G_N_ELEMENTS (final_native_tables); ++i) {
+        gboolean engine = FALSE;
+        if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name=?",
+            cloudfile_innodb_row, &engine, 2, "string", native_schema,
+            "string", final_native_tables[i]) != 1 || !engine) result = -1;
+    }
+    if (q.groups) g_array_free (q.groups, TRUE);
+    if (all) g_hash_table_destroy (all);
+    if (parents) g_hash_table_destroy (parents);
+    if (structures) g_hash_table_destroy (structures);
+    g_free (schema); g_free (group_table); g_free (sql);
+    return result;
+}
+
 static int
 test_and_update_branch (SeafBranchManager *mgr,
                                             SeafBranch *branch,
@@ -757,6 +1063,15 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -1;
+    }
+
+    /* Context-bearing v2 calls require actual CE write qualification until the
+     * ACL loader is connected. Legacy barrier-only probes retain their scope. */
+    if (scopes_json && scopes_json[0] == '{' &&
+        cloudfile_library_qualification (mgr, trans, branch->repo_id, native_username) != 2) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return -2;
     }
 
     if (scopes_json && cloudfile_check_context (mgr, scopes_json) < 0) {

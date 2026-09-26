@@ -608,6 +608,37 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
                 assert api.get_repo(repo).head_cmmt_id == head
                 assert write(changed, head, guarded, context=context)
                 head = api.get_repo(repo).head_cmmt_id
+                # Qualification fixtures mutate only this probe's random repo.
+                # Final SQL reads must not rely on native in-memory owner/share.
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE RepoOwner SET owner_id=%s WHERE repo_id=%s", ("fixture-other-owner", repo))
+                    assert write(changed, head, guarded, context=context) is None
+                    with connection.cursor() as cursor:
+                        cursor.execute("INSERT INTO RepoGroup(repo_id,group_id,user_name,permission) VALUES(%s,%s,%s,'rw')", (repo, manual_id, "fixture-other-owner"))
+                    assert write(changed, head, guarded, context=context)
+                    with connection.cursor() as cursor:
+                        cursor.execute("INSERT INTO SharedRepo(repo_id,from_email,to_email,permission) VALUES(%s,%s,%s,'r')", (repo, "fixture-other-owner", actor))
+                    assert write(changed, head, guarded, context=context) is None  # Personal read dominates group write.
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE SharedRepo SET permission='rw' WHERE repo_id=%s AND to_email=%s", (repo, actor))
+                    assert write(changed, head, guarded, context=context)
+                    with connection.cursor() as cursor:
+                        cursor.execute("DELETE FROM SharedRepo WHERE repo_id=%s", (repo,))
+                        cursor.execute("UPDATE RepoGroup SET group_id=%s WHERE repo_id=%s", (root_id, repo))
+                        cursor.execute("DELETE FROM `" + account_database + "`.GroupUser WHERE group_id=%s AND user_name=%s", (root_id, actor))
+                    assert write(changed, head, guarded, context=context)  # Actual implicit CE ancestor.
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE `" + account_database + "`.GroupStructure SET path=%s WHERE group_id=%s", (f"{root_id}, {manual_id}, {child_id}", child_id))
+                    assert write(changed, head, guarded, context=context) is None
+                finally:
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE RepoOwner SET owner_id=%s WHERE repo_id=%s", (actor, repo))
+                        cursor.execute("DELETE FROM SharedRepo WHERE repo_id=%s", (repo,))
+                        cursor.execute("DELETE FROM RepoGroup WHERE repo_id=%s", (repo,))
+                        cursor.execute("INSERT IGNORE INTO `" + account_database + "`.GroupUser(group_id,user_name,is_staff) VALUES(%s,%s,0)", (root_id, actor))
+                        cursor.execute("UPDATE `" + account_database + "`.GroupStructure SET path=%s WHERE group_id=%s", (f"{root_id}, {child_id}", child_id))
+                assert api.get_repo(repo).head_cmmt_id == head
                 cache.set(key, json.dumps({**snapshot, "context_epoch": "b" * 32}), ex=120)
                 assert write(original, head, guarded, context=context) is None
                 assert api.get_repo(repo).head_cmmt_id == head
@@ -759,7 +790,8 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             "native_role_group_provision_readback_and_retry": True,
             "native_department_provision_hierarchy_and_retry": True,
             "native_membership_apply_remove_preserve_and_retry": True,
-            "native_context_epoch_ready_ttl_lease_unicode_write_noop": bool(os.environ.get("CF_TEST_REDIS_PORT"))}
+            "native_context_epoch_ready_ttl_lease_unicode_write_noop": bool(os.environ.get("CF_TEST_REDIS_PORT")),
+            "native_ce_qualification_owner_personal_group_and_ancestor": bool(os.environ.get("CF_TEST_REDIS_PORT"))}
 
 
 def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=False):
