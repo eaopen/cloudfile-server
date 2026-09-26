@@ -53,6 +53,22 @@ Unicode parity, current write/no-op and rejection after generation change.
 Snapshot input is a fixture: not real IdP/directory or full ACL evidence.
 Barrier-only two-field calls remain internal compatibility primitives, not
 current-context protected calls. Ordinary CE/Go entry points are not covered.
+
+Development increment (not yet built/tested): context-bearing publication also
+loads CE qualification on the same transaction, with owner > personal share >
+groups > inner-public precedence. Duplicate personal shares, unknown permission,
+broken hierarchy, non-InnoDB tables and unsafe transaction isolation reject.
+Group membership/structures are batch-loaded with a 4096-group/128-depth budget;
+implicit department ancestors are checked against locked parent/path rows.
+REPEATABLE-READ or SERIALIZABLE is required to protect absent personal shares and
+membership ranges, including a concurrent restrictive insertion. Qualification
+is followed by the Redis final check, not the other way around.
+Until the ACL loader is connected this internal path requires CE write; this is
+an incomplete staging guard, not the final v2 policy. The ACL integration must
+use CE read/write only as library qualification and allow approved directory
+rw elevation while retaining native suspension/hard-readonly constraints.
+The extended probe source covers personal-read precedence, group write and
+implicit ancestors, but execution is deferred until overall feature verification.
 Scopes use the job scope contract; at least a user scope and this repository's
 scope are mandatory. **Trusted runtime assembles scopes; they are not grants.**
 Scope acquisition shares one five-second monotonic budget, rounded down to
