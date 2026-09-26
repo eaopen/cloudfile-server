@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 )
 
 // Client represents a connections to the RPC server.
@@ -42,21 +43,41 @@ func Init(pipePath string, service string, maxConn int) *Client {
 // The return value of the RPC function is return as interface{} type
 // The true returned type can be int32, int64, string, struct (object), list of struct (objects) or JSON
 func (c *Client) Call(funcname string, params ...interface{}) (interface{}, error) {
+	return c.call(time.Time{}, funcname, params...)
+}
+
+// CallWithTimeout bounds connect, write and complete response read together.
+// Deadline failures discard the transport rather than returning it to a pool.
+func (c *Client) CallWithTimeout(timeout time.Duration, funcname string, params ...interface{}) (interface{}, error) {
+	if timeout <= 0 || timeout > 30*time.Second {
+		return nil, fmt.Errorf("invalid RPC timeout")
+	}
+	return c.call(time.Now().Add(timeout), funcname, params...)
+}
+
+func (c *Client) call(deadline time.Time, funcname string, params ...interface{}) (interface{}, error) {
 	// TODO: use reflection to compose requests and parse results.
 
-	conn, err := c.getConn()
+	conn, err := c.getConnDeadline(deadline)
 	if err != nil {
 		return nil, err
 	}
 
 	hasErr := false
 	defer func() {
+		if !hasErr && conn.SetDeadline(time.Time{}) != nil {
+			hasErr = true
+		}
 		if hasErr {
 			conn.Close()
 		} else {
 			c.returnConn(conn)
 		}
 	}()
+	if err := conn.SetDeadline(deadline); err != nil {
+		hasErr = true
+		return nil, err
+	}
 
 	var req []interface{}
 	req = append(req, funcname)
@@ -104,6 +125,10 @@ func (c *Client) Call(funcname string, params ...interface{}) (interface{}, erro
 		return nil, err
 	}
 	retlen := binary.LittleEndian.Uint32(buflen)
+	if !deadline.IsZero() && retlen > 1048576 {
+		hasErr = true
+		return nil, fmt.Errorf("bounded RPC response exceeded limit")
+	}
 
 	msg := make([]byte, retlen)
 	_, err = io.ReadFull(reader, msg)
@@ -138,6 +163,10 @@ func (c *Client) Call(funcname string, params ...interface{}) (interface{}, erro
 }
 
 func (c *Client) getConn() (*net.UnixConn, error) {
+	return c.getConnDeadline(time.Time{})
+}
+
+func (c *Client) getConnDeadline(deadline time.Time) (*net.UnixConn, error) {
 	select {
 	case conn := <-c.pool:
 		return conn, nil
@@ -147,10 +176,16 @@ func (c *Client) getConn() (*net.UnixConn, error) {
 			err := fmt.Errorf("failed to resolve unix addr when calling rpc : %w", err)
 			return nil, err
 		}
-		conn, err := net.DialUnix("unix", nil, unixAddr)
+		dialer := net.Dialer{Deadline: deadline}
+		connection, err := dialer.Dial("unix", unixAddr.String())
 		if err != nil {
 			err := fmt.Errorf("failed to dial unix when calling rpc : %v", err)
 			return nil, err
+		}
+		conn, ok := connection.(*net.UnixConn)
+		if !ok {
+			connection.Close()
+			return nil, fmt.Errorf("invalid RPC transport")
 		}
 		return conn, nil
 	}

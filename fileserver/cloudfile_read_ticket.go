@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+	"time"
 
 	"github.com/haiwen/seafile-server/fileserver/utils"
 )
@@ -18,7 +19,7 @@ func consumeCloudFileReadTicket(token string) (*webaccessInfo, *appError) {
 	if rpcclient == nil {
 		return nil, &appError{nil, "Read ticket service unavailable", http.StatusServiceUnavailable}
 	}
-	value, err := rpcclient.Call("seafile_cloudfile_consume_read_ticket", token)
+	value, err := rpcclient.CallWithTimeout(5*time.Second, "seafile_cloudfile_consume_read_ticket", token)
 	if err != nil {
 		// Do not serialize/log RPC errors, the bearer token or native user data.
 		return nil, &appError{nil, "Read ticket unavailable", http.StatusServiceUnavailable}
