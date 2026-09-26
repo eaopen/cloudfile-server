@@ -15,6 +15,7 @@
 
 
 typedef struct _SeafileSession SeafileSession;
+struct SeafDBTrans;
 typedef struct _CcnetUserManager CcnetUserManager;
 typedef struct _CcnetUserManagerClass CcnetUserManagerClass;
 
@@ -149,4 +150,12 @@ ccnet_user_manager_update_emailuser_id (CcnetUserManager *manager,
                                         const char *old_email,
                                         const char *new_email,
                                         GError **error);
+
+/* Internal final-transaction account gate, not an identity/ACL grant.
+ * Locks the configured CCNET EmailUser row on the file transaction connection.
+ * Requires a shared MySQL server and InnoDB; exact username and active=1 only. */
+int
+ccnet_user_manager_lock_active_account (CcnetUserManager *manager,
+                                       struct SeafDBTrans *trans,
+                                       const char *username);
 #endif

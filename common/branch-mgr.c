@@ -567,7 +567,8 @@ test_and_update_branch (SeafBranchManager *mgr,
                                             const char *last_gc_id,
                                             const char *origin_repo_id,
                                             gboolean *gc_conflict,
-                                            const char *scopes_json)
+                                            const char *scopes_json,
+                                            const char *native_username)
 {
     SeafDBTrans *trans;
     char *sql;
@@ -582,6 +583,7 @@ test_and_update_branch (SeafBranchManager *mgr,
         return -1;
 
     if (scopes_json && (cloudfile_check_barriers (trans, branch->repo_id, scopes_json) < 0 ||
+                       ccnet_user_manager_lock_active_account (mgr->seaf->user_mgr, trans, native_username) < 0 ||
                        cloudfile_check_repo (trans, branch->repo_id) < 0)) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
@@ -679,19 +681,19 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr, SeafBranch *
     const char *origin_repo_id, gboolean *gc_conflict)
 {
     return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
-                                   origin_repo_id, gc_conflict, NULL);
+                                   origin_repo_id, gc_conflict, NULL, NULL);
 }
 
 int
 seaf_branch_manager_test_and_update_branch_with_barriers (SeafBranchManager *mgr,
     SeafBranch *branch, const char *old_commit_id, gboolean check_gc,
     const char *last_gc_id, const char *origin_repo_id, gboolean *gc_conflict,
-    const char *scopes_json)
+    const char *scopes_json, const char *native_username)
 {
     if (!scopes_json || seaf_db_type (mgr->seaf->db) != SEAF_DB_TYPE_MYSQL)
         return -2;
     return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
-                                   origin_repo_id, gc_conflict, scopes_json);
+                                   origin_repo_id, gc_conflict, scopes_json, native_username);
 }
 
 #endif

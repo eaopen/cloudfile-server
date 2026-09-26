@@ -47,6 +47,12 @@ seaf_db_new_sqlite (const char *db_path, int max_connections);
 int
 seaf_db_type (SeafDB *db);
 
+/* Immutable source schema only when both MySQL handles share the same configured
+ * server/transport/credentials. NULL for other or mismatched configurations.
+ * Caller must quote it as an SQL identifier, never concatenate it unescaped. */
+const char *
+seaf_db_mysql_shared_database (SeafDB *effect_db, SeafDB *source_db);
+
 int
 seaf_db_query (SeafDB *db, const char *sql);
 

@@ -177,7 +177,135 @@ def wait_sql(admin, sql, params, pending, *, seconds=3):
         time.sleep(0.02)
 
 
-def check_barrier_primitive(api, repo, actor, data, original, changed, admin, database, native_user):
+def check_account_gate(api, repo, actor, original, changed, admin, database, account_database, native_user, write):
+    """Native account row gate only; no business identity/ACL proof."""
+    import pymysql
+    from seaserv import ccnet_api
+    options = dict(host=admin.host, port=admin.port, user="root", password="", database=database,
+                   autocommit=True, charset="utf8mb4", connect_timeout=5, read_timeout=10)
+    account_table = account_database + ".EmailUser"  # Only the harness-created random schema.
+    def active(value):
+        with admin.cursor() as cursor:
+            cursor.execute("UPDATE " + account_table + " SET is_active=%s WHERE email=%s", (value, actor))
+    head = api.get_repo(repo).head_cmmt_id
+    before = api.get_file_id_by_path(repo, "/probe.txt")
+    try:
+        for value in (0, 2):
+            active(value)
+            assert write(changed, head) is None and write(original, head) is None
+        active(1)
+        assert write(changed, head, username="missing@example.invalid") is None
+        with admin.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM " + account_table + " WHERE email=%s", (actor.upper(),))
+            assert cursor.fetchone()[0] == 1  # Prove the fixture has case-insensitive lookup.
+        assert write(changed, head, username=actor.upper()) is None
+        assert api.get_repo(repo).head_cmmt_id == head and api.get_file_id_by_path(repo, "/probe.txt") == before
+
+        # Non-transactional legacy shape and lost SELECT privilege fail closed.
+        with admin.cursor() as cursor:
+            # utf8mb4(255) exceeds MyISAM's 1000-byte unique-key ceiling. Only
+            # this one short fixture account exists; narrow the two indexed
+            # nullable strings for the engine-negative test, then restore them.
+            cursor.execute("ALTER TABLE " + account_table +
+                           " MODIFY email VARCHAR(200), MODIFY reference_id VARCHAR(200), ENGINE=MyISAM")
+        try:
+            assert write(original, head) is None
+        finally:
+            with admin.cursor() as cursor:
+                cursor.execute("ALTER TABLE " + account_table +
+                               " ENGINE=InnoDB, MODIFY email VARCHAR(255), MODIFY reference_id VARCHAR(255)")
+        with admin.cursor() as cursor:
+            cursor.execute("REVOKE SELECT ON " + account_database + ".* FROM %s@'%%'", (native_user,))
+        try:
+            assert write(changed, head) is None
+        finally:
+            with admin.cursor() as cursor:
+                cursor.execute("GRANT SELECT ON " + account_database + ".* TO %s@'%%'", (native_user,))
+        assert api.get_repo(repo).head_cmmt_id == head and write(original, head)
+
+        # Uniqueness drift must not let first-row selection hide another account.
+        with admin.cursor() as cursor:
+            cursor.execute("ALTER TABLE " + account_table + " DROP INDEX email")
+        duplicate = None
+        try:
+            with admin.cursor() as cursor:
+                cursor.execute("INSERT INTO " + account_table + "(email,passwd,is_staff,is_active,ctime) "
+                               "SELECT email,passwd,is_staff,is_active,ctime FROM " + account_table + " WHERE email=%s", (actor,))
+                duplicate = cursor.lastrowid
+            assert duplicate and write(original, head) is None and write(changed, head) is None
+        finally:
+            with admin.cursor() as cursor:
+                if duplicate:
+                    cursor.execute("DELETE FROM " + account_table + " WHERE id=%s", (duplicate,))
+                cursor.execute("ALTER TABLE " + account_table + " ADD UNIQUE INDEX email(email)")
+        assert api.get_repo(repo).head_cmmt_id == head
+
+        # Suspension wins: observe real native EmailUser row wait, then disable.
+        with ExitStack() as cleanup:
+            blocker = pymysql.connect(**{**options, "autocommit": False})
+            cleanup.callback(blocker.close)
+            for path in (changed, original):
+                with blocker.cursor() as cursor:
+                    cursor.execute("SELECT is_active FROM " + account_table + " WHERE email=%s FOR UPDATE", (actor,))
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(write, path, head)
+                    try:
+                        wait_sql(admin,
+                            "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                            "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                            "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                            "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='EmailUser' AND t.PROCESSLIST_USER=%s",
+                            (account_database, native_user), pending)
+                        with blocker.cursor() as cursor:
+                            cursor.execute("UPDATE " + account_table + " SET is_active=0 WHERE email=%s", (actor,))
+                        blocker.commit()
+                    finally:
+                        blocker.rollback()
+                    assert pending.result(timeout=10) is None
+                assert api.get_repo(repo).head_cmmt_id == head
+                active(1)
+
+            # Publication wins: actual CE account management RPC waits on the
+            # account row held by the file's final SQL transaction at GCID.
+            with admin.cursor() as cursor:
+                cursor.execute("SELECT id FROM " + account_table + " WHERE email=%s", (actor,))
+                account_id = cursor.fetchone()[0]
+            with blocker.cursor() as cursor:
+                cursor.execute("SELECT gc_id FROM GCID WHERE repo_id=%s FOR UPDATE", (repo,))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending = pool.submit(write, changed, head)
+                try:
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                        "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                        "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='GCID' AND t.PROCESSLIST_USER=%s",
+                        (database, native_user), pending)
+                    suspended = pool.submit(ccnet_api.update_emailuser, "DB", account_id, "!", 0, 0)
+                    wait_sql(admin,
+                        "SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                        "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                        "JOIN performance_schema.threads t ON t.THREAD_ID=l.THREAD_ID "
+                        "WHERE l.OBJECT_SCHEMA=%s AND l.OBJECT_NAME='EmailUser' AND t.PROCESSLIST_USER=%s",
+                        (account_database, native_user), suspended)
+                finally:
+                    blocker.rollback()
+                assert pending.result(timeout=10)
+                assert suspended.result(timeout=10) == 0
+            updated = api.get_repo(repo).head_cmmt_id
+            assert updated != head and write(original, updated) is None
+            active(1)
+            assert write(original, updated)
+    finally:
+        active(1)
+    return {"native_account_disabled_missing_mismatch_rejected": True,
+            "native_account_duplicate_rejected": True,
+            "native_account_engine_and_db_failure_rejected": True,
+            "native_account_suspend_wins_write_and_noop_rejected": True,
+            "native_account_publish_wins_serialized_with_ce_management": True}
+
+
+def check_barrier_primitive(api, repo, actor, data, original, changed, admin, database, account_database, native_user):
     """Actual Hub JobStore and C branch transaction, not fixture publication.
 
     Completion proof below is explicitly a fixture: account/context/projection
@@ -193,10 +321,10 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
                    autocommit=True, charset="utf8mb4", connect_timeout=5, read_timeout=10)
     scopes = [{"type": "repo", "provider": "cloudfile", "external_id": repo},
               {"type": "user", "provider": "directory", "external_id": "员工:a:b"}]
-    def write(path, head, selected=scopes):
+    def write(path, head, selected=scopes, *, username=actor):
         client = ServerThreadedRpcClient(str(data / "seafile.sock"))
         try:
-            result = client.cloudfile_put_file_with_barriers(repo, str(path), "/", "probe.txt", actor,
+            result = client.cloudfile_put_file_with_barriers(repo, str(path), "/", "probe.txt", username,
                 json.dumps({"head_id": head, "scopes": selected}, ensure_ascii=False))
             return result
         except SearpcError:
@@ -212,13 +340,23 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
         with connection.cursor() as cursor:
             cursor.execute("INSERT IGNORE INTO GCID(repo_id,gc_id) VALUES(%s,%s)", (repo, uuid4().hex))
         store = JobStore(connection)
-        assert write(original, initial) == api.get_file_id_by_path(repo, "/probe.txt")
+        current_write = write(original, initial)
+        if current_write is None:
+            markers = ("invalid database or username configuration", "unavailable, inactive or mismatched account",
+                       "transactional account table unavailable")
+            log = (data.parent / "server.log").read_text()
+            # Emit only fixed known diagnostics, never a whole native log.
+            present = [marker for marker in markers if "CloudFile account gate: " + marker in log]
+            raise RuntimeError("initial scoped write rejected: " + ",".join(present))
+        assert current_write == api.get_file_id_by_path(repo, "/probe.txt")
         assert write(changed, initial) == api.get_file_id_by_path(repo, "/probe.txt")
         assert write(original, api.get_repo(repo).head_cmmt_id)
         for selected in ([scopes[0]], [scopes[1], {**scopes[0], "external_id": str(uuid4())}],
                          [scopes[0], {**scopes[1], "unexpected": "x"}],
                          [scopes[0], {**scopes[1], "external_id": "bad\x00id"}]):
             assert write(changed, api.get_repo(repo).head_cmmt_id, selected) is None
+        account_results = check_account_gate(api, repo, actor, original, changed, admin,
+                                            database, account_database, native_user, write)
 
         def submit(scope, key):
             return store.submit(actor="admin", actor_kind="user", kind="authorization.refresh", scope=scope,
@@ -348,7 +486,7 @@ def check_barrier_primitive(api, repo, actor, data, original, changed, admin, da
             assert pending.result(timeout=10) is None
         assert api.get_repo(repo).head_cmmt_id == head
         assert write(original, head)
-    return {"barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
+    return {**account_results, "barrier_missing_schema_rejected": True, "barrier_write_and_noop_rejected": True,
             "barrier_failed_cancelled_still_fenced": True, "barrier_and_publish_both_orders_serialized": True,
             "barrier_native_connection_loss_no_publish": True, "barrier_unicode_scope_parity": True,
             "barrier_final_readonly_race_rejected": True}
@@ -418,7 +556,11 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
                 from seaserv import seafile_api as api, ccnet_api
                 wait_ready(lambda: api.get_repo_list(0, 1), server)
                 actor = "native-probe@example.invalid"
-                ccnet_api.add_emailuser(actor, secrets.token_urlsafe(32), False, True)
+                # searpc's int arguments must be actual integers, not JSON bools.
+                assert ccnet_api.add_emailuser(actor, secrets.token_urlsafe(32), 0, 1) == 0
+                with admin.cursor() as cursor:
+                    cursor.execute("SELECT is_active FROM " + databases[0] + ".EmailUser WHERE email=%s", (actor,))
+                    assert cursor.fetchone() == (1,)
                 repo = api.create_repo("native probe", "isolated diagnostic", actor)
                 original = root / "original"
                 changed = root / "changed"
@@ -457,7 +599,7 @@ def run(server_binary, fileserver_binary, *, check_strict=False, check_barriers=
                                                          admin, databases[1], user))
                 if check_barriers:
                     results.update(check_barrier_primitive(api, repo, actor, data, original, changed,
-                                                          admin, databases[1], user))
+                                                          admin, databases[1], databases[0], user))
 
                 fileserver = subprocess.Popen([fileserver_binary, "-F", str(config), "-d", str(data),
                                                "-l", str(root / "fileserver.log")], env=environment,

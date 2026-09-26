@@ -66,13 +66,14 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
                                             gboolean *gc_conflict);
 
 /* Privileged internal primitive. Scopes are trusted by the caller; this
- * serializes durable barriers, but is not an account/context/ACL/lock proof.
+ * serializes durable barriers and rechecks the native account, but is not a
+ * business identity/context/ACL/lifecycle/lock proof.
  * Returns -2 for invalid/unavailable/fenced scope coordination. */
 int
 seaf_branch_manager_test_and_update_branch_with_barriers (
     SeafBranchManager *mgr, SeafBranch *branch, const char *old_commit_id,
     gboolean check_gc, const char *last_gc_id, const char *origin_repo_id,
-    gboolean *gc_conflict, const char *scopes_json);
+    gboolean *gc_conflict, const char *scopes_json, const char *native_username);
 #endif
 
 SeafBranch *

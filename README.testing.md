@@ -43,8 +43,17 @@ schema failure, failed/cancelled barriers, changed-content/no-op rejection, both
 barrier/publication orderings, final read-only change and native connection loss.
 Actual `metadata_locks`/`data_lock_waits` evidence is required before each race.
 It only kills the identified SQL thread belonging to its random native account.
-Barrier completion uses an explicitly test-only reconciliation proof; native
-account/context/ACL/lifecycle/lock reconciliation is not claimed. Run without
+The final publication transaction also locks and checks the exact native
+`EmailUser` account on the configured CCNET database before repository rows. The
+databases must share MySQL connection settings, the account table must be InnoDB,
+and the runtime SQL user needs SELECT permission on it. Missing, duplicate,
+case-mismatched, inactive or malformed accounts and database failures reject
+publication. No account or authorization table is added. The probe tests both
+suspension/publication orders, including the real CE account-management RPC,
+nontransactional tables and revoked database access. RPC integer flags use 0/1,
+not JSON booleans.
+Barrier completion uses an explicitly test-only reconciliation proof; business
+identity/context/ACL/lifecycle/lock reconciliation is not claimed. Run without
 Python `-O`; disabling assertions is rejected before creating any test schemas.
 
 ## Run it locally

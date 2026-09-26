@@ -647,6 +647,70 @@ get_emailuser_cb (CcnetDBRow *row, void *data)
     return FALSE;
 }
 
+typedef struct {
+    const char *username;
+    gboolean active;
+} CloudFileAccount;
+
+static gboolean
+cloudfile_active_account (SeafDBRow *row, void *data)
+{
+    CloudFileAccount *account = data;
+    account->active = g_strcmp0 (seaf_db_row_get_column_text (row, 0), account->username) == 0 &&
+                      g_strcmp0 (seaf_db_row_get_column_text (row, 1), "1") == 0;
+    return TRUE; /* Reject duplicate matches even if native uniqueness drifted. */
+}
+
+static gboolean
+cloudfile_account_engine (SeafDBRow *row, void *data)
+{
+    gboolean *innodb = data;
+    *innodb = g_strcmp0 (seaf_db_row_get_column_text (row, 0), "InnoDB") == 0;
+    return FALSE;
+}
+
+int
+ccnet_user_manager_lock_active_account (CcnetUserManager *manager,
+                                       SeafDBTrans *trans, const char *username)
+{
+    const char *schema = seaf_db_mysql_shared_database (manager->session->db, manager->priv->db);
+    if (!schema || !*schema || !g_utf8_validate (schema, -1, NULL) ||
+        g_utf8_strlen (schema, -1) > 64 || !username || !*username ||
+        !g_utf8_validate (username, -1, NULL) || g_utf8_strlen (username, -1) > 255) {
+        seaf_warning ("CloudFile account gate: invalid database or username configuration.\n");
+        return -1;
+    }
+    /* Schema is immutable configured data, never an RPC input. Quote even trusted
+     * names correctly, and bind username instead of interpolating it into SQL. */
+    GString *qualified = g_string_new ("`");
+    for (const char *p = schema; *p; ++p) {
+        if (*p == '`')
+            g_string_append_c (qualified, '`');
+        g_string_append_c (qualified, *p);
+    }
+    g_string_append (qualified, "`.EmailUser");
+    char *sql = g_strdup_printf ("SELECT email,is_active FROM %s WHERE email=? FOR UPDATE", qualified->str);
+    CloudFileAccount account = { username, FALSE };
+    int rows = seaf_db_trans_foreach_selected_row (trans, sql, cloudfile_active_account,
+                                                  &account, 1, "string", username);
+    g_free (sql);
+    g_string_free (qualified, TRUE);
+    if (rows != 1 || !account.active) {
+        seaf_warning ("CloudFile account gate: unavailable, inactive or mismatched account.\n");
+        return -1;
+    }
+    /* The SELECT's metadata lock is already held. A non-transactional legacy
+     * account table cannot supply the required row-lock guarantee. */
+    gboolean innodb = FALSE;
+    if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name='EmailUser'",
+            cloudfile_account_engine, &innodb, 1, "string", schema) != 1 || !innodb) {
+        seaf_warning ("CloudFile account gate: transactional account table unavailable.\n");
+        return -1;
+    }
+    return 0;
+}
+
 static char*
 ccnet_user_manager_get_role_emailuser (CcnetUserManager *manager,
                                      const char* email);

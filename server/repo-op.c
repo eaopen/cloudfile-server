@@ -572,7 +572,7 @@ retry:
     int published = scopes_json ?
         seaf_branch_manager_test_and_update_branch_with_barriers (seaf->branch_mgr,
             repo->head, current_head->commit_id, check_gc, last_gc_id,
-            repo->store_id, &gc_conflict, scopes_json) :
+            repo->store_id, &gc_conflict, scopes_json, user) :
         seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
             repo->head, current_head->commit_id, check_gc, last_gc_id,
             repo->store_id, &gc_conflict);
@@ -4483,7 +4483,7 @@ put_file_with_condition (SeafRepoManager *mgr,
                 seaf_branch_manager_test_and_update_branch_with_barriers (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
-                    repo->store_id, &gc_conflict, scopes_json) :
+                    repo->store_id, &gc_conflict, scopes_json, user) :
                 seaf_branch_manager_test_and_update_branch (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,

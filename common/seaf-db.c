@@ -1312,6 +1312,26 @@ mysql_db_row_get_column_int64 (SeafDBRow *vrow, int idx)
 
 #endif  /* HAVE_MYSQL */
 
+const char *
+seaf_db_mysql_shared_database (SeafDB *effect_db, SeafDB *source_db)
+{
+#ifdef HAVE_MYSQL
+    if (!effect_db || !source_db || seaf_db_type (effect_db) != SEAF_DB_TYPE_MYSQL ||
+        seaf_db_type (source_db) != SEAF_DB_TYPE_MYSQL)
+        return NULL;
+    MySQLDB *effect = (MySQLDB *)effect_db, *source = (MySQLDB *)source_db;
+    if (g_strcmp0 (effect->host, source->host) || effect->port != source->port ||
+        g_strcmp0 (effect->unix_socket, source->unix_socket) ||
+        g_strcmp0 (effect->user, source->user) || g_strcmp0 (effect->password, source->password) ||
+        effect->use_ssl != source->use_ssl || effect->skip_verify != source->skip_verify ||
+        g_strcmp0 (effect->ca_path, source->ca_path))
+        return NULL;
+    return source->db_name;
+#else
+    return NULL;
+#endif
+}
+
 /* SQLite DB */
 
 /* SQLite thread synchronization rountines.
