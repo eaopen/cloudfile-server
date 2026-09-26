@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -65,6 +66,12 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	} else {
 		failure = doFile(guarded, r, repo, info.objID, filename, info.op, cryptKey, info.user)
 	}
+	if r.Method == "GET" && failure == nil && writer.failed == nil {
+		expected, err := strconv.ParseUint(guarded.Header().Get("Content-Length"), 10, 64)
+		if err != nil || expected != tracked.bytes {
+			writer.failed = errCloudFileReadEnded
+		}
+	}
 	if writer.failed != nil || (failure != nil && tracked.committed) {
 		if tracked.committed {
 			panic(http.ErrAbortHandler)
@@ -79,6 +86,7 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
 type cloudFileTrackedResponse struct {
 	http.ResponseWriter
 	committed bool
+	bytes     uint64
 }
 
 func (w *cloudFileTrackedResponse) WriteHeader(status int) {
@@ -88,7 +96,11 @@ func (w *cloudFileTrackedResponse) WriteHeader(status int) {
 
 func (w *cloudFileTrackedResponse) Write(data []byte) (int, error) {
 	w.committed = true
-	return w.ResponseWriter.Write(data)
+	n, err := w.ResponseWriter.Write(data)
+	if n > 0 && n <= len(data) {
+		w.bytes += uint64(n)
+	}
+	return n, err
 }
 
 type cloudFileGuardedResponse struct {
@@ -106,6 +118,10 @@ func (w *cloudFileGuardedResponse) WriteHeader(status int) {
 		return
 	}
 	if err := w.writer.check(); err != nil {
+		w.writer.failed = err
+		return
+	}
+	if err := w.writer.context.Err(); err != nil {
 		w.writer.failed = err
 		return
 	}
