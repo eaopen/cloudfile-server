@@ -13,6 +13,8 @@ import (
 // Deliberately unregistered until identity/logout and deployment gates pass.
 // Reuses native file/Range readers, not a second block-transfer implementation.
 func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) *appError {
+	cloudFileReadSecurityHeaders(rsp.Header())
+	defer cloudFileReadSecurityHeaders(rsp.Header())
 	if r.Method != "GET" && r.Method != "HEAD" {
 		return &appError{nil, "Read requires GET or HEAD", http.StatusMethodNotAllowed}
 	}
@@ -90,17 +92,35 @@ type cloudFileTrackedResponse struct {
 }
 
 func (w *cloudFileTrackedResponse) WriteHeader(status int) {
+	cloudFileReadSecurityHeaders(w.Header())
 	w.committed = true
 	w.ResponseWriter.WriteHeader(status)
 }
 
 func (w *cloudFileTrackedResponse) Write(data []byte) (int, error) {
+	cloudFileReadSecurityHeaders(w.Header())
 	w.committed = true
 	n, err := w.ResponseWriter.Write(data)
 	if n > 0 && n <= len(data) {
 		w.bytes += uint64(n)
 	}
 	return n, err
+}
+
+// Native readers also serve legacy public links and set permissive CORS.
+// A managed bearer transfer must not inherit that separate trust boundary.
+// Cross-origin deployment requires an explicit reviewed proxy/origin policy;
+// this handler never reflects Origin or grants wildcard browser access.
+func cloudFileReadSecurityHeaders(header http.Header) {
+	for key := range header {
+		if strings.HasPrefix(strings.ToLower(key), "access-control-") {
+			delete(header, key)
+		}
+	}
+	header.Set("Cache-Control", "no-store, max-age=0")
+	header.Set("Pragma", "no-cache")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Content-Type-Options", "nosniff")
 }
 
 type cloudFileGuardedResponse struct {

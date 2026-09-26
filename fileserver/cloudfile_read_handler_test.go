@@ -54,3 +54,31 @@ func TestTrackedReadCountsOnlyAcceptedBytes(t *testing.T) {
 		t.Fatal("actual response byte count lost")
 	}
 }
+
+func TestManagedReadDoesNotInheritLegacyCORS(t *testing.T) {
+	for _, explicitHeader := range []bool{false, true} {
+		response := httptest.NewRecorder()
+		tracked := &cloudFileTrackedResponse{ResponseWriter: response}
+		tracked.Header().Set("Access-Control-Allow-Origin", "*")
+		tracked.Header().Set("Access-Control-Allow-Credentials", "true")
+		tracked.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
+		tracked.Header().Set("Cache-Control", "public, max-age=3600")
+		if explicitHeader {
+			tracked.WriteHeader(http.StatusPartialContent)
+		} else {
+			_, _ = tracked.Write([]byte("file"))
+		}
+		result := response.Result()
+		for _, name := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Access-Control-Expose-Headers"} {
+			if result.Header.Get(name) != "" {
+				t.Fatalf("legacy %s escaped into managed transfer", name)
+			}
+		}
+		if result.Header.Get("Cache-Control") != "no-store, max-age=0" ||
+			result.Header.Get("X-Content-Type-Options") != "nosniff" ||
+			result.Header.Get("Referrer-Policy") != "no-referrer" {
+			t.Fatal("managed transfer security headers missing")
+		}
+		_ = result.Body.Close()
+	}
+}
