@@ -44,6 +44,7 @@ typedef struct {
     char *conditions;
     char *path;
     char *head_id;
+    gboolean consuming;
 } AccessInfo;
 
 static void
@@ -268,6 +269,78 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 }
 
 #ifdef FULL_FEATURE
+SeafileWebAccess *
+seaf_web_at_manager_consume_read_ticket (SeafWebAccessTokenManager *mgr,
+    const char *token, GError **error)
+{
+    AccessInfo *copy = NULL, *current;
+    SeafDBTrans *trans = NULL;
+    SeafileWebAccess *result = NULL;
+    if (!mgr || !token || strlen (token) != TOKEN_LEN)
+        goto denied;
+    pthread_mutex_lock (&mgr->priv->lock);
+    current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (current && current->conditions && !current->consuming &&
+        current->expire_time > (long)time (NULL)) {
+        current->consuming = TRUE;
+        copy = g_new0 (AccessInfo, 1);
+        copy->repo_id = g_strdup (current->repo_id);
+        copy->obj_id = g_strdup (current->obj_id);
+        copy->op = g_strdup (current->op);
+        copy->username = g_strdup (current->username);
+        copy->conditions = g_strdup (current->conditions);
+        copy->path = g_strdup (current->path);
+        copy->head_id = g_strdup (current->head_id);
+        copy->expire_time = current->expire_time;
+    }
+    pthread_mutex_unlock (&mgr->priv->lock);
+    if (!copy)
+        goto denied;
+    /* Never keep the global ticket mutex across SQL/Redis/FS I/O. The copy
+     * owns its strings even if the expiry sweep deletes the claimed entry. */
+    trans = seaf_db_begin_transaction (mgr->seaf->db);
+    if (!trans || seaf_branch_manager_check_read_target (mgr->seaf->branch_mgr, trans,
+            copy->repo_id, copy->path, CF_FILE, copy->head_id, copy->obj_id,
+            copy->conditions, copy->username) < 0)
+        goto denied;
+    pthread_mutex_lock (&mgr->priv->lock);
+    current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+    if (current && current->consuming && current->expire_time == copy->expire_time &&
+        current->expire_time > (long)time (NULL) &&
+        !g_strcmp0 (current->conditions, copy->conditions) &&
+        !g_strcmp0 (current->path, copy->path) && !g_strcmp0 (current->head_id, copy->head_id) &&
+        !g_strcmp0 (current->obj_id, copy->obj_id) && !g_strcmp0 (current->repo_id, copy->repo_id) &&
+        !g_strcmp0 (current->username, copy->username) && !g_strcmp0 (current->op, copy->op) &&
+        seaf_db_commit (trans) == 0) {
+        result = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
+            "repo_id", copy->repo_id, "obj_id", copy->obj_id,
+            "op", copy->op, "username", copy->username, NULL);
+        g_hash_table_remove (mgr->priv->access_token_hash, token);
+    }
+    pthread_mutex_unlock (&mgr->priv->lock);
+    if (result) {
+        seaf_db_trans_close (trans);
+        free_access_info (copy);
+        return result;
+    }
+denied:
+    if (trans) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+    }
+    if (copy) {
+        pthread_mutex_lock (&mgr->priv->lock);
+        current = g_hash_table_lookup (mgr->priv->access_token_hash, token);
+        if (current && current->expire_time == copy->expire_time &&
+            !g_strcmp0 (current->conditions, copy->conditions))
+            current->consuming = FALSE;
+        pthread_mutex_unlock (&mgr->priv->lock);
+        free_access_info (copy);
+    }
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "CloudFile read ticket unavailable");
+    return NULL;
+}
+
 char *
 seaf_web_at_manager_issue_read_ticket (SeafWebAccessTokenManager *mgr,
     const char *repo_id, const char *path, const char *head_id, const char *object_id,
