@@ -61,6 +61,11 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr,
 int seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
     SeafDBTrans *trans, const char *repo_id, const char *path, int kind,
     const char *conditions, const char *native_username);
+/* Additionally pins master head and resolves exact object/kind by path using
+ * that immutable commit. The owner must consume inside trans, not afterward. */
+int seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, int kind, const char *head_id,
+    const char *object_id, const char *conditions, const char *native_username);
 #endif
 /**
  * Atomically test whether the current head commit id on @branch

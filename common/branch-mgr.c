@@ -13,6 +13,10 @@
 #ifdef FULL_FEATURE
 #include "notif-mgr.h"
 #include "cloudfile-policy.h"
+#include "cloudfile-acl.h"
+#include "repo-mgr.h"
+#include "fs-mgr.h"
+#include "utils.h"
 #endif
 
 #include "branch-mgr.h"
@@ -1027,6 +1031,53 @@ seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
 out:
     if (snapshot) json_decref (snapshot);
     if (root) json_decref (root);
+    return result;
+}
+
+int
+seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, int kind, const char *head_id,
+    const char *object_id, const char *conditions, const char *native_username)
+{
+    char *current_head = NULL, *actual = NULL;
+    SeafRepo *repo = NULL;
+    SeafCommit *commit = NULL;
+    GError *error = NULL;
+    int result = -2;
+    if (!head_id || !object_id || !is_object_id_valid (head_id) ||
+        !is_object_id_valid (object_id) ||
+        seaf_branch_manager_check_read_with_barriers (mgr, trans, repo_id, path,
+            kind, conditions, native_username) < 0)
+        return -2;
+    /* Pin the actual master row after repository/authority locks. A cached
+     * repo->head must never prove that a ticket still targets this version. */
+    if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT commit_id FROM Branch WHERE repo_id=? AND name='master' FOR UPDATE",
+            get_gc_id, &current_head, 1, "string", repo_id) != 1 ||
+        g_strcmp0 (current_head, head_id))
+        goto out;
+    repo = seaf_repo_manager_get_repo (mgr->seaf->repo_mgr, repo_id);
+    if (!repo || repo->virtual_info)
+        goto out;
+    commit = seaf_commit_manager_get_commit (mgr->seaf->commit_mgr,
+        repo_id, repo->version, current_head);
+    if (!commit)
+        goto out;
+    guint32 mode = 0;
+    actual = seaf_fs_manager_path_to_obj_id (mgr->seaf->fs_mgr,
+        repo->store_id, repo->version, commit->root_id, path, &mode, &error);
+    if (error || g_strcmp0 (actual, object_id) ||
+        (kind == CF_FILE && !S_ISREG (mode)) ||
+        (kind == CF_DIRECTORY && !S_ISDIR (mode)) ||
+        cloudfile_check_context (mgr, conditions, NULL) < 0)
+        goto out;
+    result = 0;
+out:
+    if (error) g_error_free (error);
+    if (repo) seaf_repo_unref (repo);
+    if (commit) seaf_commit_unref (commit);
+    g_free (actual);
+    g_free (current_head);
     return result;
 }
 
