@@ -546,10 +546,12 @@ int cf_local_commit_append_fact (SeafDBTrans *trans, const char *repo, const cha
     };
     for (size_t index = 0; index < G_N_ELEMENTS(checks); ++index)
         if (!seaf_db_trans_check_for_existence(trans, checks[index], &error, 0) || error) return -1;
-    /* Validate the actual audit path capacity rather than silently truncate. */
+    /* Preserve the established 004 LONGTEXT contract; never narrow existing
+     * audit paths merely to accommodate the new local-edit writer. */
     if (!seaf_db_trans_check_for_existence(trans,
         "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
-        "AND TABLE_NAME='cf_audit_event' AND COLUMN_NAME='source_path' AND DATA_TYPE='varchar' "
+        "AND TABLE_NAME='cf_audit_event' AND COLUMN_NAME='source_path' AND DATA_TYPE='longtext' "
+        "AND COLLATION_NAME='utf8mb4_bin' AND IS_NULLABLE='YES' "
         "AND CHARACTER_MAXIMUM_LENGTH>=?", &error, 1, "int", (int)g_utf8_strlen(path, -1)) || error) return -1;
     if (seaf_db_trans_check_for_existence(trans,
         "SELECT event_id FROM cf_event_outbox WHERE event_id=? FOR UPDATE", &error,
