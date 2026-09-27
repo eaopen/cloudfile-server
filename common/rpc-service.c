@@ -2919,7 +2919,8 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         goto invalid;
     size_t fields = json_object_size (condition);
     gboolean leased = fields == 6;
-    if (fields != 2 && fields != 3 && !leased)
+    gboolean session_write = fields == 4;
+    if (fields != 2 && fields != 3 && !session_write && !leased)
         goto invalid;
     json_t *head = json_object_get (condition, "head_id");
     json_t *array = json_object_get (condition, "scopes");
@@ -2928,7 +2929,9 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         json_array_size (array) < 2 || json_array_size (array) > 16)
         goto invalid;
     json_t *context = json_object_get (condition, "context");
-    if ((fields == 3 || leased) && !json_is_object (context))
+    if ((fields == 3 || session_write || leased) && !json_is_object (context))
+        goto invalid;
+    if (session_write && !json_is_object (json_object_get (condition, "oidc_session")))
         goto invalid;
     if (leased) {
         json_t *path = json_object_get (condition, "path");
