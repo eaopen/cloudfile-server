@@ -24,6 +24,7 @@ func TestCloudFileReadRequestRejectsBeforeRPC(t *testing.T) {
 		status int
 	}{
 		{func(r *http.Request) { r.Method = "POST" }, 405},
+		{func(r *http.Request) { r.Method = http.MethodHead }, 405},
 		{func(r *http.Request) { r.TLS = nil }, 401},
 		{func(r *http.Request) { r.URL.RawQuery = "ticket=private" }, 400},
 		{func(r *http.Request) { r.Header.Set("Cookie", "sessionid=private") }, 400},
@@ -96,7 +97,7 @@ func TestReadOutcomeDoesNotClaimClientReceipt(t *testing.T) {
 		{http.MethodGet, 200, 3, 3, true, false, errCloudFileReadEnded, "interrupted"},
 		{http.MethodGet, 404, 3, 3, true, false, nil, "failed"},
 		{http.MethodGet, 0, 0, 0, false, false, errCloudFileReadEnded, "failed"},
-		{http.MethodHead, 200, 0, 3, true, false, nil, "succeeded"},
+		{http.MethodHead, 200, 0, 3, true, false, nil, "interrupted"},
 	} {
 		tracked := &cloudFileTrackedResponse{status: fixture.status, committed: fixture.status != 0, bytes: fixture.bytes}
 		value := tracked.outcome(fixture.method, fixture.expected, fixture.known, fixture.failure, fixture.cancelled)

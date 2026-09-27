@@ -18,8 +18,8 @@ import (
 func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appError) {
 	cloudFileReadSecurityHeaders(rsp.Header())
 	defer cloudFileReadSecurityHeaders(rsp.Header())
-	if r.Method != "GET" && r.Method != "HEAD" {
-		return &appError{nil, "Read requires GET or HEAD", http.StatusMethodNotAllowed}
+	if r.Method != http.MethodGet {
+		return &appError{nil, "Read requires GET", http.StatusMethodNotAllowed}
 	}
 	if !cloudFileSecureTransport(r, option.CloudFileTrustedTLSProxies) {
 		return &appError{nil, "Secure read transport required", http.StatusUnauthorized}
@@ -190,9 +190,7 @@ func (w *cloudFileTrackedResponse) outcome(method string, expected uint64, expec
 	if cancelled || (failure != nil && w.committed) {
 		result = "interrupted"
 	} else if failure == nil && w.committed && (w.status == http.StatusOK || w.status == http.StatusPartialContent) {
-		if method == http.MethodHead && w.bytes == 0 {
-			result = "succeeded"
-		} else if method == http.MethodGet && expectedKnown && w.bytes == expected {
+		if method == http.MethodGet && expectedKnown && w.bytes == expected {
 			result = "stream_completed"
 		} else {
 			result = "interrupted"

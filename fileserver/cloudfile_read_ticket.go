@@ -10,8 +10,8 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/utils"
 )
 
-// Consumes only the new guarded RPC. This is not registered as an HTTP route:
-// the returned object metadata does not establish a future per-block grant.
+// Consumes only the new guarded RPC for the managed-read route. The returned
+// object metadata does not establish a future per-block grant.
 func consumeCloudFileReadTicket(token string) (*webaccessInfo, *appError) {
 	if !canonicalTicketUUID(token) {
 		return nil, &appError{nil, "Invalid read ticket", http.StatusBadRequest}
