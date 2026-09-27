@@ -66,6 +66,23 @@ int seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
 int seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, int kind, const char *head_id,
     const char *object_id, const char *conditions, const char *native_username);
+/* Dedicated private local publication; no RPC registered. Exact single-file
+ * candidate, intent, current policy, Branch, fact and completion share a TX. */
+int seaf_branch_manager_publish_local_commit (SeafBranchManager *mgr, SeafBranch *branch,
+    const char *old_commit_id, gboolean check_gc, const char *last_gc_id,
+    gboolean *gc_conflict, const char *conditions, const char *native_username);
+/* Short owned pre-index transaction only; release before long chunk I/O.
+ * Index receipt and publication must prepare/recheck fresh authority again. */
+int seaf_branch_manager_check_local_index (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, const char *head_id, const char *old_file_id,
+    const char *measured_sha256, gint64 measured_bytes, const char *conditions,
+    const char *native_username);
+/* Owned post-index receipt transaction. Caller refreshes current subject
+ * after chunk I/O; arguments are actual native measured/indexed output. */
+int seaf_branch_manager_record_local_index (SeafBranchManager *mgr,
+    const char *repo_id, const char *path, const char *head_id, const char *old_file_id,
+    const char *measured_sha256, gint64 measured_bytes, const char *indexed_file_id,
+    const char *conditions, const char *native_username, char **receipt_revision);
 #endif
 /**
  * Atomically test whether the current head commit id on @branch

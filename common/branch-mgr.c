@@ -14,6 +14,7 @@
 #include "notif-mgr.h"
 #include "cloudfile-policy.h"
 #include "cloudfile-acl.h"
+#include "cloudfile-single-file.h"
 #include "repo-mgr.h"
 #include "fs-mgr.h"
 #include "utils.h"
@@ -1178,6 +1179,28 @@ cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json
     return ccnet_user_manager_lock_live_session (mgr->seaf->user_mgr, trans, key);
 }
 
+static int
+cloudfile_check_local_reference (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, const char *object_id, int kind,
+    const char *conditions, const char *native_username, json_t *root)
+{
+    if (!json_object_get (root, "local_session")) return 0;
+    json_t *subject = NULL;
+    int qualification = cloudfile_library_qualification (mgr, trans, repo_id, native_username);
+    if (qualification <= 0 || cloudfile_check_context (mgr, conditions, &subject) < 0) {
+        if (subject) json_decref (subject);
+        return -1;
+    }
+    /* Read-only libraries may still serve view sessions, never edit sessions.
+     * CE qualification alone must not hide the native repository status. */
+    if (cloudfile_check_repo_mode (trans, repo_id, FALSE) < 0)
+        qualification = 1;
+    int result = cf_policy_check_local_session (trans, repo_id, path, object_id,
+        kind, root, subject, qualification);
+    if (subject) json_decref (subject);
+    return result;
+}
+
 int
 seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, int kind, const char *head_id,
@@ -1195,6 +1218,9 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         return -2;
     json_t *reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
     int reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
+    if (reference_result == 0)
+        reference_result = cloudfile_check_local_reference (mgr, trans, repo_id, path,
+            object_id, kind, conditions, native_username, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) return -2;
     /* Pin the actual master row after repository/authority locks. A cached
@@ -1221,6 +1247,9 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         goto out;
     reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
     reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
+    if (reference_result == 0)
+        reference_result = cloudfile_check_local_reference (mgr, trans, repo_id, path,
+            object_id, kind, conditions, native_username, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) goto out;
     result = 0;
@@ -1233,6 +1262,77 @@ out:
     return result;
 }
 
+int
+seaf_branch_manager_check_local_index (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, const char *head_id, const char *old_file_id,
+    const char *measured_sha256, gint64 measured_bytes, const char *conditions,
+    const char *native_username)
+{
+    if (!mgr || !trans || !conditions || conditions[0] != '{' ||
+        seaf_db_type(mgr->seaf->db) != SEAF_DB_TYPE_MYSQL ||
+        seaf_branch_manager_check_read_target(mgr, trans, repo_id, path, CF_FILE,
+            head_id, old_file_id, conditions, native_username) < 0 ||
+        cloudfile_check_repo_mode(trans, repo_id, FALSE) < 0) return -2;
+    json_t *root = json_loads(conditions, JSON_REJECT_DUPLICATES, NULL);
+    json_t *subject = NULL;
+    int qualification = cloudfile_library_qualification(mgr, trans, repo_id, native_username);
+    int result = qualification > 0 && cloudfile_check_context(mgr, conditions, &subject) == 0 &&
+        cf_policy_check_local_index(trans, repo_id, path, old_file_id, measured_sha256,
+            measured_bytes, root, subject, qualification) == 0 ? 0 : -2;
+    if (subject) json_decref(subject);
+    if (root) json_decref(root);
+    return result;
+}
+
+int
+seaf_branch_manager_record_local_index (SeafBranchManager *mgr,
+    const char *repo_id, const char *path, const char *head_id, const char *old_file_id,
+    const char *measured_sha256, gint64 measured_bytes, const char *indexed_file_id,
+    const char *conditions, const char *native_username, char **receipt_revision)
+{
+    if (!receipt_revision) return -2;
+    *receipt_revision = NULL;
+    if (!mgr || !conditions || conditions[0] != '{' || !native_username ||
+        seaf_db_type(mgr->seaf->db) != SEAF_DB_TYPE_MYSQL) return -2;
+    json_t *root = json_loads(conditions, JSON_REJECT_DUPLICATES, NULL);
+    json_t *proof = json_object_get(root, "local_commit");
+    json_t *context = json_object_get(root, "context");
+    const char *provider = json_string_value(json_object_get(context, "provider"));
+    const char *user = json_string_value(json_object_get(context, "userId"));
+    const char *commit = json_string_value(json_object_get(proof, "commit_id"));
+    const char *revision = json_string_value(json_object_get(proof, "commit_revision"));
+    SeafDBTrans *trans = seaf_db_begin_transaction(mgr->seaf->db);
+    if (!trans) { if (root) json_decref(root); return -1; }
+    char *new_revision = NULL, *updated_conditions = NULL;
+    int result = -2;
+    if (seaf_branch_manager_check_local_index(mgr, trans, repo_id, path, head_id, old_file_id,
+            measured_sha256, measured_bytes, conditions, native_username) < 0 ||
+        cf_local_commit_record_index(trans, provider, user, commit, repo_id, revision,
+            measured_sha256, measured_bytes, indexed_file_id, &new_revision) < 0) goto out;
+    // Adopt only the actual SQL receipt version. All identity, scopes and
+    // target conditions remain unchanged; this never creates a new grant.
+    if (json_object_set_new(proof, "commit_revision", json_string(new_revision)) < 0) goto out;
+    updated_conditions = json_dumps(root, JSON_COMPACT | JSON_SORT_KEYS);
+    if (!updated_conditions || strlen(updated_conditions) > 16384 ||
+        seaf_branch_manager_check_local_index(mgr, trans, repo_id, path, head_id, old_file_id,
+            measured_sha256, measured_bytes, updated_conditions, native_username) < 0 ||
+        cloudfile_check_oidc_reference(mgr, trans, root) < 0 ||
+        cloudfile_check_context(mgr, updated_conditions, NULL) < 0) goto out;
+    if (seaf_db_commit(trans) < 0) { result = -1; goto out; }
+    *receipt_revision = new_revision;
+    new_revision = NULL;
+    result = 0;
+out:
+    if (result < 0) seaf_db_rollback(trans);
+    seaf_db_trans_close(trans);
+    g_free(new_revision);
+    free(updated_conditions);
+    if (root) json_decref(root);
+    // A failed COMMIT is an ambiguous result, not proof no receipt exists.
+    // The worker must query its durable intent; do not retry indexing blindly.
+    return result;
+}
+
 static int
 test_and_update_branch (SeafBranchManager *mgr,
                                             SeafBranch *branch,
@@ -1242,12 +1342,16 @@ test_and_update_branch (SeafBranchManager *mgr,
                                             const char *origin_repo_id,
                                             gboolean *gc_conflict,
                                             const char *scopes_json,
-                                            const char *native_username)
+                                            const char *native_username,
+                                            gboolean local_publication)
 {
     SeafDBTrans *trans;
     char *sql;
     char commit_id[41] = { 0 };
     char *gc_id = NULL;
+    char local_old_file[41] = {0}, local_new_file[41] = {0};
+    if (local_publication && (!scopes_json || scopes_json[0] != '{' ||
+        !native_username || g_strcmp0(branch->name, "master"))) return -2;
 
     if (check_gc)
         *gc_conflict = FALSE;
@@ -1332,19 +1436,39 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *target = json_object_get (conditions, "path");
         json_t *lease = json_object_get (conditions, "lease");
         const char *path = json_string_value (target);
+        gboolean candidate_valid = TRUE;
+        if (local_publication) {
+            SeafCommit *base = seaf_commit_manager_get_commit(mgr->seaf->commit_mgr, branch->repo_id, 1, old_commit_id);
+            SeafCommit *candidate = seaf_commit_manager_get_commit(mgr->seaf->commit_mgr, branch->repo_id, 1, branch->commit_id);
+            candidate_valid = base && candidate &&
+                cf_check_single_file_candidate(mgr->seaf->fs_mgr, branch->repo_id, base, candidate,
+                    path, native_username, local_old_file, local_new_file) == 0;
+            if (base) seaf_commit_unref(base);
+            if (candidate) seaf_commit_unref(candidate);
+        }
         gboolean allowed = qualification > 0 && json_is_string (target) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
+            /* local_session is a claimed/active DOWNLOAD condition, including
+             * editable downloads. It is never a native publication grant.
+             * A distinct commit-intent adapter must own staging/base CAS and
+             * durable publication reconciliation before local edits can write.
+             * Reject unknown commit conditions too rather than ignore them. */
+            !json_object_get (conditions, "local_session") &&
+            (local_publication || !json_object_get (conditions, "local_commit")) && candidate_valid &&
             json_string_length (target) == strlen (path) &&
             cloudfile_check_context (mgr, scopes_json, &snapshot) == 0 &&
             cf_policy_check_write (trans, branch->repo_id, path,
                 json_string_value (json_object_get (context, "provider")),
                 json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0 &&
-            (!lease || seaf_branch_manager_check_read_target (mgr, trans,
+            (local_publication ?
+             cf_policy_check_local_commit(trans, branch->repo_id, path, local_old_file,
+                 local_new_file, conditions, snapshot, qualification) == 0 :
+            ((!lease || seaf_branch_manager_check_read_target (mgr, trans,
                 branch->repo_id, path, CF_FILE, old_commit_id,
                 json_string_value (json_object_get (lease, "base_version")),
                 scopes_json, native_username) == 0) &&
             cf_policy_check_lease_write (trans, branch->repo_id, path,
-                json_string_value (json_object_get (context, "userId")), lease) == 0;
+                json_string_value (json_object_get (context, "userId")), lease) == 0));
         if (snapshot) json_decref (snapshot);
         if (conditions) json_decref (conditions);
         if (!allowed) {
@@ -1365,17 +1489,28 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (scopes_json && scopes_json[0] == '{') {
         json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         json_t *context = json_object_get (conditions, "context");
+        json_t *snapshot = NULL;
+        int qualification = local_publication ? cloudfile_library_qualification(mgr, trans, branch->repo_id, native_username) : 0;
         /* SQL row locks prevent refresh/logout/release mutations, but do not
          * stop the database clock. Re-read natural session and lease expiry
          * after all earlier authority/resource waits, immediately before the
          * publication statement. An omitted lease still checks active locks.
          * This also covers compare-only/no-op publication through this path. */
         gboolean current = json_is_object (conditions) &&
+            !json_object_get (conditions, "read_transfer_expires_at") &&
+            !json_object_get (conditions, "local_session") &&
+            (local_publication || !json_object_get (conditions, "local_commit")) &&
             cloudfile_check_oidc_reference (mgr, trans, conditions) == 0 &&
+            (local_publication ?
+             (qualification > 0 && cloudfile_check_context(mgr, scopes_json, &snapshot) == 0 &&
+              cf_policy_check_local_commit(trans, branch->repo_id,
+                  json_string_value(json_object_get(conditions, "path")), local_old_file, local_new_file,
+                  conditions, snapshot, qualification) == 0) :
             cf_policy_check_lease_write (trans, branch->repo_id,
                 json_string_value (json_object_get (conditions, "path")),
                 json_string_value (json_object_get (context, "userId")),
-                json_object_get (conditions, "lease")) == 0;
+                json_object_get (conditions, "lease")) == 0);
+        if (snapshot) json_decref(snapshot);
         if (conditions) json_decref (conditions);
         if (!current) {
             seaf_db_rollback (trans);
@@ -1392,6 +1527,23 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -1;
+    }
+
+    if (local_publication) {
+        json_t *conditions = json_loads(scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        json_t *snapshot = NULL;
+        const char *path = json_string_value(json_object_get(conditions, "path"));
+        int qualification = cloudfile_library_qualification(mgr, trans, branch->repo_id, native_username);
+        gboolean complete = qualification > 0 && cloudfile_check_context(mgr, scopes_json, &snapshot) == 0 &&
+            cf_local_commit_append_fact(trans, branch->repo_id, path, local_old_file, local_new_file,
+                conditions, snapshot, qualification) == 0 &&
+            cf_local_commit_finish(trans, branch->repo_id, path, local_old_file, local_new_file,
+                branch->commit_id, conditions, snapshot, qualification) == 0 &&
+            cloudfile_check_oidc_reference(mgr, trans, conditions) == 0 &&
+            cloudfile_check_context(mgr, scopes_json, NULL) == 0;
+        if (snapshot) json_decref(snapshot);
+        if (conditions) json_decref(conditions);
+        if (!complete) { seaf_db_rollback(trans); seaf_db_trans_close(trans); return -2; }
     }
 
     if (seaf_db_commit (trans) < 0) {
@@ -1415,7 +1567,7 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr, SeafBranch *
     const char *origin_repo_id, gboolean *gc_conflict)
 {
     return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
-                                   origin_repo_id, gc_conflict, NULL, NULL);
+                                   origin_repo_id, gc_conflict, NULL, NULL, FALSE);
 }
 
 int
@@ -1427,8 +1579,21 @@ seaf_branch_manager_test_and_update_branch_with_barriers (SeafBranchManager *mgr
     if (!scopes_json || seaf_db_type (mgr->seaf->db) != SEAF_DB_TYPE_MYSQL)
         return -2;
     return test_and_update_branch (mgr, branch, old_commit_id, check_gc, last_gc_id,
-                                   origin_repo_id, gc_conflict, scopes_json, native_username);
+                                   origin_repo_id, gc_conflict, scopes_json, native_username, FALSE);
 }
+
+#ifdef FULL_FEATURE
+int
+seaf_branch_manager_publish_local_commit (SeafBranchManager *mgr, SeafBranch *branch,
+    const char *old_commit_id, gboolean check_gc, const char *last_gc_id,
+    gboolean *gc_conflict, const char *conditions, const char *native_username)
+{
+    if (!mgr || !branch || !old_commit_id || !conditions ||
+        seaf_db_type(mgr->seaf->db) != SEAF_DB_TYPE_MYSQL) return -2;
+    return test_and_update_branch(mgr, branch, old_commit_id, check_gc, last_gc_id,
+        NULL, gc_conflict, conditions, native_username, TRUE);
+}
+#endif
 
 #endif
 
