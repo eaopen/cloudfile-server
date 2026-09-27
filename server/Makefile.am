@@ -26,6 +26,8 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	repo-mgr.h \
 	cloudfile-acl.h \
 	cloudfile-policy.h \
+	cloudfile-stage-fd.h \
+	cloudfile-single-file.h \
 	share-mgr.h \
 	passwd-mgr.h \
 	quota-mgr.h \
@@ -58,6 +60,8 @@ seaf_server_SOURCES = \
 	repo-op.c \
 	repo-perm.c \
 	cloudfile-policy.c \
+	cloudfile-stage-fd.c \
+	cloudfile-single-file.c \
 	size-sched.c \
 	virtual-repo.c \
 	copy-mgr.c \

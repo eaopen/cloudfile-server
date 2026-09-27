@@ -63,6 +63,81 @@ typedef struct SeafdirOndisk {
 #ifndef SEAFILE_SERVER
 uint32_t
 calculate_chunk_size (uint64_t total_size);
+#endif
+/* This helper deliberately does not accept a pathname. The descriptor remains
+ * owned by the caller throughout all native chunk workers. On Linux, /proc/self
+ * names THIS pinned descriptor rather than a client-selected filesystem path. */
+#ifdef __linux__
+static int
+cloudfile_stage_measure (int fd, gint64 size, const char *expected,
+                        const struct stat *original)
+{
+    GChecksum *checksum = g_checksum_new (G_CHECKSUM_SHA256);
+    unsigned char buffer[65536];
+    gint64 offset = 0;
+    int result = -1;
+    if (!checksum) return -1;
+    while (offset < size) {
+        size_t budget = (size - offset) > (gint64)sizeof(buffer) ?
+            sizeof(buffer) : (size_t)(size - offset);
+        ssize_t count = pread (fd, buffer, budget, (off_t)offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0 || (size_t)count > budget) goto out;
+        g_checksum_update (checksum, buffer, count);
+        offset += count;
+    }
+    struct stat current;
+    if (fstat (fd, &current) < 0 || current.st_dev != original->st_dev ||
+        current.st_ino != original->st_ino || current.st_nlink != 0 ||
+        !S_ISREG(current.st_mode) || current.st_size != size ||
+        (current.st_mode & 0777) != 0400 ||
+        strcmp (g_checksum_get_string(checksum), expected)) goto out;
+    result = 0;
+out:
+    g_checksum_free (checksum);
+    return result;
+}
+#endif
+
+int
+seaf_fs_manager_index_cloudfile_stage (SeafFSManager *mgr, const char *store_id,
+                                     int version, int stage_fd, gint64 expected_size,
+                                     const char *expected_sha256, unsigned char sha1[])
+{
+    if (sha1) memset (sha1, 0, 20);
+#ifdef __linux__
+    struct stat original;
+    int flags = fcntl (stage_fd, F_GETFL);
+    if (!mgr || !store_id || !is_uuid_valid(store_id) || version != 1 ||
+        !sha1 || expected_size < 0 || !expected_sha256 || strlen(expected_sha256) != 64 ||
+        strspn(expected_sha256, "0123456789abcdef") != 64 || flags < 0 ||
+        (flags & O_ACCMODE) != O_RDONLY || fstat (stage_fd, &original) < 0 ||
+        !S_ISREG(original.st_mode) || original.st_nlink != 0 ||
+        original.st_size != expected_size || (original.st_mode & 0777) != 0400 ||
+        cloudfile_stage_measure(stage_fd, expected_size, expected_sha256, &original) < 0)
+        return -1;
+    char path[64];
+    g_snprintf (path, sizeof(path), "/proc/self/fd/%d", stage_fd);
+    gint64 size = -1, indexed = 0;
+    /* Only unencrypted native-v1 staging is supported here. No repository
+     * commit, publication event or session completion occurs in this helper. */
+    int result = seaf_fs_manager_index_blocks (mgr, store_id, version, path,
+        sha1, &size, NULL, TRUE, TRUE, &indexed);
+    if (result < 0 || size != expected_size ||
+        cloudfile_stage_measure(stage_fd, expected_size, expected_sha256, &original) < 0) {
+        memset (sha1, 0, 20);
+        return -1;
+    }
+    return 0;
+#else
+    /* Non-Linux builds never substitute a caller path or weaken FD checks. */
+    (void)mgr; (void)store_id; (void)version; (void)stage_fd;
+    (void)expected_size; (void)expected_sha256;
+    return -1;
+#endif
+}
+
+#ifndef SEAFILE_SERVER
 static int
 write_seafile (SeafFSManager *fs_mgr,
                const char *repo_id, int version,
