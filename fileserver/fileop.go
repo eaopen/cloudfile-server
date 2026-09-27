@@ -401,7 +401,7 @@ func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent stri
 
 func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, cryptKey *seafileCrypt, user string) *appError {
-	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced && option.CloudFileManagedLibraryGuard {
+	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced {
 		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
 			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
 		}
@@ -494,7 +494,7 @@ type blockMap struct {
 
 func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, byteRanges string, user string) *appError {
-	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced && option.CloudFileManagedLibraryGuard {
+	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced {
 		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
 			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
 		}

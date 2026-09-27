@@ -18,6 +18,19 @@ cf_policy_legacy_guard_enabled (GKeyFile *config)
     return enabled;
 }
 
+gboolean
+cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config)
+{
+    if (cf_policy_legacy_guard_enabled (config)) return TRUE;
+    if (!db) return TRUE;
+    if (seaf_db_type (db) != SEAF_DB_TYPE_MYSQL) return FALSE;
+    gboolean error = FALSE;
+    gboolean installed = seaf_db_statement_exists (db,
+        "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() "
+        "AND table_name IN ('cf_schema_migration','cf_managed_library')", &error, 0);
+    return installed || error;
+}
+
 static int
 managed_schema (SeafDBTrans *trans)
 {
@@ -74,7 +87,7 @@ cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo)
 int
 cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo)
 {
-    if (!cf_policy_legacy_guard_enabled (config)) return 0;
+    if (!cf_policy_managed_guard_required (db, config)) return 0;
     SeafDBTrans *trans = seaf_db_begin_transaction (db);
     if (!trans) return -1;
     int result = cf_policy_check_legacy_library (trans, repo);

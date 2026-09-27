@@ -8,6 +8,9 @@
  * managed, missing/drifted schema and storage failures all reject. The caller
  * holds this transaction through its final publication statement. */
 gboolean cf_policy_legacy_guard_enabled (GKeyFile *config);
+/* Installed extension state makes the boundary mandatory, even without an
+ * opt-in setting. A missing registry cannot reopen an installed deployment. */
+gboolean cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config);
 int cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo);
 int cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo);
 int cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo);

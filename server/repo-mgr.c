@@ -670,7 +670,7 @@ int
 seaf_repo_manager_del_repo (SeafRepoManager *mgr, const char *repo_id, GError **error)
 {
 #ifdef FULL_FEATURE
-    if (cf_policy_legacy_guard_enabled (mgr->seaf->config)) {
+    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
         /* Keep enrollment excluded for the entire legacy multi-statement
          * deletion. Do not discover a protected Branch after deleting Repo. */
         SeafDBTrans *guard = seaf_db_begin_transaction (mgr->seaf->db);

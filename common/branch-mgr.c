@@ -207,7 +207,7 @@ seaf_branch_manager_add_branch (SeafBranchManager *mgr, SeafBranch *branch)
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_legacy_guard_enabled (mgr->seaf->config)) {
+    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
         int rc = cf_policy_check_legacy_library (trans, branch->repo_id);
@@ -284,7 +284,7 @@ seaf_branch_manager_del_branch (SeafBranchManager *mgr,
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_legacy_guard_enabled (mgr->seaf->config)) {
+    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
         int rc = cf_policy_check_legacy_library (trans, repo_id);
@@ -327,7 +327,7 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_legacy_guard_enabled (mgr->seaf->config)) {
+    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
         int rc = cf_policy_check_legacy_library (trans, branch->repo_id);
@@ -1340,7 +1340,7 @@ test_and_update_branch (SeafBranchManager *mgr,
     }
     /* Match policy mutation order: authority scopes, managed marker, Branch.
      * Enrollment rolls back with any denied/failed enhanced publication. */
-    if (cf_policy_legacy_guard_enabled (mgr->seaf->config) &&
+    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config) &&
         (enhanced ? cf_policy_enroll_managed_library (trans, branch->repo_id) :
          cf_policy_check_legacy_library (trans, branch->repo_id)) < 0) {
         seaf_db_rollback (trans);

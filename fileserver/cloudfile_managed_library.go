@@ -17,7 +17,14 @@ var errCloudFileLegacyLibrary = errors.New("legacy library access unavailable")
 // final publication, so enrollment cannot race a successful legacy commit.
 func checkLegacyLibrary(ctx context.Context, tx *sql.Tx, repoID string) error {
 	if !option.CloudFileManagedLibraryGuard {
-		return nil
+		var installed int
+		err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('cf_schema_migration','cf_managed_library')").Scan(&installed)
+		if err != nil {
+			return errCloudFileLegacyLibrary
+		}
+		if installed == 0 {
+			return nil
+		}
 	}
 	if len(repoID) != 36 {
 		return errCloudFileLegacyLibrary
@@ -69,9 +76,6 @@ func checkLegacyLibrary(ctx context.Context, tx *sql.Tx, repoID string) error {
 }
 
 func legacyLibraryAllowed(ctx context.Context, repoID string) error {
-	if !option.CloudFileManagedLibraryGuard {
-		return nil
-	}
 	if seafileDB == nil {
 		return errCloudFileLegacyLibrary
 	}
