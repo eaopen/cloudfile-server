@@ -9,6 +9,10 @@
 int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,
                            const char *provider, const char *user, json_t *snapshot,
                            int ce_permission);
+/* Creation needs both parent-directory write and exact new-file policy. */
+int cf_policy_check_create (SeafDBTrans *trans, const char *repo, const char *path,
+                           const char *provider, const char *user, json_t *snapshot,
+                           int ce_permission);
 
 /* Ordinary conditional writes carry no lease proof: an active file lease must
  * reject them, including writes by the owner. Held through Branch publication.

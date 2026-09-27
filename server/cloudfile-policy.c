@@ -538,3 +538,16 @@ int cf_policy_check_read (SeafDBTrans *trans, const char *repo, const char *path
     return policy_check (trans, repo, path, provider, user, snapshot,
                          ce_permission, kind, FALSE);
 }
+
+int cf_policy_check_create (SeafDBTrans *trans, const char *repo, const char *path,
+                           const char *provider, const char *user, json_t *snapshot,
+                           int ce_permission)
+{
+    if (!path || path[0] != '/' || !strcmp (path, "/")) return -1;
+    char *parent = g_path_get_dirname (path);
+    int allowed = policy_check (trans, repo, parent, provider, user, snapshot,
+                                ce_permission, CF_DIRECTORY, TRUE);
+    g_free (parent);
+    return allowed == 0 ? cf_policy_check_write (trans, repo, path, provider,
+                                                user, snapshot, ce_permission) : -1;
+}

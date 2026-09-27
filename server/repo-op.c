@@ -4372,6 +4372,12 @@ put_file_with_condition (SeafRepoManager *mgr,
     char *old_file_id = NULL, *fullpath = NULL;
     char *gc_id = NULL;
     int ret = 0;
+    gboolean create = FALSE;
+    if (scopes_json) {
+        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        create = json_is_true (json_object_get (condition, "create"));
+        if (condition) json_decref (condition);
+    }
 
     if (strict_head && (!head_id || !is_object_id_valid (head_id))) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
@@ -4425,8 +4431,13 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
     
-    FAIL_IF_FILE_NOT_EXISTS(repo->store_id, repo->version,
+    if (create) {
+        FAIL_IF_FILE_EXISTS(repo->store_id, repo->version,
                             head_commit->root_id, canon_path, file_name, NULL);
+    } else {
+        FAIL_IF_FILE_NOT_EXISTS(repo->store_id, repo->version,
+                            head_commit->root_id, canon_path, file_name, NULL);
+    }
 
     /* Write blocks. */
     if (repo->encrypted) {
@@ -4502,7 +4513,8 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
 
-    root_id = do_put_file (repo, head_commit->root_id, canon_path, new_dent);
+    root_id = create ? do_post_file (repo, head_commit->root_id, canon_path, new_dent) :
+                      do_put_file (repo, head_commit->root_id, canon_path, new_dent);
     if (!root_id) {
         seaf_warning ("[put file] Failed to put file %s to %s in repo %s.\n",
                       file_name, canon_path, repo->id);
@@ -4513,7 +4525,7 @@ put_file_with_condition (SeafRepoManager *mgr,
     }
 
     /* Commit. */
-    snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
+    snprintf(buf, SEAF_PATH_MAX, create ? "Added \"%s\"" : "Modified \"%s\"", file_name);
     if (gen_new_commit_guarded (repo_id, head_commit, root_id, user, buf, NULL,
                                !strict_head, TRUE, gc_id, error, scopes_json) < 0) {
         ret = -1;

@@ -1372,6 +1372,10 @@ test_and_update_branch (SeafBranchManager *mgr,
             cf_policy_check_write (trans, branch->repo_id, path,
                 json_string_value (json_object_get (context, "provider")),
                 json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0 &&
+            (!json_is_true (json_object_get (conditions, "create")) ||
+                cf_policy_check_create (trans, branch->repo_id, path,
+                    json_string_value (json_object_get (context, "provider")),
+                    json_string_value (json_object_get (context, "userId")), snapshot, qualification) == 0) &&
             (!lease || seaf_branch_manager_check_read_target (mgr, trans,
                 branch->repo_id, path, CF_FILE, old_commit_id,
                 json_string_value (json_object_get (lease, "base_version")),
