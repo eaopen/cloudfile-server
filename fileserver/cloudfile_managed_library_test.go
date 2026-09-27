@@ -8,6 +8,7 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/option"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Publication orchestration, not evidence of MySQL locking semantics.
@@ -40,9 +41,14 @@ func (c *managedLibraryConnection) QueryContext(ctx context.Context, query strin
 	}
 }
 func TestLegacyManagedLibraryCannotPublishBranch(t *testing.T) {
-	originalDB, originalGuard := seafileDB, option.CloudFileManagedLibraryGuard
-	defer func() { seafileDB = originalDB; option.CloudFileManagedLibraryGuard = originalGuard }()
+	originalDB, originalGuard, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard, option.DBOpTimeout
+	defer func() {
+		seafileDB = originalDB
+		option.CloudFileManagedLibraryGuard = originalGuard
+		option.DBOpTimeout = originalTimeout
+	}()
 	option.CloudFileManagedLibraryGuard = true
+	option.DBOpTimeout = 2 * time.Second
 	for _, missing := range []bool{false, true} {
 		fixture := &readAuditSQLFixture{}
 		seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture, missing: missing})
