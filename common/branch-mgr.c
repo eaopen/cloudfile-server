@@ -20,7 +20,7 @@
 #endif
 
 #include "branch-mgr.h"
-#ifdef SEAFILE_SERVER
+#if defined(SEAFILE_SERVER) && defined(FULL_FEATURE)
 #include <jansson.h>
 #include <hiredis.h>
 #endif
