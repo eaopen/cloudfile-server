@@ -347,6 +347,9 @@ type UserInfo struct {
 }
 
 func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent string) (string, *appError) {
+	if legacyLibraryAllowed(context.Background(), repoID) != nil {
+		return "", &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
+	}
 	tokenString, err := utils.GenSeahubJWTToken()
 	if err != nil {
 		err := fmt.Errorf("failed to sign jwt token: %v", err)
@@ -398,6 +401,12 @@ func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent stri
 
 func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, cryptKey *seafileCrypt, user string) *appError {
+	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced && option.CloudFileManagedLibraryGuard {
+		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
+			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
+		}
+		rsp = &cloudFileLegacyResponse{ResponseWriter: rsp, request: r, repoID: repo.ID}
+	}
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
 		msg := "Failed to get seafile"
@@ -485,6 +494,12 @@ type blockMap struct {
 
 func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, byteRanges string, user string) *appError {
+	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced && option.CloudFileManagedLibraryGuard {
+		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
+			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
+		}
+		rsp = &cloudFileLegacyResponse{ResponseWriter: rsp, request: r, repoID: repo.ID}
+	}
 
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
@@ -2214,6 +2229,11 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	if err != nil {
 		err := fmt.Errorf("failed to start transaction: %v", err)
 		return false, err
+	}
+
+	if checkLegacyLibrary(ctx, trans, repoID) != nil {
+		trans.Rollback()
+		return false, errCloudFileLegacyLibrary
 	}
 
 	var row *sql.Row
@@ -4028,6 +4048,9 @@ func accessLinkCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 
+	if legacyLibraryAllowed(r.Context(), info.RepoID) != nil {
+		return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
+	}
 	repoID := info.RepoID
 	filePath := normalizeUTF8Path(info.FilePath)
 	fileName := filepath.Base(filePath)

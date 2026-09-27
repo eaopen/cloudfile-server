@@ -1,6 +1,9 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
 #include "common.h"
+#ifdef FULL_FEATURE
+#include "cloudfile-policy.h"
+#endif
 
 #include <glib/gstdio.h>
 
@@ -566,8 +569,8 @@ get_head_commit (SeafRepoManager *mgr, const char *repo_id, gboolean *has_err)
     return head_commit;
 }
 
-int
-seaf_repo_manager_del_repo (SeafRepoManager *mgr,
+static int
+del_repo_legacy (SeafRepoManager *mgr,
                             const char *repo_id,
                             GError **error)
 {
@@ -662,6 +665,27 @@ del_repo:
 
     return 0;
 }
+
+int
+seaf_repo_manager_del_repo (SeafRepoManager *mgr, const char *repo_id, GError **error)
+{
+#ifdef FULL_FEATURE
+    if (cf_policy_legacy_guard_enabled (mgr->seaf->config)) {
+        /* Keep enrollment excluded for the entire legacy multi-statement
+         * deletion. Do not discover a protected Branch after deleting Repo. */
+        SeafDBTrans *guard = seaf_db_begin_transaction (mgr->seaf->db);
+        if (!guard) return -1;
+        int rc = cf_policy_check_legacy_library (guard, repo_id);
+        if (rc == 0) rc = del_repo_legacy (mgr, repo_id, error);
+        else g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "Legacy library access unavailable");
+        seaf_db_rollback (guard);
+        seaf_db_trans_close (guard);
+        return rc;
+    }
+#endif
+    return del_repo_legacy (mgr, repo_id, error);
+}
+
 
 int
 seaf_repo_manager_del_virtual_repo (SeafRepoManager *mgr,

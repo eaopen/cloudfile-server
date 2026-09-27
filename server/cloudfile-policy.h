@@ -4,6 +4,14 @@
 #include <jansson.h>
 #include "seaf-db.h"
 
+/* Opt-in monotonic managed-library boundary. Zero means legacy access allowed;
+ * managed, missing/drifted schema and storage failures all reject. The caller
+ * holds this transaction through its final publication statement. */
+gboolean cf_policy_legacy_guard_enabled (GKeyFile *config);
+int cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo);
+int cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo);
+int cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo);
+
 /* Same final transaction, authenticated current snapshot and exact RPC target.
  * Returns 0 only for a write granted by the shared C ACL core. Not an entry API. */
 int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,

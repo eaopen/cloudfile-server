@@ -16,6 +16,7 @@
 #ifdef FULL_FEATURE
 #include <jansson.h>
 #include "cloudfile-acl.h"
+#include "cloudfile-policy.h"
 #include "branch-mgr.h"
 #endif
 
@@ -145,6 +146,12 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
                                       int use_onetime,
                                       GError **error)
 {
+#ifdef FULL_FEATURE
+    if (cf_policy_check_legacy_access (seaf->db, seaf->config, repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "Legacy library access unavailable");
+        return NULL;
+    }
+#endif
     AccessInfo *info;
     long now = (long)time(NULL);
     long expire;
@@ -244,6 +251,12 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
     info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
 
     if (info != NULL && info->conditions == NULL) {
+#ifdef FULL_FEATURE
+        if (cf_policy_check_legacy_access (seaf->db, seaf->config, info->repo_id) < 0) {
+            pthread_mutex_unlock (&mgr->priv->lock);
+            return NULL;
+        }
+#endif
         long expire_time = info->expire_time;
         long now = (long)time(NULL);        
 

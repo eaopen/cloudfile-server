@@ -6,6 +6,92 @@
 #include <stdlib.h>
 #include <errno.h>
 
+gboolean
+cf_policy_legacy_guard_enabled (GKeyFile *config)
+{
+    if (!config || !g_key_file_has_key (config, "cloudfile", "managed_library_guard", NULL))
+        return FALSE;
+    GError *error = NULL;
+    gboolean enabled = g_key_file_get_boolean (config, "cloudfile", "managed_library_guard", &error);
+    /* An invalid configured value must never silently open the old paths. */
+    if (error) { g_error_free (error); return TRUE; }
+    return enabled;
+}
+
+static int
+managed_schema (SeafDBTrans *trans)
+{
+    gboolean error = FALSE;
+    /* Pin the table before metadata inspection and use current locking reads. */
+    if (seaf_db_trans_foreach_selected_row (trans,
+            "SELECT repo_id FROM cf_managed_library LIMIT 0 FOR UPDATE", NULL, NULL, 0) < 0)
+        return -1;
+    const char *checks[] = {
+        "SELECT version FROM cf_schema_migration WHERE version='032_managed_libraries' AND state='applied'",
+        "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND ENGINE='InnoDB'",
+        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_managed_library' GROUP BY table_name HAVING COUNT(*)=2 AND SUM(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO')=1 AND SUM(column_name='created_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO')=1",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
+        "SELECT 1 WHERE @@transaction_isolation IN ('REPEATABLE-READ','SERIALIZABLE')"
+    };
+    for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
+        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
+    return 0;
+}
+
+static gboolean
+managed_origin (SeafDBRow *row, void *data)
+{
+    char **origin = data;
+    *origin = g_strdup (seaf_db_row_get_column_text (row, 0));
+    return TRUE;
+}
+
+int
+cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo)
+{
+    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) return -1;
+    char *origin = NULL;
+    int count = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT origin_repo FROM VirtualRepo WHERE repo_id=? FOR UPDATE",
+        managed_origin, &origin, 1, "string", repo);
+    if (count < 0 || count > 1 || (count == 1 && (!origin || strlen (origin) != 36))) {
+        g_free (origin); return -1;
+    }
+    const char *first = repo, *second = origin;
+    if (second && strcmp (first, second) > 0) { first = origin; second = repo; }
+    gboolean error = FALSE;
+    gboolean blocked = seaf_db_trans_check_for_existence (trans,
+        "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", &error,
+        1, "string", first);
+    if (!blocked && !error && second)
+        blocked = seaf_db_trans_check_for_existence (trans,
+            "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", &error,
+            1, "string", second);
+    g_free (origin);
+    return !blocked && !error ? 0 : -1;
+}
+
+int
+cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo)
+{
+    if (!cf_policy_legacy_guard_enabled (config)) return 0;
+    SeafDBTrans *trans = seaf_db_begin_transaction (db);
+    if (!trans) return -1;
+    int result = cf_policy_check_legacy_library (trans, repo);
+    seaf_db_rollback (trans);
+    seaf_db_trans_close (trans);
+    return result;
+}
+
+int
+cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo)
+{
+    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) return -1;
+    return seaf_db_trans_query (trans,
+        "INSERT INTO cf_managed_library(repo_id,created_at) VALUES(?,UTC_TIMESTAMP(6)) "
+        "ON DUPLICATE KEY UPDATE repo_id=VALUES(repo_id)", 1, "string", repo);
+}
+
 static int
 lease_schema (SeafDBTrans *trans)
 {

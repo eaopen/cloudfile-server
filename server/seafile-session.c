@@ -1,6 +1,9 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
 #include "common.h"
+#ifdef FULL_FEATURE
+#include "cloudfile-policy.h"
+#endif
 
 #include <stdint.h>
 #include <dirent.h>
@@ -178,6 +181,13 @@ load_config (SeafileSession *session, const char *config_file_path)
     if (use_go_fileserver && g_strcmp0 (use_go_fileserver, "true") == 0) {
         session->go_fileserver = TRUE; 
     }
+#ifdef FULL_FEATURE
+    if (cf_policy_legacy_guard_enabled (config) && !session->go_fileserver) {
+        seaf_warning ("CloudFile managed library guard requires Go fileserver.\n");
+        ret = -1;
+        goto out;
+    }
+#endif
 
 out:
     if (ret < 0) {

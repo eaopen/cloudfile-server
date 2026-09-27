@@ -17,6 +17,7 @@ import (
 const InfiniteQuota = -2
 
 // Explicit startup-only trust for managed reads; absent means direct TLS only.
+var CloudFileManagedLibraryGuard bool
 var CloudFileTrustedTLSProxies []*net.IPNet
 
 // Storage unit.
@@ -136,7 +137,15 @@ func LoadFileServerOptions(centralDir string) {
 	}
 	CloudMode = false
 	CloudFileTrustedTLSProxies = nil
+	CloudFileManagedLibraryGuard = false
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
+		if key, keyErr := section.GetKey("managed_library_guard"); keyErr == nil {
+			var parseErr error
+			CloudFileManagedLibraryGuard, parseErr = key.Bool()
+			if parseErr != nil {
+				log.Fatal("Invalid CloudFile managed_library_guard")
+			}
+		}
 		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {
 			entries := strings.Split(key.String(), ",")
 			if len(key.String()) > 4096 || len(entries) > 32 {
