@@ -31,6 +31,16 @@ cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config)
     return installed || error;
 }
 
+static gboolean
+managed_isolation (SeafDBRow *row, void *data)
+{
+    gboolean *valid = data;
+    const char *isolation = seaf_db_row_get_column_text (row, 0);
+    *valid = g_strcmp0 (isolation, "REPEATABLE-READ") == 0 ||
+        g_strcmp0 (isolation, "SERIALIZABLE") == 0;
+    return TRUE;
+}
+
 static int
 managed_schema (SeafDBTrans *trans)
 {
@@ -43,12 +53,18 @@ managed_schema (SeafDBTrans *trans)
         "SELECT version FROM cf_schema_migration WHERE version='032_managed_libraries' AND state='applied'",
         "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND ENGINE='InnoDB'",
         "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_managed_library' GROUP BY table_name HAVING COUNT(*)=2 AND SUM(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO')=1 AND SUM(column_name='created_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO')=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT 1 WHERE @@transaction_isolation IN ('REPEATABLE-READ','SERIALIZABLE')"
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1"
     };
     for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
         if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
-    return 0;
+    /* Reuse qualification's MySQL/MariaDB variable compatibility. */
+    gboolean isolation = FALSE;
+    int rows = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT @@transaction_isolation", managed_isolation, &isolation, 0);
+    if (rows < 0)
+        rows = seaf_db_trans_foreach_selected_row (trans,
+            "SELECT @@tx_isolation", managed_isolation, &isolation, 0);
+    return rows == 1 && isolation ? 0 : -1;
 }
 
 static gboolean

@@ -32,6 +32,10 @@ func (c *managedLibraryConnection) QueryContext(ctx context.Context, query strin
 		return nil, errors.New("missing managed storage")
 	}
 	switch {
+	case query == "SELECT @@transaction_isolation":
+		return nil, errors.New("unknown variable")
+	case query == "SELECT @@tx_isolation":
+		return &readAuditRows{columns: []string{"isolation"}, values: [][]driver.Value{{"REPEATABLE-READ"}}}, nil
 	case strings.Contains(query, "LIMIT 0"), strings.Contains(query, "FROM VirtualRepo"):
 		return &readAuditRows{columns: []string{"repo_id"}}, nil
 	case strings.Contains(query, "WHERE repo_id=? FOR UPDATE"):
