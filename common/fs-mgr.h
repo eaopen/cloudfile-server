@@ -218,18 +218,6 @@ seaf_fs_manager_index_existed_file_blocks (SeafFSManager *mgr,
                                            GList *blockids,
                                            unsigned char sha1[],
                                            gint64 file_size);
-/* Internal Linux read-only, unlinked staging FD indexer. No Branch update or
- * authorization: the eventual owned FD transport must authorize the target
- * store and authenticate its peer before invoking this helper. */
-int
-seaf_fs_manager_index_cloudfile_stage (SeafFSManager *mgr,
-                                     const char *store_id,
-                                     int version,
-                                     int stage_fd,
-                                     gint64 expected_size,
-                                     const char *expected_sha256,
-                                     unsigned char sha1[]);
-
 int
 seaf_fs_manager_index_blocks (SeafFSManager *mgr,
                               const char *repo_id,

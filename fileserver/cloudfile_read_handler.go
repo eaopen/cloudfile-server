@@ -14,7 +14,6 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/repomgr"
 )
 
-// Deliberately unregistered until identity/logout and deployment gates pass.
 // Reuses native file/Range readers, not a second block-transfer implementation.
 func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appError) {
 	cloudFileReadSecurityHeaders(rsp.Header())

@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func TestCloudFileReadRouteIsRegistered(t *testing.T) {
+	router := newHTTPRouter()
+	request := httptest.NewRequest(http.MethodPost, "http://fixture.invalid/cloudfile/read", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("managed read route returned %d; want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestCloudFileReadRequestRejectsBeforeRPC(t *testing.T) {
 	for _, fixture := range []struct {
 		change func(*http.Request)
