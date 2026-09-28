@@ -26,6 +26,7 @@
 #include "mq-mgr.h"
 #include "seaf-db.h"
 #include "seaf-utils.h"
+#include "cf-ext.h"
 
 #include "log.h"
 
@@ -494,6 +495,11 @@ seafile_session_init (SeafileSession *session)
 int
 seafile_session_start (SeafileSession *session)
 {
+    /* CloudFile: let capabilities register now that the config manager
+     * exists. The baseline registers none, which keeps every extension hook a
+     * pass-through. */
+    cf_ext_init ();
+
     if (seaf_share_manager_start (session->share_mgr) < 0) {
         seaf_warning ("Failed to start share manager.\n");
         return -1;
@@ -654,7 +660,7 @@ create_system_default_repo (void *data)
                                                  "My Library Template",
                                                  "Template for creating 'My Library' for users",
                                                  "System",
-                                                 NULL, -1, NULL, NULL, NULL);
+                                                 NULL, -1, NULL, NULL, NULL, NULL);
     if (!repo_id) {
         seaf_warning ("Failed to create system default repo.\n");
         return data;

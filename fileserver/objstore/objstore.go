@@ -3,7 +3,12 @@
 package objstore
 
 import (
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/ini.v1"
 )
 
 // ObjectStore is a container to access storage backend
@@ -31,8 +36,48 @@ type storageBackend interface {
 func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectStore {
 	obj := new(ObjectStore)
 	obj.ObjType = objType
-	obj.backend, _ = newFSBackend(seafileDataDir, objType)
+	backend, err := newBackend(seafileConfPath, seafileDataDir, objType)
+	if err != nil {
+		panic(fmt.Sprintf("initialize %s object store: %v", objType, err))
+	}
+	obj.backend = backend
 	return obj
+}
+
+func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
+	configPath := seafileConfPath
+	info, statErr := os.Stat(configPath)
+	if statErr == nil && info.IsDir() {
+		configPath = filepath.Join(configPath, "seafile.conf")
+	}
+
+	config, err := ini.Load(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newFSBackend(seafileDataDir, objType)
+		}
+		return nil, err
+	}
+
+	sectionName := map[string]string{
+		"commits": "commit_object_backend",
+		"fs":      "fs_object_backend",
+		"blocks":  "block_backend",
+	}[objType]
+	if sectionName == "" {
+		return nil, fmt.Errorf("unknown object type %q", objType)
+	}
+	section, err := config.GetSection(sectionName)
+	if err != nil || section.Key("name").String() == "" || section.Key("name").String() == "filesystem" {
+		return newFSBackend(seafileDataDir, objType)
+	}
+	if section.Key("name").String() != "s3" {
+		if section.Key("name").String() == "multiple" {
+			return newMultiBackend(config, configPath, objType)
+		}
+		return nil, fmt.Errorf("unsupported %s backend %q", objType, section.Key("name").String())
+	}
+	return newS3Backend(section)
 }
 
 // Read data from storage backends.

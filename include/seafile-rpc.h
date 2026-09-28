@@ -979,6 +979,71 @@ char *
 seafile_check_permission_by_path (const char *repo_id, const char *path,
                                   const char *user, GError **error);
 
+/*
+ * CloudFile: first path at or below @path that @user cannot access at all,
+ * or NULL when the whole subtree is reachable.
+ *
+ * Backs is_repo_syncable and is_dir_downloadable, which upstream CE stubs out
+ * as always-true. Both operations ship a whole subtree in one go, so a single
+ * unreadable descendant has to block them up front.
+ */
+char *
+seafile_cf_find_restricted_path (const char *repo_id, const char *path,
+                                 const char *user, GError **error);
+
+/*
+ * CloudFile: write lifecycle, for the Go fileserver.
+ *
+ * @fop_json is the JSON form of a CfFileOp (see common/cf-fileop-json.h).
+ * committed and aborted always return 0 because the write has already
+ * happened either way; prepare answers with a verdict, see below.
+ *
+ * All four are no-ops returning 0 when no capability has registered.
+ */
+int
+seafile_cf_fileop_active (GError **error);
+
+/*
+ * Returns a JSON verdict: {"allowed":true} or
+ * {"allowed":false,"code":<n>,"message":"..."}. A refusal is a normal answer,
+ * so it is not raised as a GError -- NULL means the payload was malformed.
+ */
+char *
+seafile_cf_fileop_prepare (const char *fop_json, GError **error);
+
+int
+seafile_cf_fileop_committed (const char *fop_json, GError **error);
+
+int
+seafile_cf_fileop_aborted (const char *fop_json, GError **error);
+
+/* CloudFile's CE-specific lease-lock control plane. Request and response are
+ * JSON so optional session fields can evolve without widening a searpc ABI. */
+char *
+seafile_cf_lock_status (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_acquire (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_refresh (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_release (const char *request_json, GError **error);
+
+char *
+seafile_cf_lock_force_release (const char *request_json, GError **error);
+
+/* CloudFile storage-class assignment (P2 storage backends). List returns a
+ * JSON array of {"storage_id","storage_name","is_default"}; create makes a
+ * repo pinned to a class. Both answer a "disabled" JSON / NULL when the
+ * switch is off. */
+char *
+seafile_cf_get_storage_classes (GError **error);
+
+char *
+seafile_cf_create_repo (const char *request_json, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,
@@ -1165,6 +1230,10 @@ seafile_org_get_shared_users_by_repo (int org_id,
 
 gint64
 seafile_get_upload_tmp_file_offset (const char *repo_id, const char *file_path,
+                                    GError **error);
+
+int
+seafile_cf_discard_upload_tmp_file (const char *repo_id, const char *file_path,
                                     GError **error);
 
 char *

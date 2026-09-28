@@ -163,7 +163,7 @@ seaf_repo_manager_get_virtual_repo_ids_by_origin (SeafRepoManager *mgr,
 GList *
 seaf_repo_manager_list_garbage_repos (SeafRepoManager *mgr);
 
-void
+int
 seaf_repo_manager_remove_garbage_repo (SeafRepoManager *mgr, const char *repo_id);
 
 #endif

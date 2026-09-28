@@ -2378,20 +2378,31 @@ seaf_fs_manager_object_exists (SeafFSManager *mgr,
                                int version,
                                const char *id)
 {
-    /* Empty file and dir always exists. */
-    if (memcmp (id, EMPTY_SHA1, 40) == 0)
-        return TRUE;
-
-    return seaf_obj_store_obj_exists (mgr->obj_store, repo_id, version, id);
+    return seaf_fs_manager_object_exists_checked (mgr, repo_id,
+                                                  version, id) == 1;
 }
 
-void
+int
+seaf_fs_manager_object_exists_checked (SeafFSManager *mgr,
+                                       const char *repo_id,
+                                       int version,
+                                       const char *id)
+{
+    /* Empty file and dir always exists. */
+    if (memcmp (id, EMPTY_SHA1, 40) == 0)
+        return 1;
+
+    return seaf_obj_store_obj_exists_checked (mgr->obj_store, repo_id,
+                                              version, id);
+}
+
+int
 seaf_fs_manager_delete_object (SeafFSManager *mgr,
                                const char *repo_id,
                                int version,
                                const char *id)
 {
-    seaf_obj_store_delete_obj (mgr->obj_store, repo_id, version, id);
+    return seaf_obj_store_delete_obj (mgr->obj_store, repo_id, version, id);
 }
 
 gint64

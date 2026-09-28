@@ -10,6 +10,8 @@ AM_CFLAGS = -DPKGDATADIR=\"$(pkgdatadir)\" \
 	-I$(top_srcdir)/common \
 	@SEARPC_CFLAGS@ \
 	@GLIB2_CFLAGS@ \
+	@JANSSON_CFLAGS@ \
+	@CURL_CFLAGS@ \
 	@MSVC_CFLAGS@ \
 	@LIBARCHIVE_CFLAGS@ \
 	@MYSQL_CFLAGS@ \
@@ -41,6 +43,17 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/user-mgr.h \
 	../common/group-mgr.h \
 	../common/org-mgr.h \
+	../common/cf-ext.h \
+	../common/cf-fileop.h \
+	../common/cf-fileop-json.h \
+	../common/cf-fileop-test.h \
+	../common/cf-lock.h \
+	../common/cf-path.h \
+	../common/cf-storage.h \
+	../common/cf-acl.h \
+	../common/cf-acl-resolve.h \
+	../common/cf-s3-client.h \
+	../common/storage-backend-multi.h \
 	index-blocks-mgr.h \
 	http-tx-mgr.h \
 	notif-mgr.h \
@@ -80,6 +93,9 @@ seaf_server_SOURCES = \
 	../common/seaf-utils.c \
 	../common/obj-store.c \
 	../common/obj-backend-fs.c \
+	../common/obj-backend-s3.c \
+	../common/cf-s3-client.c \
+	../common/storage-backend-multi.c \
 	../common/seafile-crypt.c \
 	../common/password-hash.c \
 	../common/diff-simple.c \
@@ -87,9 +103,19 @@ seaf_server_SOURCES = \
 	../common/user-mgr.c \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
+	../common/cf-ext.c \
+	../common/cf-fileop.c \
+	../common/cf-fileop-json.c \
+	../common/cf-fileop-test.c \
+	../common/cf-lock.c \
+	../common/cf-path.c \
+	../common/cf-storage.c \
+	../common/cf-acl.c \
+	../common/cf-acl-resolve.c \
 	../common/block-mgr.c \
 	../common/block-backend.c \
 	../common/block-backend-fs.c \
+	../common/block-backend-s3.c \
 	../common/merge-new.c \
 	../common/obj-cache.c \
 	../common/redis-cache.c \

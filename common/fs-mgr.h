@@ -305,7 +305,14 @@ seaf_fs_manager_object_exists (SeafFSManager *mgr,
                                int version,
                                const char *id);
 
-void
+/* Returns 1 if present, 0 if absent, and -1 on backend error. */
+int
+seaf_fs_manager_object_exists_checked (SeafFSManager *mgr,
+                                       const char *repo_id,
+                                       int version,
+                                       const char *id);
+
+int
 seaf_fs_manager_delete_object (SeafFSManager *mgr,
                                const char *repo_id,
                                int version,

@@ -30,10 +30,6 @@ noinst_HEADERS = ${utils_headers} include.h
 seafiledir = $(includedir)/seafile
 seafile_HEADERS = seafile-object.h
 
-seafile-object.h: ${seafile_object_define}
-	rm -f $@
-	valac --pkg posix ${seafile_object_define} -C -H seafile-object.h
-
 DISTCLEANFILES = ${searpc_gen}
 
 ## library rules
@@ -62,13 +58,13 @@ rpc_table.stamp: ${top_srcdir}/lib/rpc_table.py
 ${searpc_gen}: rpc_table.stamp
 
 vala.stamp: ${seafile_object_define}
-	rm -f ${seafile_object_gen}
+	rm -f ${valac_gen}
 	@rm -f vala.tmp
 	@touch vala.tmp
-	valac -C --pkg posix $^
+	valac -C --pkg posix $^ -H seafile-object.h
 	@mv -f vala.tmp $@
 
-${seafile_object_gen}: vala.stamp
+${valac_gen}: vala.stamp
 
 clean-local:
 	rm -f ${searpc_gen}

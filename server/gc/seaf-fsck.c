@@ -203,7 +203,10 @@ main(int argc, char *argv[])
         options.check_integrity = check_integrity;
         options.check_file_size = check_file_size;
         options.repair = repair;
-        seaf_fsck (repo_id_list, id_prefix, &options);
+        if (seaf_fsck (repo_id_list, id_prefix, &options) < 0) {
+            g_free (id_prefix);
+            return 1;
+        }
     }
 
     g_free (id_prefix);

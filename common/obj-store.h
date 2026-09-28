@@ -38,7 +38,14 @@ seaf_obj_store_obj_exists (struct SeafObjStore *obj_store,
                            int version,
                            const char *obj_id);
 
-void
+/* Returns 1 if present, 0 if absent, and -1 on backend error. */
+int
+seaf_obj_store_obj_exists_checked (struct SeafObjStore *obj_store,
+                                   const char *repo_id,
+                                   int version,
+                                   const char *obj_id);
+
+int
 seaf_obj_store_delete_obj (struct SeafObjStore *obj_store,
                            const char *repo_id,
                            int version,
@@ -73,5 +80,22 @@ seaf_obj_store_remove_store (struct SeafObjStore *obj_store,
                              const char *store_id,
                              SeafObjProgressFunc progress_cb,
                              void *user_data);
+
+char *
+seaf_obj_store_get_storage_id (struct SeafObjStore *obj_store,
+                               const char *repo_id);
+
+gboolean
+seaf_obj_store_has_storage_id (struct SeafObjStore *obj_store,
+                               const char *storage_id);
+
+int
+seaf_obj_store_copy_store (struct SeafObjStore *obj_store,
+                           const char *repo_id,
+                           int version,
+                           const char *src_storage_id,
+                           const char *dst_storage_id,
+                           SeafObjProgressFunc progress_cb,
+                           void *user_data);
 
 #endif

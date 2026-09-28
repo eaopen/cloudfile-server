@@ -19,6 +19,14 @@
 
 #ifdef SEAFILE_SERVER
 #include "web-accesstoken-mgr.h"
+/* CloudFile extension points. Server-only: capabilities behind them reach
+ * seaf->db, seaf->group_mgr and seaf->cfg_mgr, none of which exist in a
+ * non-server build. */
+#include "cf-ext.h"
+#include "cf-fileop.h"
+#include "cf-fileop-json.h"
+#include "cf-lock.h"
+#include "cf-storage.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -3474,6 +3482,7 @@ seafile_create_repo (const char *repo_name,
                                                  enc_version,
                                                  pwd_hash_algo,
                                                  pwd_hash_params,
+                                                 NULL,
                                                  error);
     return repo_id;
 }
@@ -4231,7 +4240,272 @@ char *
 seafile_check_permission_by_path (const char *repo_id, const char *path,
                                   const char *user, GError **error)
 {
-    return seafile_check_permission (repo_id, user, error);
+    /*
+     * CloudFile: upstream CE discards @path here and answers with the
+     * repo-level share permission. Path-aware permission is what capabilities
+     * like directory ACL need, so this is one of the extension seams.
+     *
+     * Every caller that matters passes through here: Seahub's
+     * check_folder_permission, and seafdav's write paths (beginWrite, delete,
+     * move, copy, createCollection all gate on this RPC). The desktop sync
+     * client takes a different route, handled in the Go fileserver.
+     *
+     * With no capability registered cf_ext_check_permission is a plain copy of
+     * @perm, so a baseline build behaves exactly like stock CE.
+     */
+    char *perm = seafile_check_permission (repo_id, user, error);
+#ifdef SEAFILE_SERVER
+    if (!perm)
+        return NULL;
+
+    char *narrowed = cf_ext_check_permission (repo_id, path, user, perm);
+    g_free (perm);
+    return narrowed;
+#else
+    return perm;
+#endif
+}
+
+char *
+seafile_cf_find_restricted_path (const char *repo_id, const char *path,
+                                 const char *user, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!repo_id || !path || !user) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Arguments should not be empty");
+        return NULL;
+    }
+
+    /* Deliberately not propagating @error out of this inner call: "the user
+     * has no permission" is a normal answer here, not an RPC failure, and
+     * surfacing it as one would turn a plain denial into a 500. */
+    char *perm = seafile_check_permission (repo_id, user, NULL);
+    if (!perm) {
+        /* No access to the library at all: the root is restricted. */
+        return g_strdup ("/");
+    }
+
+    char *restricted = cf_ext_find_restricted_path (repo_id, path, user, perm);
+    g_free (perm);
+    return restricted;
+#else
+    return NULL;
+#endif
+}
+
+/*
+ * CloudFile write lifecycle, exposed for the Go fileserver.
+ *
+ * The Go fileserver chunks, writes objects, generates commits and updates the
+ * branch without ever entering repo-op.c, so it is the one write path the C
+ * seam cannot see. Rather than reimplement the adjudication in Go -- a second
+ * implementation is a second thing to drift -- it asks over these RPCs and C
+ * stays the single authority. Same shape as cf_find_restricted_path.
+ *
+ * The context travels as one JSON string; see cf-fileop-json.h for why.
+ */
+int
+seafile_cf_fileop_active (GError **error)
+{
+#ifdef SEAFILE_SERVER
+    return cf_fileop_active () ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/*
+ * Returns a JSON verdict rather than raising, and the reason is the same one
+ * seafile_cf_find_restricted_path gives for swallowing its inner error: a
+ * refusal is a normal answer, not an RPC failure. Two things force it here:
+ *
+ *   - The Go searpc client discards err_code and keeps only err_msg, so a
+ *     refusal raised as a GError would arrive with its 423-vs-403 distinction
+ *     already gone -- and recovering it would mean patching searpc.go, one
+ *     more upstream file to carry forever.
+ *   - An RPC-level error is indistinguishable from the server being broken,
+ *     and "the file is locked" must not read as "the server is down".
+ *
+ * Shape: {"allowed":true} or {"allowed":false,"code":423,"message":"..."}.
+ * Returns NULL only for a genuinely malformed payload, which IS a failure.
+ */
+char *
+seafile_cf_fileop_prepare (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return g_strdup ("{\"allowed\":true}");
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return NULL;
+
+    GError *refusal = NULL;
+    int ret = cf_fileop_prepare (fop, &refusal);
+
+    cf_fileop_json_free (fop);
+
+    if (ret == 0) {
+        g_clear_error (&refusal);
+        return g_strdup ("{\"allowed\":true}");
+    }
+
+    json_t *verdict = json_object ();
+    json_object_set_new (verdict, "allowed", json_false ());
+    json_object_set_new (verdict, "code",
+                         json_integer (refusal ? refusal->code : SEAF_ERR_GENERAL));
+    json_object_set_new (verdict, "message",
+                         json_string (refusal && refusal->message
+                                      ? refusal->message : "Refused"));
+
+    char *out = json_dumps (verdict, JSON_COMPACT);
+    json_decref (verdict);
+    g_clear_error (&refusal);
+
+    /* json_dumps uses malloc; hand back a glib allocation so the caller frees
+     * it the same way as every other RPC string. */
+    char *ret_str = g_strdup (out ? out : "{\"allowed\":false,\"code\":500}");
+    free (out);
+
+    return ret_str;
+#else
+    return g_strdup ("{\"allowed\":true}");
+#endif
+}
+
+int
+seafile_cf_fileop_committed (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return 0;
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return -1;
+
+    cf_fileop_committed (fop);
+    cf_fileop_json_free (fop);
+
+    /* Always success: the write already happened. Reporting a failure here
+     * would make the fileserver retry an operation that took effect. */
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+int
+seafile_cf_fileop_aborted (const char *fop_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_fileop_active ())
+        return 0;
+
+    CfFileOp *fop = cf_fileop_from_json (fop_json, error);
+    if (!fop)
+        return -1;
+
+    cf_fileop_aborted (fop);
+    cf_fileop_json_free (fop);
+
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+/* CloudFile lease-lock control plane. These are intentionally separate from
+ * the legacy Pro RPC names: CE must not pretend that unrelated Pro features
+ * exist merely because it offers a compatible lock capability. */
+char *
+seafile_cf_lock_status (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_status_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_acquire (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_acquire_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_refresh (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_refresh_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_release (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_release_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_lock_force_release (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_lock_enabled ())
+        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+    return cf_lock_force_release_json (request_json, error);
+#else
+    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
+#endif
+}
+
+char *
+seafile_cf_get_storage_classes (GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_storage_enabled ())
+        return g_strdup ("[]");
+    return cf_get_storage_classes_json (error);
+#else
+    return g_strdup ("[]");
+#endif
+}
+
+char *
+seafile_cf_create_repo (const char *request_json, GError **error)
+{
+#ifdef SEAFILE_SERVER
+    if (!cf_storage_enabled ()) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Storage classes are disabled.");
+        return NULL;
+    }
+    return cf_create_repo_json (request_json, error);
+#else
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                 "Storage classes are disabled.");
+    return NULL;
+#endif
 }
 
 GList *
@@ -4273,6 +4547,22 @@ seafile_list_dir_with_perm (const char *repo_id,
                                                        offset,
                                                        limit,
                                                        error);
+
+#ifdef SEAFILE_SERVER
+    /*
+     * CloudFile: let capabilities filter the listing per entry.
+     *
+     * seaf_repo_manager_list_dir_with_perm resolves the permission once, at
+     * repo level, and stamps the same value on every entry -- it never looks
+     * at child paths. A capability that hides a folder therefore has to filter
+     * here, or the folder would still be listed (merely unopenable).
+     *
+     * Filtering at the RPC covers every caller at once, and keeps the
+     * patched-file list from growing as capabilities are added.
+     */
+    ret = cf_ext_filter_dirents (repo_id, rpath, user, ret);
+#endif
+
     g_free (rpath);
 
     return ret;
@@ -4948,6 +5238,33 @@ seafile_get_upload_tmp_file_offset (const char *repo_id, const char *file_path,
                                                                rfile_path, error);
     g_free (rfile_path);
 
+    return ret;
+}
+
+int
+seafile_cf_discard_upload_tmp_file (const char *repo_id, const char *file_path,
+                                    GError **error)
+{
+    if (!repo_id || !is_uuid_valid(repo_id)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid repo id");
+        return -1;
+    }
+
+    int path_len;
+    if (!file_path || (path_len = strlen(file_path)) == 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid file path");
+        return -1;
+    }
+
+    /* CloudFile: this RPC is deliberately narrow and does not expose an
+     * arbitrary filesystem delete. The repo manager resolves only a path
+     * already registered in WebUploadTempFiles. */
+    char *rfile_path = format_dir_path (file_path);
+    int ret = seaf_repo_manager_discard_upload_tmp_file (seaf->repo_mgr, repo_id,
+                                                         rfile_path, error);
+    g_free (rfile_path);
     return ret;
 }
 

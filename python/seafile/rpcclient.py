@@ -1,4 +1,48 @@
-from pysearpc import searpc_func, SearpcError, NamedPipeClient
+import json as _json
+
+import pysearpc.client as _pysearpc_client
+from pysearpc import SearpcError as _BaseSearpcError, NamedPipeClient
+from pysearpc import searpc_func
+
+
+class SearpcError(_BaseSearpcError):
+    """pysearpc error that keeps ``err_code`` instead of dropping it.
+
+    Stock pysearpc raises ``SearpcError(err_msg)`` and throws ``err_code`` away.
+    For a CloudFile write refusal that code is the only thing that lets the
+    REST/WebDAV entry points answer 423 (``CF_ERR_FILE_LOCKED``) instead of a
+    generic 500, so it must survive to the caller. The subclass lives here so
+    libsearpc -- an upstream component -- stays untouched.
+    """
+
+    def __init__(self, msg, code=0):
+        super().__init__(msg)
+        self.code = code
+
+
+def _preserve_err_code(fret):
+    """Wrap a pysearpc ``_fret_*`` so a refusal keeps its ``err_code``."""
+
+    def wrapped(ret_str):
+        try:
+            obj = _json.loads(ret_str)
+        except Exception:
+            return fret(ret_str)
+        if 'err_code' in obj:
+            raise SearpcError(obj.get('err_msg', ''), obj.get('err_code', 0))
+        return fret(ret_str)
+
+    return wrapped
+
+
+# Every @searpc_func decorator below resolves its _fret_* helper from
+# pysearpc.client at decoration time, so re-point them once here before the
+# class body is evaluated. This is what makes err_code reach Seahub/WebDAV.
+_pysearpc_client.SearpcError = SearpcError
+for _fret_name in ('_fret_int', '_fret_string', '_fret_obj',
+                   '_fret_objlist', '_fret_json'):
+    _fret_original = getattr(_pysearpc_client, _fret_name)
+    setattr(_pysearpc_client, _fret_name, _preserve_err_code(_fret_original))
 
 class SeafServerThreadedRpcClient(NamedPipeClient):
 
@@ -514,6 +558,67 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     # folder permission check
     @searpc_func("string", ["string", "string", "string"])
     def check_permission_by_path(repo_id, path, user):
+        pass
+
+    # CloudFile extension seam: first path at or below `path` that `user`
+    # cannot access at all, or None when the whole subtree is reachable.
+    # Answers None when no capability is enabled.
+    @searpc_func("string", ["string", "string", "string"])
+    def cf_find_restricted_path(repo_id, path, user):
+        pass
+
+    # CloudFile write lifecycle. `fop_json` is the JSON form of a CfFileOp;
+    # see cloudfile-docker/docs/fileop-lifecycle.md section 4.
+    #
+    # seafdav and Seahub do NOT call these: their writes go through
+    # seafile_api.post_file and friends, which land in repo-op.c where the
+    # seam already runs. Exposed here for the Go fileserver and for tests
+    # that need to assert the baseline is a pass-through.
+    @searpc_func("int", [])
+    def cf_fileop_active():
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_fileop_prepare(fop_json):
+        pass
+
+    @searpc_func("int", ["string"])
+    def cf_fileop_committed(fop_json):
+        pass
+
+    @searpc_func("int", ["string"])
+    def cf_fileop_aborted(fop_json):
+        pass
+
+    # CloudFile lease locks. These deliberately do not reuse Pro's lock_file
+    # names, which are absent in CE and carry a broader feature contract.
+    @searpc_func("string", ["string"])
+    def cf_lock_status(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_acquire(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_refresh(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_release(request_json):
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_lock_force_release(request_json):
+        pass
+
+    # CloudFile storage-class assignment (P2 storage backends)
+    @searpc_func("string", [])
+    def cf_get_storage_classes():
+        pass
+
+    @searpc_func("string", ["string"])
+    def cf_create_repo(request_json):
         pass
 
     # org repo

@@ -25,6 +25,7 @@
 
 #include "seaf-db.h"
 #include "seaf-utils.h"
+#include "cf-storage.h"
 
 #define REAP_TOKEN_INTERVAL 300 /* 5 mins */
 #define DECRYPTED_TOKEN_TTL 3600 /* 1 hour */
@@ -3981,6 +3982,7 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
                                    int enc_version,
                                    const char *pwd_hash_algo,
                                    const char *pwd_hash_params,
+                                   const char *storage_id,
                                    GError **error)
 {
     char *repo_id = NULL;
@@ -3989,6 +3991,21 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
     const char *params = pwd_hash_params;
 
     repo_id = gen_uuid ();
+
+    /* Pin the storage class before create_repo_common writes the initial
+     * commit: RepoStorageId must already point at the target backend or the
+     * root commit lands in the default store and the repo becomes unreadable
+     * (the multi-storage router looks the commit up in the pinned store). */
+    if (storage_id && storage_id[0]) {
+        if (cf_set_repo_storage_id (repo_id, storage_id) < 0) {
+            seaf_warning ("Failed to pin repo %s to storage %s.\n",
+                          repo_id, storage_id);
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "Failed to assign storage class.");
+            g_free (repo_id);
+            return NULL;
+        }
+    }
 
     if (passwd && passwd[0] != 0) {
         if (seafile_generate_repo_salt (salt) < 0) {
@@ -4680,6 +4697,34 @@ seaf_repo_manager_get_upload_tmp_file_offset (SeafRepoManager *mgr,
     g_free (tmp_file_path);
 
     return file_stat.st_size;
+}
+
+int
+seaf_repo_manager_discard_upload_tmp_file (SeafRepoManager *mgr,
+                                           const char *repo_id,
+                                           const char *file_path,
+                                           GError **error)
+{
+    char *tmp_file_path = seaf_repo_manager_get_upload_tmp_file (mgr, repo_id,
+                                                                 file_path, error);
+    if (*error)
+        return -1;
+
+    /* CloudFile: a browser may explicitly abandon an old resumable upload
+     * after its local file identity no longer matches. Removing only the DB
+     * row would leak the temporary file; removing only the file would leave a
+     * stale offset record until the next query, so keep both sides together. */
+    if (tmp_file_path && g_unlink (tmp_file_path) < 0 && errno != ENOENT) {
+        seaf_warning ("Failed to discard upload temp file %s: %s.\n",
+                      tmp_file_path, strerror(errno));
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to discard upload temp file.");
+        g_free (tmp_file_path);
+        return -1;
+    }
+    g_free (tmp_file_path);
+
+    return seaf_repo_manager_del_upload_tmp_file (mgr, repo_id, file_path, error);
 }
 
 void

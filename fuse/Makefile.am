@@ -7,6 +7,8 @@ AM_CFLAGS = -DPKGDATADIR=\"$(pkgdatadir)\" \
 	-I$(top_srcdir)/common \
 	@SEARPC_CFLAGS@ \
 	@GLIB2_CFLAGS@ \
+	@JANSSON_CFLAGS@ \
+	@CURL_CFLAGS@ \
 	@FUSE_CFLAGS@ \
 	@MYSQL_CFLAGS@ \
 	-Wall
@@ -27,6 +29,7 @@ seaf_fuse_SOURCES = seaf-fuse.c \
                     ../common/org-mgr.c \
                     ../common/block-backend.c \
                     ../common/block-backend-fs.c \
+                    ../common/block-backend-s3.c \
                     ../common/branch-mgr.c \
                     ../common/commit-mgr.c \
                     ../common/fs-mgr.c \
@@ -35,6 +38,9 @@ seaf_fuse_SOURCES = seaf-fuse.c \
                     ../common/seaf-utils.c \
                     ../common/obj-store.c \
                     ../common/obj-backend-fs.c \
+                    ../common/obj-backend-s3.c \
+                    ../common/cf-s3-client.c \
+                    ../common/storage-backend-multi.c \
                     ../common/obj-backend-riak.c \
                     ../common/seafile-crypt.c \
                     ../common/password-hash.c
@@ -43,5 +49,4 @@ seaf_fuse_LDADD = @GLIB2_LIBS@ @GOBJECT_LIBS@ @SSL_LIBS@ @LIB_RT@ @LIB_UUID@ \
                   -lsqlite3 @LIBEVENT_LIBS@ \
 		  $(top_builddir)/common/cdc/libcdc.la \
 		  @SEARPC_LIBS@ @JANSSON_LIBS@ @FUSE_LIBS@ @ZLIB_LIBS@ \
-		  @MYSQL_LIBS@ -lsqlite3 @ARGON2_LIBS@
-
+		  @MYSQL_LIBS@ -lsqlite3 @ARGON2_LIBS@ @CURL_LIBS@

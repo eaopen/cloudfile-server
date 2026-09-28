@@ -56,6 +56,20 @@ struct BlockBackend {
                               SeafBlockProgressFunc progress_cb,
                               void *user_data);
 
+    char *   (*get_storage_id) (BlockBackend *bend,
+                                const char *store_id);
+
+    gboolean (*has_storage_id) (BlockBackend *bend,
+                                const char *storage_id);
+
+    int      (*copy_store) (BlockBackend *bend,
+                            const char *store_id,
+                            int version,
+                            const char *src_storage_id,
+                            const char *dst_storage_id,
+                            SeafBlockProgressFunc progress_cb,
+                            void *user_data);
+
     void*    be_priv;           /* backend private field */
 
 };
