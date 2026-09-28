@@ -74,7 +74,7 @@ func (c *readAuditConnection) QueryContext(ctx context.Context, query string, _ 
 		if c.fixture.badLedger {
 			step = 15
 		}
-		return &readAuditRows{columns: []string{"version", "step"}, values: [][]driver.Value{{"003_outbox", int64(1)}, {"004_audit", step}}}, nil
+		return &readAuditRows{columns: []string{"version", "step"}, values: [][]driver.Value{{"003_outbox", int64(1)}, {"004_audit", step}, {"034_audit_client_ip", int64(1)}}}, nil
 	case query == cloudFileReadAuditSchemaSQL:
 		value := int64(1)
 		if c.fixture.badShape {
@@ -122,7 +122,7 @@ func (readAuditResult) RowsAffected() (int64, error) { return 1, nil }
 
 func sqlReadAuditFact() cloudFileReadAuditFact {
 	return cloudFileReadAuditFact{RequestID: "11111111-1111-1111-1111-111111111111", RepoID: "22222222-2222-2222-2222-222222222222",
-		UserID: "business-user", Path: "/file", HeadID: strings.Repeat("a", 40), Epoch: strings.Repeat("b", 32), Operation: "download",
+		UserID: "business-user", Path: "/file", HeadID: strings.Repeat("a", 40), Epoch: strings.Repeat("b", 32), Operation: "download", ClientIP: "192.0.2.10",
 		Outcome: cloudFileReadOutcome{Result: "stream_completed", Status: 200, BytesSent: 3}}
 }
 
@@ -147,7 +147,7 @@ func TestReadAuditSQLCommitUsesOneTransactionAndNeverRetries(t *testing.T) {
 			t.Fatalf("unexpected commit/retry: %#v, %v", fixture, err)
 		}
 		var payload map[string]interface{}
-		if json.Unmarshal([]byte(fixture.execArgs[1][0].Value.(string)), &payload) != nil || payload["actor_user_id"] != "business-user" || payload["bytes_sent"] != float64(3) {
+		if json.Unmarshal([]byte(fixture.execArgs[1][0].Value.(string)), &payload) != nil || payload["actor_user_id"] != "business-user" || payload["bytes_sent"] != float64(3) || payload["client_ip"] != "192.0.2.10" {
 			t.Fatal("server fact lost")
 		}
 		if payload["event_id"] != fixture.execArgs[0][0].Value || fixture.execArgs[2][6].Value != payload["event_id"] {

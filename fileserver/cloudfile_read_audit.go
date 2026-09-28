@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 // the consumed transfer, never from HTTP identity/path headers.
 type cloudFileReadAuditFact struct {
 	RequestID, UserID, RepoID, Path, HeadID, Epoch, Operation string
+	ClientIP                                                  string
 	Reason                                                    string
 	Outcome                                                   cloudFileReadOutcome
 }
@@ -105,6 +107,9 @@ func (f cloudFileReadAuditFact) valid() bool {
 	if f.Reason != "" && f.Reason != "transfer_cleanup_unconfirmed" {
 		return false
 	}
+	if f.ClientIP != "" && net.ParseIP(f.ClientIP) == nil {
+		return false
+	}
 	if !canonicalTicketUUID(f.RequestID) || !canonicalTicketUUID(f.RepoID) ||
 		f.UserID == "" || len([]rune(f.UserID)) > 225 || !utf8.ValidString(f.UserID) ||
 		strings.IndexFunc(f.UserID, unicode.IsControl) >= 0 ||
@@ -179,6 +184,9 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 	if fact.Reason != "" {
 		event["reason"] = fact.Reason
 	}
+	if fact.ClientIP != "" {
+		event["client_ip"] = fact.ClientIP
+	}
 	payload, err := json.Marshal(event)
 	if err != nil || len(payload) > 65536 {
 		return errors.New("read audit payload unavailable")
@@ -186,8 +194,8 @@ func appendCloudFileReadAudit(ctx context.Context, database *sql.DB, fact cloudF
 	if _, err = transaction.ExecContext(deadline, "UPDATE cf_event_outbox SET payload=? WHERE event_id=?", string(payload), eventID); err != nil {
 		return err
 	}
-	_, err = transaction.ExecContext(deadline, "INSERT INTO cf_audit_event(repo_id,object_type,object_id,operation,operator,source,result,occurred_at,source_path,event_id,schema_version,recorded_at,request_id,actor_user_id,actor_kind,event_payload) VALUES(?,'file','',?,?,'fileserver',?,?,?, ?,1,?,?,?,'user',?)",
-		fact.RepoID, "file."+fact.Operation, fact.UserID, fact.Outcome.Result, now, fact.Path, eventID, now, fact.RequestID, fact.UserID, string(payload))
+	_, err = transaction.ExecContext(deadline, "INSERT INTO cf_audit_event(repo_id,object_type,object_id,operation,operator,source,result,occurred_at,source_path,event_id,schema_version,recorded_at,request_id,actor_user_id,actor_kind,event_payload,client_ip) VALUES(?,'file','',?,?,'fileserver',?,?,?, ?,1,?,?,?,'user',?,?)",
+		fact.RepoID, "file."+fact.Operation, fact.UserID, fact.Outcome.Result, now, fact.Path, eventID, now, fact.RequestID, fact.UserID, string(payload), fact.ClientIP)
 	if err != nil {
 		return err
 	}
@@ -202,7 +210,7 @@ func requireCloudFileReadAuditSchema(ctx context.Context, transaction *sql.Tx) e
 	}
 	// Shared ledger locks keep concurrent downloads from serializing each
 	// other, while preventing a migration writer changing these rows mid-append.
-	rows, err := transaction.QueryContext(ctx, "SELECT version,step FROM cf_schema_migration WHERE version IN ('003_outbox','004_audit') AND state='applied' LOCK IN SHARE MODE")
+	rows, err := transaction.QueryContext(ctx, "SELECT version,step FROM cf_schema_migration WHERE version IN ('003_outbox','004_audit','034_audit_client_ip') AND state='applied' LOCK IN SHARE MODE")
 	if err != nil {
 		return failure
 	}
@@ -222,7 +230,7 @@ func requireCloudFileReadAuditSchema(ctx context.Context, transaction *sql.Tx) e
 	}
 	readError := rows.Err()
 	closeError := rows.Close()
-	if readError != nil || closeError != nil || len(versions) != 2 || versions["003_outbox"] != 1 || versions["004_audit"] != 16 {
+	if readError != nil || closeError != nil || len(versions) != 3 || versions["003_outbox"] != 1 || versions["004_audit"] != 16 || versions["034_audit_client_ip"] != 1 {
 		return failure
 	}
 	// Inspect actual types and complete unique indexes, not just the ledger.
@@ -239,6 +247,7 @@ const cloudFileReadAuditSchemaSQL = `SELECT IF(
  AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('event_payload','source_path','target_path') AND data_type='longtext')=3
  AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('occurred_at','recorded_at') AND data_type='datetime' AND datetime_precision=6)=2
  AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name IN ('event_id','schema_version','request_id','actor_user_id','actor_kind','delegator','resource_uid'))=7
+ AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_audit_event' AND column_name='client_ip' AND character_maximum_length=45 AND is_nullable='YES')=1
  AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='PRIMARY')=1
  AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='PRIMARY' AND column_name='event_id' AND non_unique=0 AND sub_part IS NULL)=1
  AND (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_event_outbox' AND index_name='outbox_sequence')=1

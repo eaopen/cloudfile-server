@@ -34,3 +34,21 @@ func TestManagedReadRequiresActualTrustedTLSProxyPeer(t *testing.T) {
 		}
 	}
 }
+
+func TestReadAuditIPUsesOnlyTrustedProxyForwarding(t *testing.T) {
+	_, trusted, _ := net.ParseCIDR("192.0.2.7/32")
+	r := httptest.NewRequest("GET", "https://fixture.invalid/read", nil)
+	r.RemoteAddr = "192.0.2.8:1234"
+	r.Header.Set("X-Forwarded-For", "198.51.100.1, 203.0.113.2")
+	if got := cloudFileAuditClientIP(r, []*net.IPNet{trusted}); got != "192.0.2.8" {
+		t.Fatalf("untrusted forwarding changed audit IP: %s", got)
+	}
+	r.RemoteAddr = "192.0.2.7:1234"
+	if got := cloudFileAuditClientIP(r, []*net.IPNet{trusted}); got != "203.0.113.2" {
+		t.Fatalf("trusted proxy's last forwarded hop lost: %s", got)
+	}
+	r.Header.Set("X-Forwarded-For", "not-an-ip")
+	if got := cloudFileAuditClientIP(r, []*net.IPNet{trusted}); got != "192.0.2.7" {
+		t.Fatalf("malformed forwarding changed audit IP: %s", got)
+	}
+}

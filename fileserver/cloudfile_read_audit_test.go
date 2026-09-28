@@ -58,6 +58,7 @@ func TestCloudFileReadAuditFactBoundaries(t *testing.T) {
 		func(f *cloudFileReadAuditFact) { f.Outcome.Status = 103 },
 		func(f *cloudFileReadAuditFact) { f.Outcome.BytesSent = uint64(math.MaxInt64) + 1 },
 		func(f *cloudFileReadAuditFact) { f.Reason = "raw RPC error containing credentials" },
+		func(f *cloudFileReadAuditFact) { f.ClientIP = "spoofed-ip" },
 	} {
 		fact := valid
 		change(&fact)

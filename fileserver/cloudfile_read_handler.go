@@ -57,6 +57,7 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 	if err != nil || fact.RepoID != info.repoID || fact.Operation != info.op {
 		return &appError{nil, "Read audit context unavailable", http.StatusServiceUnavailable}
 	}
+	fact.ClientIP = cloudFileAuditClientIP(r, option.CloudFileTrustedTLSProxies)
 	rsp.Header().Set("X-Request-ID", requestID)
 	fact.Outcome = cloudFileReadOutcome{Result: "attempted"}
 	if appendCloudFileReadAudit(r.Context(), seafileDB, fact) != nil {
@@ -112,6 +113,34 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 		return &appError{nil, "Read transfer ended", http.StatusServiceUnavailable}
 	}
 	return failure
+}
+
+// Record the direct peer unless a configured trusted proxy supplied a
+// forwarding chain. Use the rightmost forwarded address, never a leftmost
+// address supplied by an untrusted caller.
+func cloudFileAuditClientIP(r *http.Request, proxies []*net.IPNet) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return ""
+	}
+	peer := net.ParseIP(host)
+	if peer == nil {
+		return ""
+	}
+	for _, network := range proxies {
+		if network == nil || !network.Contains(peer) {
+			continue
+		}
+		forwarded := r.Header.Get("X-Forwarded-For")
+		if len(forwarded) <= 2048 {
+			parts := strings.Split(forwarded, ",")
+			if candidate := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); candidate != nil {
+				return candidate.String()
+			}
+		}
+		break
+	}
+	return peer.String()
 }
 
 func cloudFileSecureTransport(r *http.Request, proxies []*net.IPNet) bool {
