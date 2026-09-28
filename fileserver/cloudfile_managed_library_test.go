@@ -63,3 +63,28 @@ func TestLegacyManagedLibraryCannotPublishBranch(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyManagedReadCompatibilityDoesNotPermitPublication(t *testing.T) {
+	originalDB, originalGuard, originalReads, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard,
+		option.CloudFileAllowLegacyManagedReads, option.DBOpTimeout
+	defer func() {
+		seafileDB = originalDB
+		option.CloudFileManagedLibraryGuard = originalGuard
+		option.CloudFileAllowLegacyManagedReads = originalReads
+		option.DBOpTimeout = originalTimeout
+	}()
+	option.CloudFileManagedLibraryGuard = true
+	option.CloudFileAllowLegacyManagedReads = true
+	option.DBOpTimeout = 2 * time.Second
+	fixture := &readAuditSQLFixture{}
+	seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture, missing: true})
+	defer seafileDB.Close()
+	if err := legacyLibraryAllowed(context.Background(), "22222222-2222-2222-2222-222222222222"); err != nil {
+		t.Fatalf("native read compatibility was rejected: %v", err)
+	}
+	_, err := updateBranch("22222222-2222-2222-2222-222222222222", "", strings.Repeat("a", 40), strings.Repeat("b", 40), "", false, "")
+	if !errors.Is(err, errCloudFileLegacyLibrary) || fixture.commits != 0 ||
+		fixture.rollbacks != 1 || len(fixture.execQueries) != 0 {
+		t.Fatalf("native mutation bypassed managed-library publication guard: err=%v fixture=%+v", err, fixture)
+	}
+}

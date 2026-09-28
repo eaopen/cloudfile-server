@@ -83,6 +83,12 @@ func checkLegacyLibrary(ctx context.Context, tx *sql.Tx, repoID string) error {
 }
 
 func legacyLibraryAllowed(ctx context.Context, repoID string) error {
+	// This read-only compatibility path keeps existing native download links
+	// usable while the eTech delegated transfer client is being integrated.
+	// Mutation publication still calls checkLegacyLibrary directly.
+	if option.CloudFileAllowLegacyManagedReads {
+		return nil
+	}
 	if seafileDB == nil {
 		return errCloudFileLegacyLibrary
 	}

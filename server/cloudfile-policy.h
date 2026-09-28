@@ -8,6 +8,8 @@
  * managed, missing/drifted schema and storage failures all reject. The caller
  * holds this transaction through its final publication statement. */
 gboolean cf_policy_legacy_guard_enabled (GKeyFile *config);
+/* Temporary native read ticket compatibility; invalid values remain closed. */
+gboolean cf_policy_allow_legacy_managed_reads (GKeyFile *config);
 /* Installed extension state makes the boundary mandatory, even without an
  * opt-in setting. A missing registry cannot reopen an installed deployment. */
 gboolean cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config);

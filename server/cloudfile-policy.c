@@ -19,6 +19,17 @@ cf_policy_legacy_guard_enabled (GKeyFile *config)
 }
 
 gboolean
+cf_policy_allow_legacy_managed_reads (GKeyFile *config)
+{
+    if (!config || !g_key_file_has_key (config, "cloudfile", "allow_legacy_managed_reads", NULL))
+        return FALSE;
+    GError *error = NULL;
+    gboolean enabled = g_key_file_get_boolean (config, "cloudfile", "allow_legacy_managed_reads", &error);
+    if (error) { g_error_free (error); return FALSE; }
+    return enabled;
+}
+
+gboolean
 cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config)
 {
     if (cf_policy_legacy_guard_enabled (config)) return TRUE;

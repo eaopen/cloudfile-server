@@ -18,6 +18,10 @@ const InfiniteQuota = -2
 
 // Explicit startup-only trust for managed reads; absent means direct TLS only.
 var CloudFileManagedLibraryGuard bool
+
+// Temporary compatibility switch for native read tickets in managed libraries.
+// Native Seafile ticket checks still apply; CloudFile directory ACL does not.
+var CloudFileAllowLegacyManagedReads bool
 var CloudFileTrustedTLSProxies []*net.IPNet
 
 // Storage unit.
@@ -142,7 +146,15 @@ func LoadFileServerOptions(centralDir string) {
 	CloudMode = false
 	CloudFileTrustedTLSProxies = nil
 	CloudFileManagedLibraryGuard = false
+	CloudFileAllowLegacyManagedReads = false
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
+		if key, keyErr := section.GetKey("allow_legacy_managed_reads"); keyErr == nil {
+			var parseErr error
+			CloudFileAllowLegacyManagedReads, parseErr = key.Bool()
+			if parseErr != nil {
+				log.Fatal("Invalid CloudFile allow_legacy_managed_reads")
+			}
+		}
 		if key, keyErr := section.GetKey("managed_library_guard"); keyErr == nil {
 			var parseErr error
 			CloudFileManagedLibraryGuard, parseErr = key.Bool()
