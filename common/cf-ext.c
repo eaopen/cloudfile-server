@@ -36,6 +36,12 @@ cf_ext_config_string (const char *key)
     return seaf_cfg_manager_get_config_string (seaf->cfg_mgr, "cloudfile", key);
 }
 
+SeafDB *
+cf_ext_database (void)
+{
+    return seaf ? seaf->db : NULL;
+}
+
 gboolean
 cf_ext_active (void)
 {

@@ -12,6 +12,7 @@
 #include "seaf-utils.h"
 #include "fs-mgr.h"
 #include "repo-mgr.h"
+#include "branch-mgr.h"
 #include "seafile-error.h"
 #include "seafile-rpc.h"
 #include "mq-mgr.h"
@@ -2973,6 +2974,115 @@ out:
     return result;
 }
 
+char *
+seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error)
+{
+    if (!condition_json || strlen (condition_json) > 16384)
+        goto invalid_edit;
+    json_t *condition = json_loads (condition_json, JSON_REJECT_DUPLICATES, NULL);
+    json_t *edit = json_object_get (condition, "editing");
+    json_t *head = json_object_get (condition, "head_id");
+    json_t *path = json_object_get (condition, "path");
+    if (!json_is_object (condition) || json_object_size (condition) != 6 ||
+        !json_is_object (json_object_get (condition, "context")) ||
+        !json_is_array (json_object_get (condition, "scopes")) ||
+        !json_is_object (json_object_get (condition, "oidc_session")) ||
+        !json_is_object (edit) || json_object_size (edit) != 9 ||
+        !json_is_string (head) || json_string_length (head) != 40 ||
+        !is_object_id_valid (json_string_value (head)) ||
+        !json_is_string (path) || json_string_length (path) == 0 ||
+        json_string_length (path) > 4096 ||
+        json_string_length (path) != strlen (json_string_value (path)) ||
+        json_string_value (path)[0] != '/') {
+        if (condition) json_decref (condition);
+        goto invalid_edit;
+    }
+    const char *keys[] = {"repo_id", "resource_uid", "guard_id", "generation", "credential_epoch",
+                          "holder", "token", "intent_id", "base_file_id"};
+    for (size_t i = 0; i < G_N_ELEMENTS (keys); ++i) {
+        json_t *value = json_object_get (edit, keys[i]);
+        if (!json_is_string (value) || !json_string_length (value) ||
+            json_string_length (value) > 128) {
+            json_decref (condition);
+            goto invalid_edit;
+        }
+    }
+    char *result = put_file_rpc (repo_id, temp_file_path, parent_dir, file_name,
+        user, json_string_value (head), TRUE, condition_json, error);
+    json_decref (condition);
+    return result;
+invalid_edit:
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                 "Invalid CloudFile editing condition");
+    return NULL;
+}
+
+char *
+seafile_cloudfile_checkin_edit (const char *repo_id, const char *path,
+    const char *user, const char *condition_json, GError **error)
+{
+    if (!repo_id || !is_uuid_valid (repo_id) || !path || !user ||
+        !condition_json || strlen (condition_json) > 16384)
+        goto invalid_checkin;
+    json_t *condition = json_loads (condition_json, JSON_REJECT_DUPLICATES, NULL);
+    json_t *edit = json_object_get (condition, "editing");
+    json_t *head = json_object_get (condition, "head_id");
+    const char *base = json_string_value (json_object_get (edit, "base_file_id"));
+    if (!json_is_object (condition) || json_object_size (condition) != 6 ||
+        !json_is_object (json_object_get (condition, "context")) ||
+        !json_is_array (json_object_get (condition, "scopes")) ||
+        !json_is_object (json_object_get (condition, "oidc_session")) ||
+        !json_is_object (edit) || json_object_size (edit) != 9 ||
+        !json_is_string (head) || !is_object_id_valid (json_string_value (head)) ||
+        !base || !is_object_id_valid (base) ||
+        !json_is_string (json_object_get (condition, "path")) ||
+        g_strcmp0 (json_string_value (json_object_get (condition, "path")), path) ||
+        g_strcmp0 (json_string_value (json_object_get (edit, "repo_id")), repo_id) ||
+        !json_is_string (json_object_get (edit, "resource_uid")) ||
+        !json_is_string (json_object_get (edit, "guard_id")) ||
+        !json_is_string (json_object_get (edit, "generation")) ||
+        !json_is_string (json_object_get (edit, "credential_epoch")) ||
+        !json_is_string (json_object_get (edit, "holder")) ||
+        !json_is_string (json_object_get (edit, "token")) ||
+        !json_is_string (json_object_get (edit, "intent_id")) ||
+        strlen (path) > 4096 || path[0] != '/') {
+        if (condition) json_decref (condition);
+        goto invalid_checkin;
+    }
+    json_object_set_new (condition, "editing_unchanged", json_true ());
+    json_object_set_new (condition, "native_size", json_integer (0));
+    json_object_set_new (condition, "native_old_file_id", json_string (base));
+    json_object_set_new (condition, "native_file_id", json_string (base));
+    json_object_set_new (condition, "native_digest", json_string (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    char *scopes = json_dumps (condition, JSON_COMPACT | JSON_SORT_KEYS);
+    char *result = NULL;
+    if (scopes) {
+        SeafBranch *branch = seaf_branch_new ("master", repo_id, json_string_value (head));
+        gboolean gc_conflict = FALSE;
+        int published = seaf_branch_manager_test_and_update_branch_with_barriers (
+            seaf->branch_mgr, branch, json_string_value (head), FALSE,
+            NULL, NULL, &gc_conflict, scopes, user);
+        seaf_branch_unref (branch);
+        if (published == 0) result = g_strdup (base);
+        else g_set_error (error, SEAFILE_DOMAIN,
+            published == -2 ? SEAF_ERR_GENERAL : SEAF_ERR_CONCURRENT_UPLOAD,
+            "Native unchanged Checkin was refused");
+    } else {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+            "Invalid native Checkin conditions");
+    }
+    free (scopes);
+    json_decref (condition);
+    return result;
+invalid_checkin:
+    g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+        "Invalid CloudFile unchanged Checkin condition");
+    return NULL;
+}
+
 /* char * */
 /* seafile_put_file_blocks (const char *repo_id, const char *parent_dir, */
 /*                          const char *file_name, const char *blockids_json, */
@@ -4413,69 +4523,6 @@ seafile_cf_fileop_aborted (const char *fop_json, GError **error)
     return 0;
 #else
     return 0;
-#endif
-}
-
-/* CloudFile lease-lock control plane. These are intentionally separate from
- * the legacy Pro RPC names: CE must not pretend that unrelated Pro features
- * exist merely because it offers a compatible lock capability. */
-char *
-seafile_cf_lock_status (const char *request_json, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!cf_lock_enabled ())
-        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-    return cf_lock_status_json (request_json, error);
-#else
-    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-#endif
-}
-
-char *
-seafile_cf_lock_acquire (const char *request_json, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!cf_lock_enabled ())
-        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-    return cf_lock_acquire_json (request_json, error);
-#else
-    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-#endif
-}
-
-char *
-seafile_cf_lock_refresh (const char *request_json, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!cf_lock_enabled ())
-        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-    return cf_lock_refresh_json (request_json, error);
-#else
-    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-#endif
-}
-
-char *
-seafile_cf_lock_release (const char *request_json, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!cf_lock_enabled ())
-        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-    return cf_lock_release_json (request_json, error);
-#else
-    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-#endif
-}
-
-char *
-seafile_cf_lock_force_release (const char *request_json, GError **error)
-{
-#ifdef SEAFILE_SERVER
-    if (!cf_lock_enabled ())
-        return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
-    return cf_lock_force_release_json (request_json, error);
-#else
-    return g_strdup ("{\"ok\":false,\"reason\":\"disabled\"}");
 #endif
 }
 

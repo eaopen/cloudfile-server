@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
-/* CloudFile's authoritative lease-based file lock backend. */
+/* CloudFile's Hub-owned UID lease write barrier. */
 
 #ifndef CF_LOCK_H
 #define CF_LOCK_H
@@ -11,14 +11,11 @@
  * is true and lock_backend is either unset or "cloudfile". */
 void cf_lock_init (void);
 
-/* JSON RPC adapters. A normal conflict is returned as {"ok":false,...}; a
- * malformed request returns NULL and sets error. The caller owns the string. */
-char *cf_lock_status_json (const char *request_json, GError **error);
-char *cf_lock_acquire_json (const char *request_json, GError **error);
-char *cf_lock_refresh_json (const char *request_json, GError **error);
-char *cf_lock_release_json (const char *request_json, GError **error);
-char *cf_lock_force_release_json (const char *request_json, GError **error);
-
 gboolean cf_lock_enabled (void);
+
+/* Narrow synchronous exception for the native edit publisher. The final
+ * Branch transaction must validate and complete the checkout proof. */
+void cf_lock_controlled_publish_enter (const char *repo, const char *path);
+void cf_lock_controlled_publish_leave (void);
 
 #endif /* CF_LOCK_H */

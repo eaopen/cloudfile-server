@@ -27,15 +27,23 @@ int cf_policy_check_create (SeafDBTrans *trans, const char *repo, const char *pa
                            const char *provider, const char *user, json_t *snapshot,
                            int ce_permission);
 
-/* Ordinary conditional writes carry no lease proof: an active file lease must
- * reject them, including writes by the owner. Held through Branch publication.
- * Exclusive-edit proof and structural/legacy entry coverage are separate gates. */
-int cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path);
+/* Ordinary conditional writes compare the canonical Seafile native username
+ * against file-lock.owner_native_user, never a business/OIDC identity. Checkout
+ * always requires its full editing proof. Held through Branch
+ * publication; structural/legacy entry coverage remains a separate gate. */
+int cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo,
+                                    const char *path, const char *user);
 
-/* Trusted internal lease proof, not an HTTP identity. Caller also checks the
- * actual current native file equals proof.base_version in this transaction. */
+/* Retired lease proofs are rejected. A NULL proof uses the ordinary native
+ * username barrier; controlled publishing uses cf_policy_edit_publish. */
 int cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *path,
                                  const char *user, json_t *proof);
+/* Validate the prepared checkout and optionally publish its receipt in the
+ * caller's Branch transaction. Native file identity/digest are computed by
+ * repo-op, never accepted from a remote request. */
+int cf_policy_edit_publish (SeafDBTrans *trans, const char *repo, const char *path,
+                            const char *user, json_t *conditions,
+                            const char *commit_id);
 
 /* Shared read policy for an actual file/directory target (CF_FILE/CF_DIRECTORY).
  * Caller must establish native active/current subject, barriers, CE library

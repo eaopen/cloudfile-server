@@ -423,21 +423,6 @@ class SeafileAPI(object):
         """
         return 0
 
-    def cf_lock_status(self, request_json):
-        return seafserv_threaded_rpc.cf_lock_status(request_json)
-
-    def cf_lock_acquire(self, request_json):
-        return seafserv_threaded_rpc.cf_lock_acquire(request_json)
-
-    def cf_lock_refresh(self, request_json):
-        return seafserv_threaded_rpc.cf_lock_refresh(request_json)
-
-    def cf_lock_release(self, request_json):
-        return seafserv_threaded_rpc.cf_lock_release(request_json)
-
-    def cf_lock_force_release(self, request_json):
-        return seafserv_threaded_rpc.cf_lock_force_release(request_json)
-
     # CloudFile storage-class assignment (P2 storage backends)
     def get_storage_classes(self):
         return seafserv_threaded_rpc.cf_get_storage_classes()

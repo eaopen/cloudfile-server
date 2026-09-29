@@ -2,6 +2,7 @@
 #include "common.h"
 #include "cloudfile-policy.h"
 #include "cloudfile-acl.h"
+#include "cf-lock.h"
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -132,51 +133,12 @@ cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo)
         "ON DUPLICATE KEY UPDATE repo_id=VALUES(repo_id)", 1, "string", repo);
 }
 
-static int
-lease_schema (SeafDBTrans *trans)
+static int editing_schema (SeafDBTrans *trans)
 {
     gboolean error = FALSE;
-    /* Missing/old lock schema is not an unlocked file. These metadata gates
-     * supplement, not replace, Hub's exact constraint/checksum validation. */
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT version FROM cf_schema_migration WHERE version='029_lock_leases' AND state='applied' AND step=2 FOR UPDATE",
-        &error, 0) || error) return -1;
-    const char *tables[] = {"cf_resource", "cf_lock_lease", "cf_lock_repo_revision"};
-    for (int i = 0; i < 3; ++i) {
-        if (!seaf_db_trans_check_for_existence (trans,
-            "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=? AND engine='InnoDB'",
-            &error, 1, "string", tables[i]) || error) return -1;
-    }
-    const char *pins[] = {
-        "SELECT uid FROM cf_resource LIMIT 0 FOR UPDATE",
-        "SELECT resource_uid FROM cf_lock_lease LIMIT 0 FOR UPDATE",
-        "SELECT repo_id FROM cf_lock_repo_revision LIMIT 0 FOR UPDATE"
-    };
-    for (int i = 0; i < 3; ++i) {
-        seaf_db_trans_check_for_existence (trans, pins[i], &error, 0);
-        if (error) return -1;
-    }
-    const char *checks[] = {
-        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' GROUP BY table_name HAVING COUNT(*)=8 AND SUM("
-        "(column_name IN ('resource_uid','repo_id') AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='fencing' AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO') OR "
-        "(column_name='owner_user_id' AND data_type='varchar' AND character_maximum_length=225 AND collation_name='utf8mb4_bin' AND is_nullable='YES') OR "
-        "(column_name='holder_id' AND data_type='varchar' AND character_maximum_length=128 AND collation_name='utf8mb4_bin' AND is_nullable='YES') OR "
-        "(column_name='token_digest' AND data_type='char' AND character_maximum_length=64 AND collation_name='ascii_bin' AND is_nullable='YES') OR "
-        "(column_name='base_version' AND data_type='char' AND character_maximum_length=40 AND collation_name='ascii_bin' AND is_nullable='YES') OR "
-        "(column_name='expires_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='YES'))=8",
-        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_lock_repo_revision' GROUP BY table_name HAVING COUNT(*)=2 AND SUM("
-        "(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='revision' AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO'))=2",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='resource_uid' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_lease' AND index_name='repo_leases' GROUP BY index_name HAVING COUNT(*)=2 AND SUM(sub_part IS NULL AND non_unique=1 AND ((column_name='repo_id' AND seq_in_index=1) OR (column_name='resource_uid' AND seq_in_index=2)))=2",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_lock_repo_revision' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='uid' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='resource_location' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(sub_part IS NULL AND non_unique=1 AND ((column_name='repo_id' AND seq_in_index=1) OR (column_name='path_hash' AND seq_in_index=2) OR (column_name='kind' AND seq_in_index=3)))=3"
-    };
-    for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
-        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
-    return 0;
+    return seaf_db_trans_check_for_existence (trans,
+        "SELECT version FROM cf_schema_migration WHERE version='029_editing_core' "
+        "AND state='applied' AND step=2 FOR UPDATE", &error, 0) && !error ? 0 : -1;
 }
 
 typedef struct {
@@ -214,12 +176,31 @@ lease_resource_location (SeafDBTrans *trans, const char *repo,
     return count >= 0 && count <= 1 && location.valid && (!uid || count == 1) ? 0 : -1;
 }
 
-int
-cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char *path)
+/* Only the opt-in lock barrier requires the new checkout schema. The final
+ * Branch transaction must re-read it after PREPARE, closing that race for
+ * scoped file publication. A missing or malformed table fails closed. */
+static int
+editing_conflict (SeafDBTrans *trans, const char *repo, const char *path,
+                  const char *hash, const char *user)
 {
     gboolean error = FALSE;
+    gboolean guarded = seaf_db_trans_check_for_existence (trans,
+        "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
+        "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.state='active' "
+        "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL "
+        "AND (g.lifecycle_ref<>r.lifecycle_ref OR g.mode IS NULL OR g.mode<>'file-lock' OR g.owner_native_user IS NULL OR g.owner_native_user<>?) FOR UPDATE",
+        &error, 4, "string", repo, "string", hash, "string", path,
+        "string", user ? user : "");
+    return guarded || error ? -1 : 0;
+}
+
+int
+cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo,
+                                const char *path, const char *user)
+{
+    if (!cf_lock_enabled ()) return 0;
     if (!repo || !path || path[0] != '/' || strlen (path) > 4096 ||
-        !g_utf8_validate (path, -1, NULL) || lease_schema (trans) < 0) return -1;
+        !g_utf8_validate (path, -1, NULL) || editing_schema (trans) < 0) return -1;
     char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     if (!digest) return -1;
     if (lease_resource_location (trans, repo, path, digest, NULL) < 0) {
@@ -232,70 +213,149 @@ cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo, const char
      * separate native integration prerequisite, not proven by this join.
      * Exact stored path is compared after hashing to avoid digest-only identity.
      */
-    gboolean locked = seaf_db_trans_check_for_existence (trans,
-        "SELECT r.uid FROM cf_resource r JOIN cf_lock_lease l ON l.resource_uid=r.uid "
-        "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-        "AND l.repo_id=? AND l.expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
-        &error, 4, "string", repo, "string", digest, "string", path, "string", repo);
+    int result = editing_conflict (trans, repo, path, digest, user);
     g_free (digest);
-    return locked || error ? -1 : 0;
-}
-
-static const char *
-lease_text (json_t *proof, const char *name, size_t length)
-{
-    json_t *value = json_object_get (proof, name);
-    const char *text = json_string_value (value);
-    return text && json_string_length (value) == length && strlen (text) == length ? text : NULL;
+    return result;
 }
 
 int
 cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *path,
                              const char *user, json_t *proof)
 {
-    if (!proof) return cf_policy_check_unleased_write (trans, repo, path);
-    if (!json_is_object (proof) || json_object_size (proof) != 5 || !user || !*user ||
-        !repo || !path || path[0] != '/' || strlen (path) > 4096 || !g_utf8_validate (path, -1, NULL)) return -1;
-    const char *uid = lease_text (proof, "resource_uid", 36);
-    const char *holder = lease_text (proof, "holder_id", 64);
-    const char *token = lease_text (proof, "token", 64);
-    const char *base = lease_text (proof, "base_version", 40);
-    json_t *number = json_object_get (proof, "fencing");
-    const char *fence = json_string_value (number);
-    if (!uid || !holder || !token || !base || !fence || !*fence || fence[0] == '0' ||
-        strlen (fence) != json_string_length (number) || strlen (fence) > 20 ||
-        strspn (fence, "0123456789") != strlen (fence) ||
-        strspn (holder, "0123456789abcdef") != 64 || strspn (token, "0123456789abcdef") != 64 ||
-        strspn (base, "0123456789abcdef") != 40) return -1;
-    for (int i = 0; i < 36; ++i) {
-        gboolean dash = i == 8 || i == 13 || i == 18 || i == 23;
-        if ((dash && uid[i] != '-') || (!dash && !strchr ("0123456789abcdef", uid[i]))) return -1;
-    }
+    /* Retired lease proofs cannot authorize a controlled editing publication. */
+    if (proof) return -1;
+    return cf_policy_check_unleased_write (trans, repo, path, user);
+}
+
+typedef struct {
+    char action[24];
+} EditPublication;
+
+static gboolean
+edit_publication_row (SeafDBRow *row, void *data)
+{
+    EditPublication *publication = data;
+    const char *action = seaf_db_row_get_column_text (row, 0);
+    if (g_strcmp0 (action, "commit") && g_strcmp0 (action, "checkin") &&
+        g_strcmp0 (action, "checkin-unchanged"))
+        return FALSE;
+    g_strlcpy (publication->action, action, sizeof(publication->action));
+    return TRUE;
+}
+
+static const char *
+edit_text (json_t *object, const char *name, size_t maximum)
+{
+    json_t *value = json_object_get (object, name);
+    const char *text = json_string_value (value);
+    if (!json_is_string (value) || !text || !*text ||
+        json_string_length (value) != strlen (text) || strlen (text) > maximum)
+        return NULL;
+    return text;
+}
+
+static gboolean
+edit_decimal (const char *value)
+{
+    if (!value || !*value || *value == '0' || strlen (value) > 20)
+        return FALSE;
+    for (const char *p = value; *p; ++p)
+        if (!g_ascii_isdigit (*p)) return FALSE;
     errno = 0;
-    char *end = NULL;
-    guint64 value = g_ascii_strtoull (fence, &end, 10);
-    if (errno || !end || *end || value == 0) return -1;
-    /* Reuse the schema gate, but not its 'unleased' decision. A live matching
-     * lease is expected here; SQL failures and missing schema still reject. */
-    gboolean error = FALSE;
-    if (lease_schema (trans) < 0) return -1;
+    guint64 number = g_ascii_strtoull (value, NULL, 10);
+    char canonical[32];
+    g_snprintf (canonical, sizeof(canonical), "%" G_GUINT64_FORMAT, number);
+    return !errno && strcmp (canonical, value) == 0;
+}
+
+int
+cf_policy_edit_publish (SeafDBTrans *trans, const char *repo, const char *path,
+                        const char *user, json_t *conditions,
+                        const char *commit_id)
+{
+    if (!cf_lock_enabled () || !trans || !repo || !path || !user ||
+        !json_is_object (conditions) || editing_schema (trans) < 0)
+        return -1;
+    json_t *edit = json_object_get (conditions, "editing");
+    if (!json_is_object (edit) || json_object_size (edit) != 9 ||
+        g_strcmp0 (edit_text (edit, "repo_id", 36), repo))
+        return -1;
+    const char *resource_uid = edit_text (edit, "resource_uid", 36);
+    const char *guard = edit_text (edit, "guard_id", 36);
+    const char *generation = edit_text (edit, "generation", 20);
+    const char *epoch = edit_text (edit, "credential_epoch", 20);
+    const char *holder = edit_text (edit, "holder", 128);
+    const char *token = edit_text (edit, "token", 64);
+    const char *intent = edit_text (edit, "intent_id", 36);
+    const char *base_id = edit_text (edit, "base_file_id", 40);
+    const char *old_id = edit_text (conditions, "native_old_file_id", 40);
+    const char *new_id = edit_text (conditions, "native_file_id", 40);
+    const char *content = edit_text (conditions, "native_digest", 64);
+    json_t *size = json_object_get (conditions, "native_size");
+    if (!json_is_integer (size) || json_integer_value (size) < 0) return -1;
+    json_t *context = json_object_get (conditions, "context");
+    const char *owner = edit_text (context, "userId", 225);
+    if (!resource_uid || strlen (resource_uid) != 36 ||
+        !guard || !edit_decimal (generation) || !edit_decimal (epoch) ||
+        !holder || !token || strlen (token) != 64 || !intent || !owner ||
+        !base_id || strlen (base_id) != 40 ||
+        !old_id || strlen (old_id) != 40 || strcmp (old_id, base_id) ||
+        !new_id || strlen (new_id) != 40 ||
+        !content || strlen (content) != 64 ||
+        !g_utf8_validate (path, -1, NULL) || path[0] != '/' || strlen (path) > 4096 ||
+        (commit_id && strlen (commit_id) != 40)) return -1;
+    for (const char *p = token; *p; ++p)
+        if (!g_ascii_isxdigit (*p)) return -1;
     char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     char *token_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, token, -1);
-    if (!path_hash || !token_hash || lease_resource_location (trans, repo, path, path_hash, uid) < 0) {
-        g_free (path_hash);
-        g_free (token_hash);
-        return -1;
-    }
-    gboolean matches = seaf_db_trans_check_for_existence (trans,
-        "SELECT r.uid FROM cf_resource r JOIN cf_lock_lease l ON l.resource_uid=r.uid "
-        "WHERE r.uid=? AND r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-        "AND l.repo_id=? AND l.owner_user_id=? AND l.holder_id=? AND l.token_digest=? "
-        "AND CAST(l.fencing AS CHAR)=? AND l.base_version=? AND l.expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
-        &error, 10, "string", uid, "string", repo, "string", path_hash, "string", path,
-        "string", repo, "string", user, "string", holder, "string", token_hash, "string", fence, "string", base);
+    EditPublication publication = {{0}};
+    int count = seaf_db_trans_foreach_selected_row (trans,
+        "SELECT i.action FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
+        "JOIN cf_commit_intent i ON i.intent_id=g.pending_intent AND i.resource_uid=r.uid "
+        "WHERE r.repo_id=? AND r.uid=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
+        "AND g.repo_id=r.repo_id AND g.lifecycle_ref=r.lifecycle_ref AND g.mode='checkout' "
+        "AND g.guard_id=? AND g.generation=CAST(? AS UNSIGNED) "
+        "AND g.credential_epoch=CAST(? AS UNSIGNED) "
+        "AND g.owner=? "
+        "AND g.owner_native_user=? AND g.holder=? AND g.proof_digest=? "
+        "AND g.lease_until>UTC_TIMESTAMP(6) AND g.hard_expire_at>UTC_TIMESTAMP(6) "
+        "AND i.intent_id=? AND i.guard_id=g.guard_id AND i.generation=g.generation "
+        "AND i.credential_epoch=g.credential_epoch AND i.state='prepared' "
+        "AND i.expected_file_id=? AND i.expected_file_id=g.base_file_id "
+        "AND (i.staged_file_id IS NULL OR i.staged_file_id=?) "
+        "AND i.content_digest=? AND (i.action='checkin-unchanged' OR (i.snapshot IS NOT NULL AND JSON_EXTRACT(i.snapshot,'$.size')=CAST(? AS UNSIGNED))) LIMIT 2 FOR UPDATE",
+        edit_publication_row, &publication, 16,
+        "string", repo, "string", resource_uid, "string", path_hash, "string", path,
+        "string", guard, "string", generation, "string", epoch,
+        "string", owner,
+        "string", user, "string", holder, "string", token_hash,
+        "string", intent, "string", old_id, "string", new_id,
+        "string", content, "int64", (gint64)json_integer_value (size));
     g_free (path_hash);
     g_free (token_hash);
-    return matches && !error ? 0 : -1;
+    if (count != 1 || !publication.action[0]) return -1;
+    gboolean unchanged = json_is_true (json_object_get (conditions, "editing_unchanged"));
+    if (unchanged != (strcmp (publication.action, "checkin-unchanged") == 0) ||
+        (unchanged && (strcmp (old_id, new_id) ||
+                       strcmp (content, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))))
+        return -1;
+    if (!commit_id) return 0;
+    if (seaf_db_trans_query (trans,
+            "UPDATE cf_commit_intent SET state='published',staged_file_id=?,"
+            "result_file_id=?,result_commit_id=? WHERE intent_id=? AND state='prepared'",
+            4, "string", new_id, "string", new_id, "string", commit_id,
+            "string", intent) < 0) return -1;
+    if (!strcmp (publication.action, "checkin") || unchanged)
+        return seaf_db_trans_query (trans,
+            "UPDATE cf_edit_guard SET guard_id=NULL,"
+            "mode=NULL,owner=NULL,owner_native_user=NULL,source=NULL,holder=NULL,credential_epoch=0,"
+            "proof_digest=NULL,base_file_id=NULL,pending_intent=NULL,lease_until=NULL,"
+            "hard_expire_at=NULL WHERE guard_id=? AND pending_intent=?",
+            2, "string", guard, "string", intent);
+    return seaf_db_trans_query (trans,
+        "UPDATE cf_edit_guard SET base_file_id=?,pending_intent=NULL "
+        "WHERE guard_id=? AND pending_intent=?",
+        3, "string", new_id, "string", guard, "string", intent);
 }
 
 typedef struct {
@@ -418,29 +478,10 @@ static gboolean local_session_target (SeafDBRow *row, void *data)
 static int local_session_lease (SeafDBTrans *trans, const char *repo,
                                 const char *user, json_t *snapshot)
 {
+    (void)trans; (void)repo; (void)user;
     const char *mode = json_identifier (snapshot, "mode", 32);
-    json_t *proof = json_object_get (snapshot, "lease");
-    if (g_strcmp0 (mode, "exclusive-edit")) return json_is_null (proof) ? 0 : -1;
-    const char *fencing = json_identifier (proof, "fencing", 20);
-    const char *digest = json_identifier (proof, "token_digest", 64);
-    const char *uid = json_identifier (snapshot, "resource_uid", 36);
-    const char *base = json_identifier (snapshot, "base_version", 40);
-    if (!json_is_object (proof) || json_object_size (proof) != 2 || !fencing ||
-        fencing[0] == '0' || strspn (fencing, "0123456789") != strlen (fencing) ||
-        !digest || strlen (digest) != 64 || strspn (digest, "0123456789abcdef") != 64 ||
-        !uid || !base || lease_schema (trans) < 0) return -1;
-    gboolean error = FALSE;
-    /* The saved digest identifies the exact holder credential, not merely an
-     * owner-wide lock. Release/reacquire, expiry or force-release invalidate an
-     * already issued transfer, including when its file object is unchanged. */
-    gboolean matches = seaf_db_trans_check_for_existence (trans,
-        "SELECT resource_uid FROM cf_lock_lease WHERE resource_uid=? AND repo_id=? "
-        "AND owner_user_id=? AND holder_id IS NOT NULL AND holder_id<>'' "
-        "AND token_digest=? AND CAST(fencing AS CHAR)=? AND base_version=? "
-        "AND expires_at>UTC_TIMESTAMP(6) FOR UPDATE", &error, 6,
-        "string", uid, "string", repo, "string", user,
-        "string", digest, "string", fencing, "string", base);
-    return matches && !error ? 0 : -1;
+    return g_strcmp0 (mode, "exclusive-edit") &&
+           json_is_null (json_object_get (snapshot, "lease")) ? 0 : -1;
 }
 
 int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
@@ -469,7 +510,7 @@ int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
         "AND state='applied' AND step=2 FOR UPDATE", &error, 0) || error) return -1;
     if (!seaf_db_trans_check_for_existence (trans,
         "SELECT version FROM cf_schema_migration WHERE version='031_edit_sessions' "
-        "AND state='applied' AND step=1 FOR UPDATE", &error, 0) || error) return -1;
+        "AND state='applied' AND step=2 FOR UPDATE", &error, 0) || error) return -1;
     if (!seaf_db_trans_check_for_existence (trans,
         "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
         "AND TABLE_NAME IN ('cf_edit_session','cf_local_device','cf_resource') "

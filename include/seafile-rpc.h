@@ -755,6 +755,17 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     const char *parent_dir, const char *file_name, const char *user,
     const char *condition_json, GError **error);
 
+/* Publishes one prepared Checkout intent and its receipt in the Branch txn. */
+char *
+seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error);
+
+/* Releases a Checkout without new bytes in the final native Branch transaction. */
+char *
+seafile_cloudfile_checkin_edit (const char *repo_id, const char *path,
+    const char *user, const char *condition_json, GError **error);
+
 /**
  * Add file blocks at once.
  *
@@ -1017,22 +1028,6 @@ seafile_cf_fileop_committed (const char *fop_json, GError **error);
 int
 seafile_cf_fileop_aborted (const char *fop_json, GError **error);
 
-/* CloudFile's CE-specific lease-lock control plane. Request and response are
- * JSON so optional session fields can evolve without widening a searpc ABI. */
-char *
-seafile_cf_lock_status (const char *request_json, GError **error);
-
-char *
-seafile_cf_lock_acquire (const char *request_json, GError **error);
-
-char *
-seafile_cf_lock_refresh (const char *request_json, GError **error);
-
-char *
-seafile_cf_lock_release (const char *request_json, GError **error);
-
-char *
-seafile_cf_lock_force_release (const char *request_json, GError **error);
 
 /* CloudFile storage-class assignment (P2 storage backends). List returns a
  * JSON array of {"storage_id","storage_name","is_default"}; create makes a

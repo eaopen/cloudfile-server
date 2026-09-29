@@ -1305,6 +1305,39 @@ out:
     return result;
 }
 
+/* The immutable commit is read while the matching Branch row is locked.
+ * A no-content Checkin can release only the exact file that was checked out. */
+static int
+cloudfile_check_unchanged_file (SeafBranchManager *mgr, const char *repo_id,
+                                const char *commit_id, const char *path,
+                                const char *expected_file_id)
+{
+    SeafRepo *repo = NULL;
+    SeafCommit *commit = NULL;
+    char *actual = NULL;
+    guint32 mode = 0;
+    GError *error = NULL;
+    int result = -1;
+    if (!path || !expected_file_id || !is_object_id_valid (expected_file_id))
+        return -1;
+    repo = seaf_repo_manager_get_repo (mgr->seaf->repo_mgr, repo_id);
+    if (!repo || repo->virtual_info || repo->status != REPO_STATUS_NORMAL)
+        goto out;
+    commit = seaf_commit_manager_get_commit (mgr->seaf->commit_mgr,
+        repo_id, repo->version, commit_id);
+    if (!commit) goto out;
+    actual = seaf_fs_manager_path_to_obj_id (mgr->seaf->fs_mgr,
+        repo->store_id, repo->version, commit->root_id, path, &mode, &error);
+    if (!error && S_ISREG (mode) && g_strcmp0 (actual, expected_file_id) == 0)
+        result = 0;
+out:
+    if (error) g_error_free (error);
+    g_free (actual);
+    if (commit) seaf_commit_unref (commit);
+    if (repo) seaf_repo_unref (repo);
+    return result;
+}
+
 static int
 test_and_update_branch (SeafBranchManager *mgr,
                                             SeafBranch *branch,
@@ -1415,6 +1448,8 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *context = json_object_get (conditions, "context");
         json_t *target = json_object_get (conditions, "path");
         json_t *lease = json_object_get (conditions, "lease");
+        json_t *editing = json_object_get (conditions, "editing");
+        json_t *unchanged = json_object_get (conditions, "editing_unchanged");
         const char *path = json_string_value (target);
         gboolean allowed = qualification > 0 && json_is_string (target) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
@@ -1423,6 +1458,10 @@ test_and_update_branch (SeafBranchManager *mgr,
              * path; automatic local commits remain a separate feature. */
             !json_object_get (conditions, "local_session") &&
             !json_object_get (conditions, "local_commit") &&
+            (!unchanged || (json_is_true (unchanged) && editing &&
+                cloudfile_check_unchanged_file (mgr, branch->repo_id,
+                    old_commit_id, path,
+                    json_string_value (json_object_get (editing, "base_file_id"))) == 0)) &&
             json_string_length (target) == strlen (path) &&
             cloudfile_check_context (mgr, scopes_json, &snapshot) == 0 &&
             cf_policy_check_write (trans, branch->repo_id, path,
@@ -1436,8 +1475,12 @@ test_and_update_branch (SeafBranchManager *mgr,
                 branch->repo_id, path, CF_FILE, old_commit_id,
                 json_string_value (json_object_get (lease, "base_version")),
                 scopes_json, native_username) == 0) &&
-            cf_policy_check_lease_write (trans, branch->repo_id, path,
-                json_string_value (json_object_get (context, "userId")), lease) == 0;
+            (!editing || (json_object_get (conditions, "oidc_session") &&
+                cloudfile_check_oidc_reference (mgr, trans, conditions) == 0)) &&
+            (editing ? (!lease && cf_policy_edit_publish (trans, branch->repo_id,
+                path, native_username, conditions, NULL) == 0) :
+                cf_policy_check_lease_write (trans, branch->repo_id, path,
+                    native_username, lease) == 0);
         if (snapshot) json_decref (snapshot);
         if (conditions) json_decref (conditions);
         if (!allowed) {
@@ -1457,7 +1500,6 @@ test_and_update_branch (SeafBranchManager *mgr,
 
     if (scopes_json && scopes_json[0] == '{') {
         json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
-        json_t *context = json_object_get (conditions, "context");
         /* SQL row locks prevent refresh/logout/release mutations, but do not
          * stop the database clock. Re-read natural session and lease expiry
          * after all earlier authority/resource waits, immediately before the
@@ -1468,16 +1510,34 @@ test_and_update_branch (SeafBranchManager *mgr,
             !json_object_get (conditions, "local_session") &&
             !json_object_get (conditions, "local_commit") &&
             cloudfile_check_oidc_reference (mgr, trans, conditions) == 0 &&
-            cf_policy_check_lease_write (trans, branch->repo_id,
-                json_string_value (json_object_get (conditions, "path")),
-                json_string_value (json_object_get (context, "userId")),
-                json_object_get (conditions, "lease")) == 0;
+            (json_object_get (conditions, "editing") ?
+                cf_policy_edit_publish (trans, branch->repo_id,
+                    json_string_value (json_object_get (conditions, "path")),
+                    native_username, conditions, NULL) == 0 :
+                cf_policy_check_lease_write (trans, branch->repo_id,
+                    json_string_value (json_object_get (conditions, "path")),
+                    native_username,
+                    json_object_get (conditions, "lease")) == 0);
         if (conditions) json_decref (conditions);
         if (!current) {
             seaf_db_rollback (trans);
             seaf_db_trans_close (trans);
             return -2;
         }
+    }
+
+    if (scopes_json && scopes_json[0] == '{') {
+        json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        if (json_object_get (conditions, "editing") &&
+            cf_policy_edit_publish (trans, branch->repo_id,
+                json_string_value (json_object_get (conditions, "path")),
+                native_username, conditions, branch->commit_id) < 0) {
+            json_decref (conditions);
+            seaf_db_rollback (trans);
+            seaf_db_trans_close (trans);
+            return -2;
+        }
+        if (conditions) json_decref (conditions);
     }
 
     sql = "UPDATE Branch SET commit_id = ? "

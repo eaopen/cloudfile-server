@@ -177,6 +177,17 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     cloudfile_put_file_with_barriers = seafile_cloudfile_put_file_with_barriers
 
+    @searpc_func("string", ["string", "string", "string", "string", "string", "string"])
+    def seafile_cloudfile_publish_edit(repo_id, tmp_file_path, parent_dir, filename, user, condition_json):
+        pass
+    cloudfile_publish_edit = seafile_cloudfile_publish_edit
+
+    @searpc_func("string", ["string", "string", "string", "string"])
+    def seafile_cloudfile_checkin_edit(repo_id, path, user, condition_json):
+        pass
+
+    cloudfile_checkin_edit = seafile_cloudfile_checkin_edit
+
     @searpc_func("int", ["string", "string", "string", "string"])
     def seafile_del_file(repo_id, parent_dir, filename, user):
         pass
@@ -592,25 +603,6 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
 
     # CloudFile lease locks. These deliberately do not reuse Pro's lock_file
     # names, which are absent in CE and carry a broader feature contract.
-    @searpc_func("string", ["string"])
-    def cf_lock_status(request_json):
-        pass
-
-    @searpc_func("string", ["string"])
-    def cf_lock_acquire(request_json):
-        pass
-
-    @searpc_func("string", ["string"])
-    def cf_lock_refresh(request_json):
-        pass
-
-    @searpc_func("string", ["string"])
-    def cf_lock_release(request_json):
-        pass
-
-    @searpc_func("string", ["string"])
-    def cf_lock_force_release(request_json):
-        pass
 
     # CloudFile storage-class assignment (P2 storage backends)
     @searpc_func("string", [])

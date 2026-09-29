@@ -189,6 +189,14 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cloudfile_put_file_with_barriers,
                                      "seafile_cloudfile_put_file_with_barriers",
                     searpc_signature_string__string_string_string_string_string_string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cloudfile_publish_edit,
+                                     "seafile_cloudfile_publish_edit",
+                    searpc_signature_string__string_string_string_string_string_string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cloudfile_checkin_edit,
+                                     "seafile_cloudfile_checkin_edit",
+                    searpc_signature_string__string_string_string_string());
     /* searpc_server_register_function ("seafserv-threaded-rpcserver", */
     /*                                  seafile_put_file_blocks, */
     /*                                  "seafile_put_file_blocks", */
@@ -734,30 +742,10 @@ static void start_rpc_service (const char *seafile_dir,
                                      "cf_fileop_aborted",
                                      searpc_signature_int__string());
 
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cf_lock_status,
-                                     "cf_lock_status",
-                                     searpc_signature_string__string());
 
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cf_lock_acquire,
-                                     "cf_lock_acquire",
-                                     searpc_signature_string__string());
 
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cf_lock_refresh,
-                                     "cf_lock_refresh",
-                                     searpc_signature_string__string());
 
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cf_lock_release,
-                                     "cf_lock_release",
-                                     searpc_signature_string__string());
 
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cf_lock_force_release,
-                                     "cf_lock_force_release",
-                                     searpc_signature_string__string());
 
     /* CloudFile storage-class assignment (P2 storage backends) */
     searpc_server_register_function ("seafserv-threaded-rpcserver",

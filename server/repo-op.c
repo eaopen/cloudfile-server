@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <glib/gstdio.h>
+#include <stdio.h>
 
 #include <jansson.h>
 #include <openssl/sha.h>
@@ -41,6 +42,8 @@
  * Contract: cloudfile-docker/docs/fileop-lifecycle.md
  */
 #include "cf-fileop.h"
+#include "cf-lock.h"
+#include "cf-path.h"
 
 #define INDEX_DIR "index"
 
@@ -4778,6 +4781,24 @@ do_put_file (SeafRepo *repo,
 }
 
 static int
+cf_staged_sha256 (const char *path, char digest[65])
+{
+    FILE *file = g_fopen (path, "rb");
+    if (!file) return -1;
+    GChecksum *checksum = g_checksum_new (G_CHECKSUM_SHA256);
+    unsigned char buffer[65536];
+    size_t count;
+    while ((count = fread (buffer, 1, sizeof(buffer), file)) > 0)
+        g_checksum_update (checksum, buffer, count);
+    int result = ferror (file) ? -1 : 0;
+    if (fclose (file) != 0) result = -1;
+    if (result == 0)
+        g_strlcpy (digest, g_checksum_get_string (checksum), 65);
+    g_checksum_free (checksum);
+    return result;
+}
+
+static int
 put_file_with_condition (SeafRepoManager *mgr,
                             const char *repo_id,
                             const char *temp_file_path,
@@ -4805,10 +4826,14 @@ put_file_with_condition (SeafRepoManager *mgr,
     int ret = 0;
     gboolean create = FALSE;
     gboolean cf_prepared = FALSE;
+    gboolean controlled_edit = FALSE;
+    char *edit_scopes = NULL;
+    char edit_digest_before[65] = {0};
     char cf_commit_id[41] = "";
     if (scopes_json) {
         json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         create = json_is_true (json_object_get (condition, "create"));
+        controlled_edit = json_is_object (json_object_get (condition, "editing"));
         if (condition) json_decref (condition);
     }
 
@@ -4876,10 +4901,33 @@ put_file_with_condition (SeafRepoManager *mgr,
      * version: @head_id is optional upstream, so it is passed through as-is
      * and stays NULL when the caller did not supply one. P1 turns it into the
      * optimistic-concurrency check; here it is only carried. */
-    if (CF_FILEOP_PREPARE (CF_OP_UPDATE_FILE, error,
-                           .repo_id = repo_id, .dir = canon_path,
-                           .name = file_name, .user = user,
-                           .expect_commit_id = head_id) < 0) {
+    if (controlled_edit) {
+        /* Native root is an empty canonical directory; use the same absolute
+         * target as CF_FILEOP_PREPARE, including its leading slash. */
+        char *target = cf_path_join (canon_path, file_name);
+        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        const char *condition_path = json_string_value (json_object_get (condition, "path"));
+        json_t *edit = json_object_get (condition, "editing");
+        const char *condition_repo = json_string_value (json_object_get (edit, "repo_id"));
+        if (!target || !condition_path || strcmp (target, condition_path) ||
+            g_strcmp0 (condition_repo, repo_id)) {
+            if (condition) json_decref (condition);
+            g_free (target);
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                         "Editing path does not match native target");
+            ret = -1;
+            goto out;
+        }
+        json_decref (condition);
+        cf_lock_controlled_publish_enter (repo_id, target);
+        g_free (target);
+    }
+    int prepared = CF_FILEOP_PREPARE (CF_OP_UPDATE_FILE, error,
+                                     .repo_id = repo_id, .dir = canon_path,
+                                     .name = file_name, .user = user,
+                                     .expect_commit_id = head_id);
+    if (controlled_edit) cf_lock_controlled_publish_leave ();
+    if (prepared < 0) {
         ret = -1;
         goto out;
     }
@@ -4901,6 +4949,13 @@ put_file_with_condition (SeafRepoManager *mgr,
     }
 
     gc_id = seaf_repo_get_current_gc_id (repo);
+
+    if (controlled_edit && cf_staged_sha256 (temp_file_path, edit_digest_before) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid prepared edit content");
+        ret = -1;
+        goto out;
+    }
 
     gint64 size;
     if (seaf_fs_manager_index_blocks (seaf->fs_mgr,
@@ -4930,17 +4985,43 @@ put_file_with_condition (SeafRepoManager *mgr,
                                                   head_commit->root_id,
                                                   fullpath, NULL, NULL);
 
+    if (controlled_edit) {
+        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        char content_digest[65] = {0};
+        if (!json_is_object (condition) || !old_file_id ||
+            json_object_get (condition, "native_file_id") ||
+            json_object_get (condition, "native_old_file_id") ||
+            json_object_get (condition, "native_digest") ||
+            json_object_get (condition, "native_size") ||
+            cf_staged_sha256 (temp_file_path, content_digest) < 0 ||
+            strcmp (edit_digest_before, content_digest) ||
+            json_object_set_new (condition, "native_file_id", json_string (new_dent->id)) < 0 ||
+            json_object_set_new (condition, "native_old_file_id", json_string (old_file_id)) < 0 ||
+            json_object_set_new (condition, "native_digest", json_string (content_digest)) < 0 ||
+            json_object_set_new (condition, "native_size", json_integer (size)) < 0) {
+            if (condition) json_decref (condition);
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                         "Invalid prepared edit content");
+            ret = -1;
+            goto out;
+        }
+        edit_scopes = json_dumps (condition, JSON_COMPACT | JSON_SORT_KEYS);
+        json_decref (condition);
+        if (!edit_scopes) { ret = -1; goto out; }
+    }
+    const char *publish_scopes = edit_scopes ? edit_scopes : scopes_json;
+
     if (g_strcmp0(old_file_id, new_dent->id) == 0) {
         if (strict_head) {
             gboolean gc_conflict = FALSE;
             /* A no-op must still linearize against the live head. Never return
              * an old file ID merely because it matches the requested base. */
             seaf_branch_set_commit (repo->head, head_commit->commit_id);
-            int published = scopes_json ?
+            int published = publish_scopes ?
                 seaf_branch_manager_test_and_update_branch_with_barriers (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
-                    repo->store_id, &gc_conflict, scopes_json, user) :
+                    repo->store_id, &gc_conflict, publish_scopes, user) :
                 seaf_branch_manager_test_and_update_branch (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
@@ -4973,7 +5054,7 @@ put_file_with_condition (SeafRepoManager *mgr,
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, create ? "Added \"%s\"" : "Modified \"%s\"", file_name);
     if (gen_new_commit_guarded (repo_id, head_commit, root_id, user, buf, cf_commit_id,
-                               !strict_head, TRUE, gc_id, error, scopes_json) < 0) {
+                               !strict_head, TRUE, gc_id, error, publish_scopes) < 0) {
         ret = -1;
         goto out;
     }
@@ -5009,6 +5090,7 @@ out:
     g_free (old_file_id);
     g_free (fullpath);
     g_free (gc_id);
+    free (edit_scopes);
 
     if (ret == 0) {
         update_repo_size (repo_id);

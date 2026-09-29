@@ -30,6 +30,8 @@
 
 #include <glib.h>
 
+typedef struct SeafDB SeafDB;
+
 /* ------------------------------------------------------------------ config */
 
 /* Read the [cloudfile] section of seafile.conf. Call once at startup, after
@@ -47,6 +49,9 @@ gboolean cf_ext_config_bool (const char *key);
  * capability configuration lives.
  */
 char *cf_ext_config_string (const char *key);
+
+/* Borrowed configured seafile-db handle; NULL before server initialization. */
+SeafDB *cf_ext_database (void);
 
 /* Whether any capability has registered. Lets callers skip work entirely on a
  * plain CE deployment.
