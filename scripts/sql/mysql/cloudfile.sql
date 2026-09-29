@@ -1,8 +1,7 @@
 -- CloudFile schema additions to seafile-db.
 --
--- Kept in its own file rather than appended to seafile.sql so there is exactly
--- one definition of the cf_* tables, and so following upstream never conflicts
--- on this file. It is applied by the docker bootstrap on every start
+-- Kept in its own file rather than appended to seafile.sql so following
+-- upstream never conflicts on this file. It is applied by the docker bootstrap on every start
 -- (scripts_14.0/bootstrap.py, apply_cloudfile_schema), which covers fresh
 -- installs, version upgrades and an existing CE deployment adopting CloudFile
 -- alike -- every statement is IF NOT EXISTS.
@@ -11,7 +10,8 @@
 -- fileserver both have to read them to enforce ACL for WebDAV and the desktop
 -- sync client, and neither of them connects to seahub-db. Seahub reaches them
 -- through a second connection (cloudfile_ext.db_router) with managed=False
--- models, so Django migrations never own this schema.
+-- models. Hub-only tables such as cf_sso_group_map have a separate versioned
+-- schema runner in the same database.
 --
 -- Semantics: cloudfile-docker/docs/acl-semantics.md
 --
@@ -69,43 +69,10 @@ CREATE TABLE IF NOT EXISTS cf_dir_admin (
   INDEX cf_dir_admin_repo (repo_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- SSO directory mapping: which Seafile groups CloudFile created, mirroring
--- which groups in the customer's directory.
---
--- Semantics: cloudfile-docker/docs/sso-mapping.md
---
--- Unlike cf_dir_acl, nothing below the Hub reads these -- group membership is
--- enforced through ccnet, which every layer already consults. They are here
--- because this is the one schema mechanism for cf_* tables, applied on every
--- start; a second home in seahub-db would mean a Django migration history to
--- carry across upstream merges in exchange for nothing.
---
--- external_id is a string, not a number: OIDC group claims and LDAP DNs both
--- are. That is also why upstream's external_department table cannot be reused
--- here -- its outer_id is a BIGINT.
-CREATE TABLE IF NOT EXISTS cf_sso_group_map (
-  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-  provider VARCHAR(32) NOT NULL,
-  external_id VARCHAR(255) NOT NULL,
-  -- Unique: a Seafile group is mirrored from at most one directory group.
-  -- Two mappings onto one group would fight over its membership every tick.
-  group_id INT NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  -- Hierarchy contract (eap-cloudfile decision 2026-08-27 §3): 'dept' rows
-  -- are created as Seafile departments (parent_group_id -1 or >0), 'group'
-  -- rows stay flat. Nullable so rows written before the upgrade keep reading
-  -- as plain groups; CREATE TABLE IF NOT EXISTS never alters an existing
-  -- table, and NULL is the pre-upgrade value.
-  subject_type VARCHAR(16) NULL,
-  -- external_id of the parent dept, resolved to a Seafile group_id at apply
-  -- time from rows the same sync writes. Never a numeric Seafile id: external
-  -- ids survive a Seafile rebuild, numeric ids do not.
-  parent_external_id VARCHAR(255) NULL,
-  ctime BIGINT,
-  mtime BIGINT,
-  UNIQUE INDEX cf_sso_group_map_unique (provider, external_id),
-  UNIQUE INDEX cf_sso_group_map_group (group_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Hub's versioned schema runner owns cf_sso_group_map. Bootstrapping the old
+-- v0.1 shape here first prevents migration 006_group_maps from creating its
+-- current namespaced schema. An existing legacy table remains untouched and
+-- requires the explicit offline conversion before the Hub runner can proceed.
 
 -- Library shares this integration applied, on behalf of an external system
 -- (eap-cloudfile decision 2026-08-27 §4.3). The boundary this table draws is
