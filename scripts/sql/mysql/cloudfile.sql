@@ -1,78 +1,17 @@
--- CloudFile schema additions to seafile-db.
+-- Legacy CloudFile integration tables in seafile-db.
 --
--- Kept in its own file rather than appended to seafile.sql so following
--- upstream never conflicts on this file. It is applied by the docker bootstrap on every start
--- (scripts_14.0/bootstrap.py, apply_cloudfile_schema), which covers fresh
--- installs, version upgrades and an existing CE deployment adopting CloudFile
--- alike -- every statement is IF NOT EXISTS.
+-- The Docker bootstrap applies this file on every start. Current directory
+-- ACL, group mapping, share revision, lock, and local edit tables are created
+-- by the Hub's versioned schema runner; defining older shapes here first would
+-- prevent its migrations from succeeding. An already existing legacy table
+-- remains untouched and requires an explicit migration.
 --
--- These live in seafile-db, not seahub-db, because seaf-server and the Go
--- fileserver both have to read them to enforce ACL for WebDAV and the desktop
--- sync client, and neither of them connects to seahub-db. Seahub reaches them
--- through a second connection (cloudfile_ext.db_router) with managed=False
--- models. Hub-only tables such as cf_sso_group_map have a separate versioned
--- schema runner in the same database.
---
--- Semantics: cloudfile-docker/docs/acl-semantics.md
---
--- Charset: every table declares utf8mb4 explicitly instead of inheriting the
--- database default. Upstream CE 14 made that default utf8mb4 (seahub's
--- "sql utf8mb4" change and setup-seafile-mysql.py's CREATE DATABASE), and
--- seahub's own sql/mysql.sql now declares it on all 136 of its tables -- so
--- declaring it here matches the CE 14 convention rather than inventing one.
---
--- Inheriting was actively wrong for us: the Hub connects with charset=utf8mb4
--- (seahub/settings.py) and apply_cloudfile_schema() does the same, so on a
--- database created before that CE 14 change a cf_* table would land as utf8mb3
--- while the connection says utf8mb4 -- and storing a 4-byte character (an emoji
--- in a library path, which these tables record) would fail. Declaring it makes
--- the schema independent of the default. Index widths hold under utf8mb4 on
--- InnoDB DYNAMIC (all CE 14-supported MariaDB/MySQL defaults): the widest is
--- cf_dir_acl_unique at roughly 1.4 KB against a 3072-byte limit.
+-- These tables declare utf8mb4 explicitly so an older database default cannot
+-- silently change their character support. Hub accesses them through its
+-- separate seafile-db connection.
 
-CREATE TABLE IF NOT EXISTS cf_dir_acl (
-  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-  repo_id CHAR(36) NOT NULL,
-  path VARCHAR(1000) NOT NULL,
-  -- sha1(path), indexed instead of `path` because MySQL cannot index a
-  -- 1000-character utf8mb4 column.
-  path_hash CHAR(40) NOT NULL,
-  subject_type VARCHAR(16) NOT NULL,
-  subject VARCHAR(255) NOT NULL,
-  permission VARCHAR(16) NOT NULL,
-  inherit TINYINT NOT NULL DEFAULT 1,
-  ctime BIGINT,
-  mtime BIGINT,
-  UNIQUE INDEX cf_dir_acl_unique (repo_id, path_hash, subject_type, subject),
-  INDEX cf_dir_acl_repo (repo_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Directory-level admin (delegated manage): the orthogonal dimension to
--- cf_dir_acl (acl-semantics.md section 7). A row grants the subject the right
--- to manage ACL rules -- and further admin grants -- on `path` and, with
--- inherit, everything below it. There is no permission column: the grant *is*
--- the admin role. Only the Hub reads this table -- management is a Hub-side
--- decision and seaf-server enforces content, not manage -- but it lives here
--- because this is the one schema mechanism for cf_* tables and it runs on
--- every start, covering fresh installs and existing deployments alike.
-CREATE TABLE IF NOT EXISTS cf_dir_admin (
-  id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-  repo_id CHAR(36) NOT NULL,
-  path VARCHAR(1000) NOT NULL,
-  path_hash CHAR(40) NOT NULL,
-  subject_type VARCHAR(16) NOT NULL,
-  subject VARCHAR(255) NOT NULL,
-  inherit TINYINT NOT NULL DEFAULT 1,
-  ctime BIGINT,
-  mtime BIGINT,
-  UNIQUE INDEX cf_dir_admin_unique (repo_id, path_hash, subject_type, subject),
-  INDEX cf_dir_admin_repo (repo_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Hub's versioned schema runner owns cf_sso_group_map. Bootstrapping the old
--- v0.1 shape here first prevents migration 006_group_maps from creating its
--- current namespaced schema. An existing legacy table remains untouched and
--- requires the explicit offline conversion before the Hub runner can proceed.
+-- The Hub schema runner owns current directory ACL and admin tables. Native
+-- authorization checks their schema before use and fail closed until migrated.
 
 -- Library shares this integration applied, on behalf of an external system
 -- (eap-cloudfile decision 2026-08-27 §4.3). The boundary this table draws is
@@ -99,19 +38,7 @@ CREATE TABLE IF NOT EXISTS cf_managed_library_share (
     (provider, repo_id, external_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Highest desired-state revision this integration has accepted per repo
--- (eap-cloudfile decision 2026-08-28 §8.2). A PUT carries the revision its
--- expectation was computed from; an older one is rejected so a delayed retry
--- can never overwrite a newer policy. No row means "no revision contract yet"
--- -- any revision is accepted and recorded.
-CREATE TABLE IF NOT EXISTS cf_library_share_revision (
-  provider VARCHAR(32) NOT NULL,
-  repo_id CHAR(36) NOT NULL,
-  policy_revision BIGINT NOT NULL,
-  ctime BIGINT,
-  mtime BIGINT,
-  UNIQUE INDEX cf_library_share_revision_unique (provider, repo_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- The Hub schema runner owns the current library-share revision ledger.
 
 -- When the last sync ran and how it went. Directory mapping is eventually
 -- consistent by design, and that trade is only defensible while "how stale is
@@ -131,12 +58,9 @@ CREATE TABLE IF NOT EXISTS cf_sso_sync_state (
 --
 -- Semantics: cloudfile-docker/docs/external-sources.md
 --
--- Like cf_sso_group_map, nothing below the Hub reads these -- external sources
--- deliberately never enter the repo/commit/block model, so seaf-server and the
--- Go fileserver have nothing to enforce here. They live in seafile-db for the
--- same reason: this is the one schema mechanism for cf_* tables and it runs on
--- every start, whereas a second home in seahub-db would mean carrying a Django
--- migration history across upstream merges in exchange for nothing.
+-- Nothing below the Hub reads these -- external sources deliberately never
+-- enter the repo/commit/block model, so seaf-server and the Go fileserver
+-- have nothing to enforce here.
 --
 -- repo_id is a synthetic UUID that matches no real library. It exists so the
 -- shadow layer (docs/external-sources.md section six) has an id to present, and
@@ -238,66 +162,7 @@ CREATE TABLE IF NOT EXISTS cf_search_index_state (
   UNIQUE INDEX cf_search_index_state_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- File-lock truth for manual checkout, local editors and OnlyOffice.  CE's
--- FileLocks table has no manager or write-path enforcement, so it is never
--- written at runtime.  A lease is keyed by the normalized object path and a
--- fresh UUID generation is produced every time an expired/released row is
--- claimed; old sessions therefore cannot become valid again after a release.
-CREATE TABLE IF NOT EXISTS cf_lock_lease (
-  repo_id CHAR(36) NOT NULL,
-  normalized_path VARCHAR(1000) NOT NULL,
-  -- SHA1 is indexed instead of the full utf8mb4 path; all reads also compare
-  -- normalized_path so a theoretical digest collision cannot alias a lock.
-  path_hash CHAR(40) NOT NULL,
-  lock_id CHAR(36) NOT NULL,
-  generation CHAR(36) NOT NULL,
-  owner VARCHAR(255) NOT NULL,
-  kind VARCHAR(32) NOT NULL,
-  session_id CHAR(36),
-  device_id VARCHAR(255),
-  source_file_id CHAR(40),
-  source_commit_id CHAR(40),
-  lease_until BIGINT NOT NULL,
-  hard_expire_at BIGINT NOT NULL,
-  last_heartbeat_at BIGINT,
-  status VARCHAR(16) NOT NULL,
-  forced_by VARCHAR(255),
-  forced_reason TEXT,
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-  PRIMARY KEY (repo_id, path_hash),
-  INDEX cf_lock_lease_live (repo_id, status, lease_until)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- A monotonic, opaque value for clients that poll the lock set.  Lease
--- refreshes do not update this value; acquire/release state transitions do.
-CREATE TABLE IF NOT EXISTS cf_lock_repo_revision (
-  repo_id CHAR(36) NOT NULL PRIMARY KEY,
-  revision BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Opaque, single-claim sessions for CloudFile Local. The descriptor downloaded
--- by a browser carries only the ticket; access and write-back capabilities are
--- minted after the native agent claims it and never persist in this table.
-CREATE TABLE IF NOT EXISTS cf_edit_session (
-  session_id CHAR(36) NOT NULL PRIMARY KEY,
-  ticket_digest CHAR(64) NOT NULL,
-  ticket_expire_at BIGINT NOT NULL,
-  mode VARCHAR(32) NOT NULL,
-  username VARCHAR(255) NOT NULL,
-  repo_id CHAR(36) NOT NULL,
-  normalized_path VARCHAR(1000) NOT NULL,
-  base_file_id CHAR(40),
-  generation CHAR(36),
-  state VARCHAR(16) NOT NULL,
-  claimed_at BIGINT,
-  closed_at BIGINT,
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-  UNIQUE INDEX cf_edit_session_ticket (ticket_digest),
-  INDEX cf_edit_session_expiry (state, ticket_expire_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- The Hub schema runner owns current file locks and local edit sessions.
 
 -- Copy/move task idempotency and failure reporting (P2-06).  One row per
 -- submitted copy/move intent; the idempotency_key is what turns a repeated
