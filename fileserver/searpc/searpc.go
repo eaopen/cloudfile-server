@@ -168,10 +168,6 @@ func (c *Client) call(deadline time.Time, funcname string, params ...interface{}
 	return nil, err
 }
 
-func (c *Client) getConn() (*net.UnixConn, error) {
-	return c.getConnDeadline(time.Time{})
-}
-
 func (c *Client) getConnDeadline(deadline time.Time) (*net.UnixConn, error) {
 	select {
 	case conn := <-c.pool:
