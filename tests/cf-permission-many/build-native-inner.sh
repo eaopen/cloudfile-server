@@ -2,9 +2,11 @@
 # Disposable fixture build, including test-only counters; do not package.
 set -eu
 cp -a /configured /tmp/server
-cp /source/common/cf-acl.c /source/common/cf-acl-resolve.c /source/common/cf-ext.c /source/common/rpc-service.c /source/common/cf-permission-many.* /tmp/server/common/
+# The current RPC and Makefile also reference the directory pager. Copy its
+# scan/header dependencies together to avoid linking against a stale snapshot.
+cp /source/common/cf-acl.c /source/common/cf-acl-resolve.c /source/common/cf-ext.c /source/common/rpc-service.c /source/common/cf-permission-many.* /source/common/cf-dir-page.* /tmp/server/common/
 cp /source/include/seafile-rpc.h /tmp/server/include/
-cp /source/server/Makefile.am /source/server/seaf-server.c /tmp/server/server/
+cp /source/server/Makefile.am /source/server/seaf-server.c /source/server/repo-perm.c /source/server/repo-mgr.h /tmp/server/server/
 cd /tmp/server
 # Test-only call counters: never copied into the working tree or release artifact.
 python3 - <<'INSTRUMENT'

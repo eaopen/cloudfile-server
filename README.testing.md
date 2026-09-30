@@ -14,6 +14,8 @@
 ```bash
 ./tests/cf-acl/run.sh
 ./tests/cf-fileop/run.sh
+# 目录分页另需 valac / libjansson 开发包
+./tests/cf-dir-page/run.sh
 
 cd fileserver
 go build ./...
@@ -29,6 +31,7 @@ go test -count=1 -run 'Cf[A-Z]' .
 | 命令 | 覆盖 | 不覆盖 |
 |---|---|---|
 | `tests/cf-acl/run.sh` | ACL 解析、继承、优先级、权限不放宽不变量 | 数据库查询、RPC 和进程集成 |
+| `tests/cf-dir-page/run.sh` | 生产 C 扫描、RPC、ACL 过滤及相邻 Hub 端点的共享分页用例 | 存储/数据库与进程间 RPC 使用 fixture，不等于部署 E2E |
 | `tests/cf-fileop/run.sh` | 路径/操作词汇、provider 分发、空 provider 透传、C 写入口字段与参数形状 | 运行时变量值是否传对、完整 seaf-server 编译 |
 | Go `Cf*` 测试 | C/Go 词汇、JSON 字段、错误码、共享用例 | MySQL 依赖的上游测试 |
 | `tests/cf-s3/run.sh` | C commit/fs/block S3 backend 与错误语义 | 未设置端点时会跳过，不构成 S3 验收 |

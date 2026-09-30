@@ -10,6 +10,7 @@
 
 #include "seafile-error.h"
 #include "seaf-utils.h"
+#include "cf-dir-page.h"
 /*
  * Permission priority: owner --> personal share --> group share --> public.
  * Permission with higher priority overwrites those with lower priority.
@@ -267,13 +268,14 @@ comp_dirent_func (gconstpointer a, gconstpointer b)
 }
 
 GList *
-seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
+seaf_repo_manager_list_dir_with_perm_page (SeafRepoManager *mgr,
                                       const char *repo_id,
                                       const char *dir_path,
                                       const char *dir_id,
                                       const char *user,
                                       int offset,
                                       int limit,
+                                      CfDirScan *scan,
                                       GError **error)
 {
     SeafRepo *repo;
@@ -283,6 +285,13 @@ seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
     SeafileDirent *d;
     GList *res = NULL;
     GList *p;
+
+    /* A short authorized page says nothing about the remaining raw entries.
+     * Collect progress here, before invalid objects or capabilities drop rows. */
+    if (scan) {
+        scan->scanned_count = 0;
+        scan->scan_exhausted = FALSE;
+    }
 
     perm = seaf_repo_manager_check_permission (mgr, repo_id, user, error);
     if (!perm) {
@@ -334,9 +343,12 @@ seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
         }
 
         if (limit > 0) {
-            if (index >= offset + limit)
+            if (index - offset >= limit)
                 break;
         }
+
+        if (scan)
+            scan->scanned_count++;
 
         dent = p->data;
 
@@ -367,6 +379,9 @@ seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
         res = g_list_prepend (res, d);
     }
 
+    if (scan)
+        scan->scan_exhausted = (p == NULL);
+
     if (shared_sub_dirs)
         g_hash_table_destroy (shared_sub_dirs);
     seaf_dir_free (dir);
@@ -376,4 +391,19 @@ seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
         res = g_list_reverse (res);
 
     return res;
+}
+
+/* Keep legacy callers and unlimited listing semantics unchanged. */
+GList *
+seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
+                                      const char *repo_id,
+                                      const char *dir_path,
+                                      const char *dir_id,
+                                      const char *user,
+                                      int offset,
+                                      int limit,
+                                      GError **error)
+{
+    return seaf_repo_manager_list_dir_with_perm_page (
+        mgr, repo_id, dir_path, dir_id, user, offset, limit, NULL, error);
 }

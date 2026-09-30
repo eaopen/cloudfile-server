@@ -46,8 +46,8 @@ jobs:
       - name: 安装 C 侧测试依赖
         run: |
           sudo apt-get update -qq
-          # Bounded native JSON transport tests require jansson.
-          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev pkg-config
+          # Native directory paging tests compile the real Vala objects and JSON RPC.
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev valac pkg-config
 
       - name: pytest
         run: pip install --quiet pytest
@@ -57,8 +57,8 @@ jobs:
 
   # 真正编译 C 代码。
   #
-  # tools/run-checks.sh 只编译 cf-acl-resolve.c（纯策略，只依赖 glib），
-  # cf-acl.c 与 rpc-service.c 的改动在那里是编译不到的——它们需要 searpc、
+  # 快速门禁仅编译纯策略或抽取的生产函数，无法验证完整翻译单元与链接；
+  # cf-acl.c 与 rpc-service.c 的完整编译需要 searpc、
   # vala、完整的 seafile 构建链。这个 job 是唯一会真正编译它们的地方。
   #
   # 复用上游的 ci/install-deps.sh 与 ci/run.py，不做任何修改：ci/run.py 里

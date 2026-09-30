@@ -6,6 +6,7 @@
 #include "seafile-object.h"
 #include "commit-mgr.h"
 #include "branch-mgr.h"
+#include "cf-dir-page.h"
 
 typedef enum RepoStatus {
     REPO_STATUS_NORMAL,
@@ -764,6 +765,18 @@ seaf_repo_manager_list_dir_with_perm (SeafRepoManager *mgr,
                                       int offset,
                                       int limit,
                                       GError **error);
+
+/* Same owned GObject listing as above, plus pre-filter scan state. */
+GList *
+seaf_repo_manager_list_dir_with_perm_page (SeafRepoManager *mgr,
+                                          const char *repo_id,
+                                          const char *dir_path,
+                                          const char *dir_id,
+                                          const char *user,
+                                          int offset,
+                                          int limit,
+                                          CfDirScan *scan,
+                                          GError **error);
 
 /* Web access permission. */
 

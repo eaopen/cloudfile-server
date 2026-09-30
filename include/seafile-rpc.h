@@ -1043,6 +1043,10 @@ seafile_cf_create_repo (const char *request_json, GError **error);
 char *
 seafile_cf_check_permissions_many(const char *request_json, GError **error);
 
+/* Owned JSON envelope with pre-filter scan state; legacy objlist is unchanged. */
+char *
+seafile_cf_list_dir_page (const char *request_json, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,

@@ -233,6 +233,11 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     list_dir = seafile_list_dir
 
+    # Scan progress is carried separately from the authorized list.
+    @searpc_func("string", ["string"])
+    def cf_list_dir_page(request_json):
+        pass
+
     @searpc_func("objlist", ["string", "string", "sting", "string", "int", "int"])
     def list_dir_with_perm(repo_id, dir_path, dir_id, user, offset, limit):
         pass

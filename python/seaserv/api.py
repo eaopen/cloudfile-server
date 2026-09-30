@@ -263,6 +263,13 @@ class SeafileAPI(object):
     def get_dir_id_by_commit_and_path(self, repo_id, commit_id, path):
         return seafserv_threaded_rpc.get_dir_id_by_commit_and_path(repo_id, commit_id, path)
 
+    def cf_list_dir_page(self, repo_id, dir_path, dir_id, user, start, limit):
+        # Keep the old list API intact; this envelope describes raw scan state.
+        import json
+        return seafserv_threaded_rpc.cf_list_dir_page(json.dumps(dict(
+            repo_id=repo_id, path=dir_path, dir_revision=dir_id,
+            user=user, start=start, limit=limit)))
+
     def list_dir_with_perm(self, repo_id, dir_path, dir_id, user, offset=-1, limit=-1):
         return seafserv_threaded_rpc.list_dir_with_perm (repo_id, dir_path, dir_id, user, offset, limit)
 

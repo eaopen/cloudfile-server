@@ -267,6 +267,12 @@ static void start_rpc_service (const char *seafile_dir,
                                      "seafile_list_dir",
                                      searpc_signature_objlist__string_string_int_int());
 
+    /* Continuation must survive capability filtering of the returned items. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_list_dir_page,
+                                     "cf_list_dir_page",
+                                     searpc_signature_string__string());
+
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_list_dir_with_perm,
                                      "list_dir_with_perm",

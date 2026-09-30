@@ -28,6 +28,7 @@
 #include "cf-fileop-json.h"
 #include "cf-lock.h"
 #include "cf-storage.h"
+#include "cf-dir-page.h"
 #include "cf-permission-many.h"
 #endif
 
@@ -4565,6 +4566,15 @@ seafile_cf_create_repo (const char *request_json, GError **error)
     return NULL;
 #endif
 }
+
+#ifdef SEAFILE_SERVER
+/* Keep objlist ABI intact; only the new envelope can preserve scan progress. */
+char *
+seafile_cf_list_dir_page (const char *request_json, GError **error)
+{
+    return cf_list_dir_page_json (request_json, error);
+}
+#endif
 
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
