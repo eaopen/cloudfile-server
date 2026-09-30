@@ -44,7 +44,7 @@ class CloudfileAclTest(unittest.TestCase):
         cls.library.cf_acl_evaluate.argtypes = [c.POINTER(Context), c.c_char_p, c.c_int,
                                                c.POINTER(Rule), c.c_size_t, c.POINTER(Result)]
         cls.library.cf_acl_evaluate.restype = c.c_int
-        cls.vectors = json.loads((ROOT.parent / "eap-cloudfile/contracts/acceptance-vectors.json").read_text())
+        cls.vectors = json.loads((ROOT / "tests/contracts/acl.json").read_text())
 
     def evaluate(self, changes):
         values = {**self.vectors["acl_defaults"], **changes}

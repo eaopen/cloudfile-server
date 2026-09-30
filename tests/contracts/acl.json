@@ -1,0 +1,328 @@
+{
+  "schema_version": 1,
+  "source": "eap-cloudfile/contracts",
+  "acl_defaults": {
+    "userId": "u1",
+    "departments": [
+      "d1"
+    ],
+    "groups": [
+      "g1",
+      "g2"
+    ],
+    "ce_permission": "r",
+    "context_ready": true,
+    "account_active": true,
+    "repo_hard_readonly": false,
+    "barrier_active": false,
+    "target": {
+      "path": "/parts/sub",
+      "kind": "dir"
+    },
+    "rules": []
+  },
+  "acl_cases": [
+    {
+      "id": "acl-ce-fallback",
+      "input": {},
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-no-library-qualification",
+      "input": {
+        "ce_permission": null,
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-local-elevation",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": true
+      }
+    },
+    {
+      "id": "acl-hard-readonly",
+      "input": {
+        "repo_hard_readonly": true,
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-user-before-group",
+      "input": {
+        "rules": [
+          {
+            "path": "/",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "r",
+            "inherit": true
+          },
+          {
+            "path": "/parts/sub",
+            "subject_type": "group",
+            "subject_id": "g1",
+            "permission": "none",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-dept-before-group",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "dept",
+            "subject_id": "d1",
+            "permission": "r",
+            "inherit": true
+          },
+          {
+            "path": "/parts",
+            "subject_type": "group",
+            "subject_id": "g1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-same-type-deny",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "group",
+            "subject_id": "g1",
+            "permission": "none",
+            "inherit": true
+          },
+          {
+            "path": "/parts",
+            "subject_type": "group",
+            "subject_id": "g2",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-hidden-before-none",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts/sub",
+            "subject_type": "group",
+            "subject_id": "g1",
+            "permission": "none",
+            "inherit": true
+          },
+          {
+            "path": "/parts/sub",
+            "subject_type": "group",
+            "subject_id": "g2",
+            "permission": "invisible",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-same-subject-deepest",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "none",
+            "inherit": true
+          },
+          {
+            "path": "/parts/sub",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": true
+      }
+    },
+    {
+      "id": "acl-no-inherit-descendant",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "none",
+            "inherit": false
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": true,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-no-inherit-exact",
+      "input": {
+        "target": {
+          "path": "/parts",
+          "kind": "dir"
+        },
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "none",
+            "inherit": false
+          }
+        ]
+      },
+      "expected": {
+        "visible": true,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-hidden-parent-no-corridor",
+      "input": {
+        "rules": [
+          {
+            "path": "/parts",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "invisible",
+            "inherit": false
+          },
+          {
+            "path": "/parts/sub",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "permission": "rw",
+            "inherit": true
+          }
+        ]
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-refresh-barrier",
+      "input": {
+        "ce_permission": "rw",
+        "barrier_active": true
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-subject-unavailable",
+      "input": {
+        "ce_permission": "rw",
+        "context_ready": false
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    },
+    {
+      "id": "acl-account-disabled",
+      "input": {
+        "ce_permission": "rw",
+        "account_active": false
+      },
+      "expected": {
+        "visible": false,
+        "read": false,
+        "write": false
+      }
+    }
+  ]
+}
