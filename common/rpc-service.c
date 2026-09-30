@@ -28,6 +28,7 @@
 #include "cf-fileop-json.h"
 #include "cf-lock.h"
 #include "cf-storage.h"
+#include "cf-permission-many.h"
 #endif
 
 #ifndef SEAFILE_SERVER
@@ -4375,6 +4376,16 @@ seafile_check_permission_by_path (const char *repo_id, const char *path,
     return perm;
 #endif
 }
+
+#ifdef SEAFILE_SERVER
+/* Reduce transport only: retain the full scalar qualification/provider chain
+ * for every path, and let the caller run a separate publication freshness pass. */
+char *
+seafile_cf_check_permissions_many(const char *request_json, GError **error)
+{
+    return cf_permissions_many_json(request_json, seafile_check_permission_by_path, error);
+}
+#endif
 
 char *
 seafile_cf_find_restricted_path (const char *repo_id, const char *path,

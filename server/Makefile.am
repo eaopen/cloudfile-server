@@ -44,6 +44,7 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/group-mgr.h \
 	../common/org-mgr.h \
 	../common/cf-ext.h \
+	../common/cf-permission-many.h \
 	../common/cf-fileop.h \
 	../common/cf-fileop-json.h \
 	../common/cf-fileop-test.h \
@@ -104,6 +105,7 @@ seaf_server_SOURCES = \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
 	../common/cf-ext.c \
+	../common/cf-permission-many.c \
 	../common/cf-fileop.c \
 	../common/cf-fileop-json.c \
 	../common/cf-fileop-test.c \

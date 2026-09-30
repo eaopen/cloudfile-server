@@ -1039,6 +1039,10 @@ seafile_cf_get_storage_classes (GError **error);
 char *
 seafile_cf_create_repo (const char *request_json, GError **error);
 
+/* Bounded read-permission transport, no cross-path authorization reuse. */
+char *
+seafile_cf_check_permissions_many(const char *request_json, GError **error);
+
 GList *
 seafile_list_dir_with_perm (const char *repo_id,
                             const char *path,

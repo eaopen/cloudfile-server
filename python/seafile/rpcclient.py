@@ -571,6 +571,11 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def check_permission_by_path(repo_id, path, user):
         pass
 
+    # Bounded JSON envelope preserves per-path scalar evaluation and errors.
+    @searpc_func("string", ["string"])
+    def cf_check_permissions_many(request_json):
+        pass
+
     # CloudFile extension seam: first path at or below `path` that `user`
     # cannot access at all, or None when the whole subtree is reachable.
     # Answers None when no capability is enabled.

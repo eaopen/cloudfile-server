@@ -695,6 +695,13 @@ class SeafileAPI(object):
         """
         return seafserv_threaded_rpc.check_permission_by_path(repo_id, path, user)
 
+    def cf_check_permissions_many(self, request_json):
+        """Internal bounded transport; strict validation lives at both ends.
+
+        No scalar fallback: an older server fails closed until upgraded.
+        """
+        return seafserv_threaded_rpc.cf_check_permissions_many(request_json)
+
     def _cf_find_restricted_path(self, repo_id, path, user):
         """CloudFile: first path at or below `path` that `user` cannot access.
 

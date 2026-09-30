@@ -715,6 +715,12 @@ static void start_rpc_service (const char *seafile_dir,
                                      "check_permission_by_path",
                                      searpc_signature_string__string_string_string());
 
+    /* Same scalar engine, fewer transport round trips; no permission lease. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cf_check_permissions_many,
+                                     "cf_check_permissions_many",
+                                     searpc_signature_string__string());
+
     /* CloudFile directory ACL */
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_cf_find_restricted_path,
