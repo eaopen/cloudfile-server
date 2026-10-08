@@ -45,3 +45,10 @@ CREATE INDEX IF NOT EXISTS cf_edit_session_expiry ON cf_edit_session (state, tic
 CREATE TABLE IF NOT EXISTS cf_fileop_task (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id CHAR(36) NOT NULL, idempotency_key CHAR(64) NOT NULL, username VARCHAR(255) NOT NULL, operation VARCHAR(16) NOT NULL, status VARCHAR(16) NOT NULL, detail TEXT, ctime BIGINT NOT NULL, mtime BIGINT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS cf_fileop_task_idem ON cf_fileop_task (username, idempotency_key);
 CREATE INDEX IF NOT EXISTS cf_fileop_task_id ON cf_fileop_task (task_id);
+
+-- Retain stable keys after deletion: cold GC needs the physical directory,
+-- and reusing a deleted key must never attach a new library to old objects.
+CREATE TABLE IF NOT EXISTS cf_library_storage_key (
+    repo_key VARCHAR(80) NOT NULL PRIMARY KEY,
+    repo_id CHAR(36) NOT NULL UNIQUE
+);

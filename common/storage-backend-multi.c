@@ -5,6 +5,7 @@
 #include <jansson.h>
 
 #include "log.h"
+#include "cf-auto-storage.h"
 #include "storage-backend-multi.h"
 
 extern ObjBackend *
@@ -21,6 +22,10 @@ typedef struct {
     SeafDB *db;
     GHashTable *backends;
     char *default_id;
+    char *auto_root;
+    const char *obj_type;
+    const char *tmp_dir;
+    GMutex mutex; /* Lazy child caches are shared by concurrent RPC threads. */
 } MultiPriv;
 
 typedef struct {
@@ -208,6 +213,58 @@ multi_priv_new (SeafDB *db)
     return priv;
 }
 
+/* One configured template replaces per-library startup registrations. */
+static int
+load_auto_class (MultiPriv *priv, json_t *item, const char *obj_type,
+                 const char *tmp_dir)
+{
+    json_t *spec = json_object_get (item, obj_type);
+    const char *root = json_string_value (json_object_get (spec, "dir"));
+    if (priv->auto_root ||
+        g_strcmp0 (json_string_value (json_object_get (item, "storage_id")), "auto-local") ||
+        json_is_true (json_object_get (item, "is_default")) ||
+        g_strcmp0 (json_string_value (json_object_get (spec, "backend")), "fs") ||
+        !root || !g_path_is_absolute (root))
+        return -1;
+    {
+        const char *kinds[] = {"commits", "fs", "blocks"};
+        int i;
+        for (i = 0; i < 3; ++i) {
+            json_t *other = json_object_get (item, kinds[i]);
+            if (g_strcmp0 (json_string_value (json_object_get (other, "backend")), "fs") ||
+                g_strcmp0 (json_string_value (json_object_get (other, "dir")), root))
+                return -1;
+        }
+    }
+    priv->auto_root = g_strdup (root);
+    priv->obj_type = obj_type;
+    priv->tmp_dir = tmp_dir;
+    return 0;
+}
+
+static void *
+backend_for_id (MultiPriv *priv, const char *storage_id)
+{
+    void *backend;
+    const char *key = cf_auto_storage_key (storage_id);
+    g_mutex_lock (&priv->mutex);
+    backend = g_hash_table_lookup (priv->backends, storage_id);
+    if (!backend && key && priv->auto_root) {
+        char *dir = cf_auto_storage_dir (priv->auto_root, key);
+        if (dir) {
+            if (!strcmp (priv->obj_type, "blocks"))
+                backend = block_backend_fs_new (dir, priv->tmp_dir);
+            else
+                backend = obj_backend_fs_new (dir, priv->obj_type);
+            if (backend)
+                g_hash_table_insert (priv->backends, g_strdup (storage_id), backend);
+            g_free (dir);
+        }
+    }
+    g_mutex_unlock (&priv->mutex);
+    return backend;
+}
+
 static gboolean
 read_storage_id (SeafDBRow *row, void *user_data)
 {
@@ -250,7 +307,7 @@ backend_for_repo (MultiPriv *priv, const char *repo_id)
     if (!storage_id)
         storage_id = g_strdup (priv->default_id);
 
-    backend = g_hash_table_lookup (priv->backends, storage_id);
+    backend = backend_for_id (priv, storage_id);
     if (!backend)
         seaf_warning ("Repo %s references unknown storage class %s; "
                       "refusing fallback.\n", repo_id, storage_id);
@@ -267,7 +324,7 @@ storage_id_for_repo (MultiPriv *priv, const char *repo_id)
         return NULL;
     if (!storage_id)
         storage_id = g_strdup (priv->default_id);
-    if (!g_hash_table_lookup (priv->backends, storage_id)) {
+    if (!backend_for_id (priv, storage_id)) {
         g_free (storage_id);
         return NULL;
     }
@@ -278,7 +335,7 @@ static gboolean
 multi_has_storage_id (MultiPriv *priv, const char *storage_id)
 {
     return storage_id &&
-        g_hash_table_lookup (priv->backends, storage_id) != NULL;
+        backend_for_id (priv, storage_id) != NULL;
 }
 
 static gboolean
@@ -341,8 +398,8 @@ multi_obj_copy_store (ObjBackend *bend, const char *repo_id, int version,
                       SeafObjProgressFunc progress, void *user_data)
 {
     MultiPriv *priv = bend->priv;
-    ObjBackend *src = g_hash_table_lookup (priv->backends, src_storage_id);
-    ObjBackend *dst = g_hash_table_lookup (priv->backends, dst_storage_id);
+    ObjBackend *src = backend_for_id (priv, src_storage_id);
+    ObjBackend *dst = backend_for_id (priv, dst_storage_id);
     ObjCopyStoreData data = {
         src, dst, repo_id, version, progress, user_data, 0, FALSE
     };
@@ -369,6 +426,11 @@ load_obj_classes (MultiPriv *priv,
 
         if (!json_is_object (item))
             return -1;
+        if (json_is_true (json_object_get (item, "is_auto"))) {
+            if (load_auto_class (priv, item, obj_type, NULL) < 0)
+                return -1;
+            continue;
+        }
         storage_id = json_string_value (
             json_object_get (item, "storage_id"));
         if (!storage_id || !storage_id[0] ||
@@ -406,6 +468,11 @@ load_block_classes (MultiPriv *priv,
 
         if (!json_is_object (item))
             return -1;
+        if (json_is_true (json_object_get (item, "is_auto"))) {
+            if (load_auto_class (priv, item, "blocks", tmp_dir) < 0)
+                return -1;
+            continue;
+        }
         storage_id = json_string_value (
             json_object_get (item, "storage_id"));
         if (!storage_id || !storage_id[0] ||
@@ -505,6 +572,29 @@ multi_obj_copy (ObjBackend *bend,
 }
 
 static int
+prepare_auto_gc (MultiPriv *priv, const char *repo_id)
+{
+    char *key = NULL;
+    char *storage_id;
+    void *backend;
+    int ret;
+    if (!priv->auto_root)
+        return 0;
+    ret = seaf_db_statement_foreach_row (priv->db,
+        "SELECT repo_key FROM cf_library_storage_key WHERE repo_id = ?",
+        read_storage_id, &key, 1, "string", repo_id);
+    if (ret < 0)
+        return -1;
+    if (!key)
+        return 0;
+    storage_id = g_strconcat (CF_AUTO_STORAGE_PREFIX, key, NULL);
+    backend = backend_for_id (priv, storage_id);
+    g_free (storage_id);
+    g_free (key);
+    return backend ? 0 : -1;
+}
+
+static int
 multi_obj_remove_store (ObjBackend *bend, const char *store_id,
                         SeafObjProgressFunc progress, void *user_data)
 {
@@ -518,12 +608,16 @@ multi_obj_remove_store (ObjBackend *bend, const char *store_id,
      * runs. Removing the store prefix from every configured backend is
      * deterministic and avoids either leaking data or guessing a fallback.
      */
+    if (prepare_auto_gc (priv, store_id) < 0)
+        return -1;
+    g_mutex_lock (&priv->mutex);
     g_hash_table_iter_init (&iter, priv->backends);
     while (g_hash_table_iter_next (&iter, NULL, &value)) {
         ObjBackend *child = value;
         if (child->remove_store (child, store_id, progress, user_data) < 0)
             ret = -1;
     }
+    g_mutex_unlock (&priv->mutex);
     return ret;
 }
 
@@ -815,8 +909,8 @@ multi_block_copy_store (BlockBackend *bend,
                         SeafBlockProgressFunc progress, void *user_data)
 {
     MultiPriv *priv = bend->be_priv;
-    BlockBackend *src = g_hash_table_lookup (priv->backends, src_storage_id);
-    BlockBackend *dst = g_hash_table_lookup (priv->backends, dst_storage_id);
+    BlockBackend *src = backend_for_id (priv, src_storage_id);
+    BlockBackend *dst = backend_for_id (priv, dst_storage_id);
     BlockCopyStoreData data = {
         src, dst, store_id, version, progress, user_data, 0, FALSE
     };
@@ -857,12 +951,16 @@ multi_block_remove_store (BlockBackend *bend, const char *store_id,
     gpointer value;
     int ret = 0;
 
+    if (prepare_auto_gc (priv, store_id) < 0)
+        return -1;
+    g_mutex_lock (&priv->mutex);
     g_hash_table_iter_init (&iter, priv->backends);
     while (g_hash_table_iter_next (&iter, NULL, &value)) {
         BlockBackend *child = value;
         if (child->remove_store (child, store_id, progress, user_data) < 0)
             ret = -1;
     }
+    g_mutex_unlock (&priv->mutex);
     return ret;
 }
 

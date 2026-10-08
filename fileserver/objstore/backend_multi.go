@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -19,12 +20,16 @@ import (
 type storageClass struct {
 	StorageID string                 `json:"storage_id"`
 	Default   bool                   `json:"is_default"`
+	Auto      bool                   `json:"is_auto"`
 	Commits   map[string]interface{} `json:"commits"`
 	FS        map[string]interface{} `json:"fs"`
 	Blocks    map[string]interface{} `json:"blocks"`
 }
 
 type multiBackend struct {
+	mutex            sync.Mutex
+	autoRoot         string
+	objType          string
 	backends         map[string]storageBackend
 	defaultID        string
 	storageIDForRepo func(context.Context, string) (string, error)
@@ -45,13 +50,26 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 		return nil, err
 	}
 
-	m := &multiBackend{backends: make(map[string]storageBackend)}
+	m := &multiBackend{backends: make(map[string]storageBackend), objType: objType}
 	for _, class := range classes {
 		if class.StorageID == "" {
 			return nil, fmt.Errorf("storage class has no storage_id")
 		}
 		if _, exists := m.backends[class.StorageID]; exists {
 			return nil, fmt.Errorf("duplicate storage_id %q", class.StorageID)
+		}
+		if class.Auto {
+			root, _ := class.Commits["dir"].(string)
+			if class.StorageID != "auto-local" || class.Default || m.autoRoot != "" || !filepath.IsAbs(root) {
+				return nil, fmt.Errorf("invalid automatic local template")
+			}
+			for _, spec := range []map[string]interface{}{class.Commits, class.FS, class.Blocks} {
+				if spec["backend"] != "fs" || spec["dir"] != root {
+					return nil, fmt.Errorf("automatic local template requires one filesystem root")
+				}
+			}
+			m.autoRoot = root
+			continue
 		}
 		if class.Default {
 			if m.defaultID != "" {
@@ -151,7 +169,26 @@ func (m *multiBackend) backend(repoID string) (storageBackend, error) {
 	if err == nil {
 		storageID = mappedStorageID
 	}
+	// Only the explicit automatic namespace can allocate a new child; unknown
+	// static classes still fail closed, including after process restarts.
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	backend, ok := m.backends[storageID]
+	if !ok && m.autoRoot != "" {
+		key, valid := autoLocalKey(storageID)
+		if valid {
+			dir, err := autoLocalDir(m.autoRoot, key)
+			if err != nil {
+				return nil, err
+			}
+			backend, err = newFSBackend(dir, m.objType)
+			if err != nil {
+				return nil, err
+			}
+			m.backends[storageID] = backend
+			ok = true
+		}
+	}
 	if !ok {
 		return nil, fmt.Errorf("repo %s references unknown storage class %q", repoID, storageID)
 	}

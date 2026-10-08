@@ -32,12 +32,15 @@ names = [('common/cf-acl.c', 'cf_acl_apply'), ('common/cf-ext.c', 'cf_ext_check_
          ('common/rpc-service.c', 'seafile_check_permission_by_path'),
          ('common/rpc-service.c', 'seafile_cf_check_permissions_many')]
 (build / 'production.c').write_text('\n\n'.join(function(*item) for item in names))
-flags = subprocess.check_output(['pkg-config', '--cflags', '--libs', 'glib-2.0', 'jansson'], text=True).split()
+# Compile-only steps must not receive linker inputs: Clang treats unused -l
+# flags as errors under -Werror, even when the fixture itself compiles cleanly.
+cflags = subprocess.check_output(['pkg-config', '--cflags', 'glib-2.0', 'jansson'], text=True).split()
+ldflags = subprocess.check_output(['pkg-config', '--libs', 'glib-2.0', 'jansson'], text=True).split()
 base = ['cc', '-std=c99', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-fPIC',
         '-I' + str(root / 'common'), '-I' + str(build), '-DSEAFILE_SERVER']
 # A fake monotonic clock makes timeout coverage deterministic without sleeping.
 subprocess.run(base + ['-Dg_get_monotonic_time=fixture_clock', '-c',
-    str(root / 'common/cf-permission-many.c'), '-o', str(build / 'many.o'), *flags], check=True)
+    str(root / 'common/cf-permission-many.c'), '-o', str(build / 'many.o'), *cflags], check=True)
 subprocess.run(base + ['-shared', str(root / 'tests/cf-permission-many/fixture.c'),
     str(build / 'many.o'), str(root / 'common/cf-acl-resolve.c'), str(root / 'common/cf-path.c'),
-    '-o', str(build / 'many.so'), *flags], check=True)
+    '-o', str(build / 'many.so'), *cflags, *ldflags], check=True)

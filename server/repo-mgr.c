@@ -3898,6 +3898,14 @@ create_repo_common (SeafRepoManager *mgr,
         }
     }
 
+    /* Default local allocation belongs before the initial commit, including
+     * native/CLI callers that bypass the CloudFile HTTP creation endpoint. */
+    if (cf_pin_default_local_storage (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to allocate default library storage.");
+        return -1;
+    }
+
     repo = seaf_repo_new (repo_id, repo_name, repo_desc);
 
     repo->no_local_history = TRUE;

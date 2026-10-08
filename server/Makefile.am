@@ -52,6 +52,7 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/cf-lock.h \
 	../common/cf-path.h \
 	../common/cf-storage.h \
+	../common/cf-auto-storage.h \
 	../common/cf-acl.h \
 	../common/cf-acl-resolve.h \
 	../common/cf-s3-client.h \

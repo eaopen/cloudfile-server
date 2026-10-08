@@ -189,3 +189,10 @@ CREATE TABLE IF NOT EXISTS cf_fileop_task (
   UNIQUE INDEX cf_fileop_task_idem (username, idempotency_key),
   INDEX cf_fileop_task_id (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Retain stable keys after deletion: cold GC needs the physical directory,
+-- and reusing a deleted key must never attach a new library to old objects.
+CREATE TABLE IF NOT EXISTS cf_library_storage_key (
+    repo_key VARCHAR(80) NOT NULL PRIMARY KEY,
+    repo_id CHAR(36) NOT NULL UNIQUE
+);

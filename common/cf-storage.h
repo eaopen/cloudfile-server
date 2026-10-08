@@ -14,6 +14,9 @@ gboolean cf_storage_enabled (void);
  * Returns 0 on success, -1 on failure. */
 int cf_set_repo_storage_id (const char *repo_id, const char *storage_id);
 
+/* Pin an unassigned new library to the automatic UUID key, if configured. */
+int cf_pin_default_local_storage (const char *repo_id);
+
 /* Create a repo pinned to a storage class in one step, so the initial commit
  * lands in the target store. @request_json is
  * {"name","owner","desc","passwd","enc_version","pwd_hash_algo",
