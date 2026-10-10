@@ -55,7 +55,8 @@ generated = sorted(path for path in BUILD.rglob('*.c')
                    if path.name in ('dirent.c', 'dirent.vala.c'))
 if len(generated) != 1:
     raise RuntimeError('Expected one Vala Dirent C output, found: %r' % generated)
-subprocess.run(['cc', '-fPIC', '-w', '-c', str(generated[0]), '-o', str(BUILD / 'dirent.o'), *flags], check=True)
+subprocess.run(['cc', '-fPIC', '-w', '-c', str(generated[0]), '-I' + str(BUILD),
+                '-o', str(BUILD / 'dirent.o'), *flags], check=True)
 subprocess.run(['cc', '-std=gnu99', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                 '-shared', '-fPIC', str(ROOT / 'tests/cf-dir-page/fixture.c'), str(BUILD / 'dirent.o'),
                 str(ROOT / 'common/cf-acl-resolve.c'), str(ROOT / 'common/cf-path.c'),
