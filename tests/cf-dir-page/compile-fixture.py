@@ -49,7 +49,13 @@ subprocess.run(['valac', '-C', '-H', str(BUILD / 'seafile-object.h'),
 flags = subprocess.check_output(['pkg-config', '--cflags', '--libs', 'glib-2.0', 'gobject-2.0', 'jansson'], text=True).split()
 # Vala-generated C has unrelated warnings; compile it separately, then require
 # clean warnings for all tested production functions and the hand-written fixture.
-subprocess.run(['cc', '-fPIC', '-w', '-c', str(BUILD / 'dirent.c'), '-o', str(BUILD / 'dirent.o'), *flags], check=True)
+# Vala versions differ in whether a source ending in .vala emits dirent.c
+# or dirent.vala.c. Compile the file valac actually wrote, not a guessed name.
+generated = sorted(path for path in BUILD.rglob('*.c')
+                   if path.name in ('dirent.c', 'dirent.vala.c'))
+if len(generated) != 1:
+    raise RuntimeError('Expected one Vala Dirent C output, found: %r' % generated)
+subprocess.run(['cc', '-fPIC', '-w', '-c', str(generated[0]), '-o', str(BUILD / 'dirent.o'), *flags], check=True)
 subprocess.run(['cc', '-std=gnu99', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                 '-shared', '-fPIC', str(ROOT / 'tests/cf-dir-page/fixture.c'), str(BUILD / 'dirent.o'),
                 str(ROOT / 'common/cf-acl-resolve.c'), str(ROOT / 'common/cf-path.c'),
