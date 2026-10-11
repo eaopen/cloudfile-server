@@ -2990,7 +2990,10 @@ seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
     if (!json_is_object (condition) || json_object_size (condition) != 6 ||
         !json_is_object (json_object_get (condition, "context")) ||
         !json_is_array (json_object_get (condition, "scopes")) ||
-        !json_is_object (json_object_get (condition, "oidc_session")) ||
+        ((!json_is_object (json_object_get (condition, "oidc_session")) ||
+          json_object_get (condition, "local_commit")) &&
+         (!json_is_object (json_object_get (condition, "local_commit")) ||
+          json_object_get (condition, "oidc_session"))) ||
         !json_is_object (edit) || json_object_size (edit) != 9 ||
         !json_is_string (head) || json_string_length (head) != 40 ||
         !is_object_id_valid (json_string_value (head)) ||

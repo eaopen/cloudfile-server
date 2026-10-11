@@ -58,4 +58,8 @@ int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
                                   const char *path, const char *object_id,
                                   int kind, json_t *root,
                                   json_t *current_subject, int ce_permission);
+int cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,
+                                  const char *path, json_t *conditions,
+                                  json_t *subject, int qualification);
+
 #endif

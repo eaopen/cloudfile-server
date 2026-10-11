@@ -1453,11 +1453,10 @@ test_and_update_branch (SeafBranchManager *mgr,
         const char *path = json_string_value (target);
         gboolean allowed = qualification > 0 && json_is_string (target) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
-            /* A local session only authorizes the download used to prepare a
-             * local working copy. Manual publication follows the normal upload
-             * path; automatic local commits remain a separate feature. */
+            /* Read references never authorize publication. Device writes use
+             * a distinct condition and repeat current session/Checkout checks. */
             !json_object_get (conditions, "local_session") &&
-            !json_object_get (conditions, "local_commit") &&
+            (!json_object_get (conditions, "local_commit") || editing) &&
             (!unchanged || (json_is_true (unchanged) && editing &&
                 cloudfile_check_unchanged_file (mgr, branch->repo_id,
                     old_commit_id, path,
@@ -1475,8 +1474,11 @@ test_and_update_branch (SeafBranchManager *mgr,
                 branch->repo_id, path, CF_FILE, old_commit_id,
                 json_string_value (json_object_get (lease, "base_version")),
                 scopes_json, native_username) == 0) &&
-            (!editing || (json_object_get (conditions, "oidc_session") &&
-                cloudfile_check_oidc_reference (mgr, trans, conditions) == 0)) &&
+            (!editing || (json_object_get (conditions, "local_commit") ?
+                cf_policy_check_device_commit (trans, branch->repo_id, path,
+                    conditions, snapshot, qualification) == 0 :
+                (json_object_get (conditions, "oidc_session") &&
+                 cloudfile_check_oidc_reference (mgr, trans, conditions) == 0))) &&
             (editing ? (!lease && cf_policy_edit_publish (trans, branch->repo_id,
                 path, native_username, conditions, NULL) == 0) :
                 cf_policy_check_lease_write (trans, branch->repo_id, path,
@@ -1505,11 +1507,17 @@ test_and_update_branch (SeafBranchManager *mgr,
          * after all earlier authority/resource waits, immediately before the
          * publication statement. An omitted lease still checks active locks.
          * This also covers compare-only/no-op publication through this path. */
+        json_t *device_subject = NULL;
         gboolean current = json_is_object (conditions) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
             !json_object_get (conditions, "local_session") &&
-            !json_object_get (conditions, "local_commit") &&
-            cloudfile_check_oidc_reference (mgr, trans, conditions) == 0 &&
+            (json_object_get (conditions, "local_commit") ?
+                (cloudfile_check_context (mgr, scopes_json, &device_subject) == 0 &&
+                 cf_policy_check_device_commit (trans, branch->repo_id,
+                    json_string_value (json_object_get (conditions, "path")), conditions,
+                    device_subject, cloudfile_library_qualification (mgr, trans,
+                        branch->repo_id, native_username)) == 0) :
+                cloudfile_check_oidc_reference (mgr, trans, conditions) == 0) &&
             (json_object_get (conditions, "editing") ?
                 cf_policy_edit_publish (trans, branch->repo_id,
                     json_string_value (json_object_get (conditions, "path")),
@@ -1518,6 +1526,7 @@ test_and_update_branch (SeafBranchManager *mgr,
                     json_string_value (json_object_get (conditions, "path")),
                     native_username,
                     json_object_get (conditions, "lease")) == 0);
+        if (device_subject) json_decref (device_subject);
         if (conditions) json_decref (conditions);
         if (!current) {
             seaf_db_rollback (trans);
