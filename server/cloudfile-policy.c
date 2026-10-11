@@ -576,6 +576,10 @@ int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
         "string", device_revision, "string", session_revision);
     g_free (path_hash);
     int result = count == 1 && target.valid &&
+        (!json_object_get (root, "agent_upload") ||
+         (json_object_size(json_object_get(root, "agent_upload")) == 5 &&
+          json_identifier(json_object_get(root, "agent_upload"), "intent_id", 36) &&
+          !g_strcmp0(json_identifier(target.snapshot, "mode", 32), "optimistic-edit"))) &&
         (!json_object_get (root, "local_commit") ||
          !g_strcmp0 (json_identifier (target.snapshot, "mode", 32), "exclusive-edit")) &&
         local_session_lease (trans, repo, user, target.snapshot) == 0 ? 0 : -1;
@@ -759,6 +763,51 @@ int cf_policy_check_create (SeafDBTrans *trans, const char *repo, const char *pa
     g_free (parent);
     return allowed == 0 ? cf_policy_check_write (trans, repo, path, provider,
                                                 user, snapshot, ce_permission) : -1;
+}
+
+int
+cf_policy_optimistic_receipt (SeafDBTrans *trans, const char *repo,
+                             json_t *conditions, const char *commit_id)
+{
+    if (!trans || !repo || !json_is_object(conditions) ||
+        !json_is_object(json_object_get(conditions, "agent_upload")))
+        return -1;
+    json_t *upload = json_object_get(conditions, "agent_upload");
+    json_t *ctx = json_object_get(conditions, "context");
+    const char *intent = json_identifier(upload, "intent_id", 36);
+    const char *session = json_identifier(upload, "session_id", 36);
+    const char *device = json_identifier(upload, "device_id", 36);
+    const char *base = json_identifier(conditions, "expected_file_id", 40);
+    const char *digest = json_identifier(conditions, "native_digest", 64);
+    const char *new_id = json_identifier(conditions, "native_file_id", 40);
+    json_t *bytes = json_object_get(conditions, "native_size");
+    if (json_object_size(upload) != 5 || !intent || strlen(intent) != 36 ||
+        !session || strlen(session) != 36 || !device || strlen(device) != 36 ||
+        !base || strlen(base) != 40 || !digest || strlen(digest) != 64 ||
+        !new_id || strlen(new_id) != 40 ||
+        !json_is_integer(bytes) || json_integer_value(bytes) < 0 ||
+        json_integer_value(bytes) > 128 * 1024 * 1024 ||
+        !json_identifier(ctx, "userId", 225) ||
+        (commit_id && strlen(commit_id) != 40))
+        return -1;
+    gboolean bad = FALSE;
+    if (!seaf_db_trans_check_for_existence(trans,
+        "SELECT intent_id FROM cf_optimistic_upload_intent "
+        "WHERE intent_id=? AND session_id=? AND device_id=? AND repo_id=? "
+        "AND base_file_id=? AND content_digest=? AND snapshot_size=? "
+        "AND state='prepared' AND result_file_id IS NULL FOR UPDATE",
+        &bad, 7, "string", intent, "string", session, "string", device,
+        "string", repo, "string", base, "string", digest,
+        "int64", (gint64)json_integer_value(bytes)) || bad)
+        return -1;
+    if (!commit_id) return 0;
+    /* Same SeafDBTrans holds current ACL/session/lock checks and Branch CAS:
+     * either Branch and receipt both commit, or neither can be observed. */
+    return seaf_db_trans_query(trans,
+        "UPDATE cf_optimistic_upload_intent SET state='published',"
+        "result_file_id=?,result_commit_id=? "
+        "WHERE intent_id=? AND state='prepared'",
+        3, "string", new_id, "string", commit_id, "string", intent);
 }
 
 int cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,

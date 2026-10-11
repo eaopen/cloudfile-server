@@ -193,6 +193,12 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     cloudfile_publish_edit_blocks = seafile_cloudfile_publish_edit_blocks
 
+    @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])
+    def seafile_cloudfile_publish_optimistic_blocks(repo_id, blockids_json, file_size, parent_dir,
+                                                    filename, user, condition_json):
+        pass
+    cloudfile_publish_optimistic_blocks = seafile_cloudfile_publish_optimistic_blocks
+
     @searpc_func("string", ["string", "string", "string", "string"])
     def seafile_cloudfile_checkin_edit(repo_id, path, user, condition_json):
         pass

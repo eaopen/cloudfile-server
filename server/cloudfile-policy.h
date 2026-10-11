@@ -58,6 +58,11 @@ int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
                                   const char *path, const char *object_id,
                                   int kind, json_t *root,
                                   json_t *current_subject, int ce_permission);
+/* The optimistic Agent uploads without Checkout; final durable result is
+ * atomically committed beside Native Branch. NULL commit_id checks only. */
+int cf_policy_optimistic_receipt (SeafDBTrans *trans, const char *repo,
+                                  json_t *conditions, const char *commit_id);
+
 int cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,
                                   const char *path, json_t *conditions,
                                   json_t *subject, int qualification);

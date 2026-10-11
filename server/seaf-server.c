@@ -202,6 +202,10 @@ static void start_rpc_service (const char *seafile_dir,
                                      "seafile_cloudfile_publish_edit_blocks",
                     searpc_signature_string__string_string_string_string_string_string_string());
     searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_cloudfile_publish_optimistic_blocks,
+                                     "seafile_cloudfile_publish_optimistic_blocks",
+                    searpc_signature_string__string_string_string_string_string_string_string());
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_cloudfile_checkin_edit,
                                      "seafile_cloudfile_checkin_edit",
                     searpc_signature_string__string_string_string_string());

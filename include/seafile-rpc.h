@@ -767,6 +767,12 @@ seafile_cloudfile_publish_edit_blocks (const char *repo_id,
     GError **error);
 
 char *
+seafile_cloudfile_publish_optimistic_blocks (const char *repo_id,
+    const char *blockids_json, const char *size_text, const char *parent_dir,
+    const char *file_name, const char *user, const char *condition_json,
+    GError **error);
+
+char *
 seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
     const char *parent_dir, const char *file_name, const char *user,
     const char *condition_json, GError **error);

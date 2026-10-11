@@ -1132,6 +1132,48 @@ out:
     return result;
 }
 
+/* The Agent optimistic-write proof is DISTINCT from a read ticket or
+ * exclusive local_commit. The signed, one-minute Hub grant provides a
+ * server-owned descriptor; this native final Branch transaction independently
+ * checks the *current* paired device/session, original file version, user
+ * mapping, resource lifecycle, ACL and active locks. */
+static int
+cloudfile_check_agent_upload (SeafDBTrans *trans, const char *repo,
+                              const char *path, json_t *conditions,
+                              json_t *subject, int qualification)
+{
+    json_t *proof = json_object_get(conditions, "agent_upload");
+    if (!proof) return 0;
+    json_t *base = json_object_get(conditions, "expected_file_id");
+    if (!json_is_object(proof) || json_object_size(proof) != 5 ||
+        !json_is_string(base) || json_string_length(base) != 40 ||
+        !is_object_id_valid(json_string_value(base)) ||
+        json_object_get(conditions, "local_session") ||
+        json_object_get(conditions, "oidc_session") ||
+        json_object_get(conditions, "editing") ||
+        json_object_get(conditions, "local_commit") ||
+        json_object_get(conditions, "lease"))
+        return -1;
+    json_t *copy = json_deep_copy(conditions);
+    if (!copy) return -1;
+    /* A local_session read proof is exactly four device fields. Optimistic
+     * write additionally carries a distinct prepared intent_id, which must
+     * NEVER be treated as part of the reusable read/session credential. */
+    json_t *session_proof = json_deep_copy(proof);
+    if (!session_proof || json_object_del(session_proof, "intent_id") < 0 ||
+        json_object_size(session_proof) != 4 ||
+        json_object_set(copy, "local_session", session_proof) < 0) {
+        if (session_proof) json_decref(session_proof);
+        json_decref(copy);
+        return -1;
+    }
+    json_decref(session_proof);
+    int result = cf_policy_check_local_session(trans, repo, path,
+        json_string_value(base), CF_FILE, copy, subject, qualification);
+    json_decref(copy);
+    return result;
+}
+
 /* Optional only for non-OIDC trusted callers. An OIDC host must include this
  * server-derived reference and its provider scope; omission is not logout proof. */
 static const char *
@@ -1449,6 +1491,7 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *target = json_object_get (conditions, "path");
         json_t *lease = json_object_get (conditions, "lease");
         json_t *editing = json_object_get (conditions, "editing");
+        json_t *agent = json_object_get (conditions, "agent_upload");
         json_t *unchanged = json_object_get (conditions, "editing_unchanged");
         const char *path = json_string_value (target);
         gboolean allowed = qualification > 0 && json_is_string (target) &&
@@ -1457,6 +1500,8 @@ test_and_update_branch (SeafBranchManager *mgr,
              * a distinct condition and repeat current session/Checkout checks. */
             !json_object_get (conditions, "local_session") &&
             (!json_object_get (conditions, "local_commit") || editing) &&
+            (!agent || (!editing && !lease && !json_object_get(conditions, "oidc_session") &&
+                !json_object_get(conditions, "create"))) &&
             (!unchanged || (json_is_true (unchanged) && editing &&
                 cloudfile_check_unchanged_file (mgr, branch->repo_id,
                     old_commit_id, path,
@@ -1474,6 +1519,10 @@ test_and_update_branch (SeafBranchManager *mgr,
                 branch->repo_id, path, CF_FILE, old_commit_id,
                 json_string_value (json_object_get (lease, "base_version")),
                 scopes_json, native_username) == 0) &&
+            (!agent || (cloudfile_check_agent_upload(trans, branch->repo_id,
+                path, conditions, snapshot, qualification) == 0 &&
+                cf_policy_optimistic_receipt(trans, branch->repo_id,
+                    conditions, NULL) == 0)) &&
             (!editing || (json_object_get (conditions, "local_commit") ?
                 cf_policy_check_device_commit (trans, branch->repo_id, path,
                     conditions, snapshot, qualification) == 0 :
@@ -1511,13 +1560,19 @@ test_and_update_branch (SeafBranchManager *mgr,
         gboolean current = json_is_object (conditions) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
             !json_object_get (conditions, "local_session") &&
-            (json_object_get (conditions, "local_commit") ?
+            (json_object_get(conditions, "agent_upload") ?
+                (cloudfile_check_context(mgr, scopes_json, &device_subject) == 0 &&
+                 cloudfile_check_agent_upload(trans, branch->repo_id,
+                    json_string_value(json_object_get(conditions, "path")),
+                    conditions, device_subject, cloudfile_library_qualification(
+                      mgr, trans, branch->repo_id, native_username)) == 0) :
+             (json_object_get (conditions, "local_commit") ?
                 (cloudfile_check_context (mgr, scopes_json, &device_subject) == 0 &&
                  cf_policy_check_device_commit (trans, branch->repo_id,
                     json_string_value (json_object_get (conditions, "path")), conditions,
                     device_subject, cloudfile_library_qualification (mgr, trans,
                         branch->repo_id, native_username)) == 0) :
-                cloudfile_check_oidc_reference (mgr, trans, conditions) == 0) &&
+                cloudfile_check_oidc_reference (mgr, trans, conditions) == 0)) &&
             (json_object_get (conditions, "editing") ?
                 cf_policy_edit_publish (trans, branch->repo_id,
                     json_string_value (json_object_get (conditions, "path")),
@@ -1537,6 +1592,14 @@ test_and_update_branch (SeafBranchManager *mgr,
 
     if (scopes_json && scopes_json[0] == '{') {
         json_t *conditions = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
+        if (json_object_get(conditions, "agent_upload") &&
+            cf_policy_optimistic_receipt(trans, branch->repo_id,
+                conditions, branch->commit_id) < 0) {
+            json_decref(conditions);
+            seaf_db_rollback(trans);
+            seaf_db_trans_close(trans);
+            return -2;
+        }
         if (json_object_get (conditions, "editing") &&
             cf_policy_edit_publish (trans, branch->repo_id,
                 json_string_value (json_object_get (conditions, "path")),

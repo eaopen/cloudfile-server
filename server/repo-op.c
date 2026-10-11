@@ -4906,6 +4906,7 @@ put_file_with_condition (SeafRepoManager *mgr,
     gboolean create = FALSE;
     gboolean cf_prepared = FALSE;
     gboolean controlled_edit = FALSE;
+    gboolean optimistic_edit = FALSE;
     char *edit_scopes = NULL;
     char edit_digest_before[65] = {0};
     char cf_commit_id[41] = "";
@@ -4927,6 +4928,7 @@ put_file_with_condition (SeafRepoManager *mgr,
         json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         create = json_is_true (json_object_get (condition, "create"));
         controlled_edit = json_is_object (json_object_get (condition, "editing"));
+        optimistic_edit = json_is_object (json_object_get (condition, "agent_upload"));
         if (condition) json_decref (condition);
     }
 
@@ -4937,7 +4939,7 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
 
-    if (blockids_json && (!controlled_edit || !strict_head)) {
+    if (blockids_json && (!(controlled_edit || optimistic_edit) || !strict_head)) {
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                     "Guarded CDC publication required");
         ret = -1;
@@ -5058,7 +5060,7 @@ put_file_with_condition (SeafRepoManager *mgr,
 
     gc_id = seaf_repo_get_current_gc_id (repo);
 
-    if (controlled_edit &&
+    if ((controlled_edit || optimistic_edit) &&
         (blockids_json ?
          cf_cdc_blocks_sha256(repo->store_id, repo->version, ordered_blocks,
                               block_file_size, edit_digest_before) :
@@ -5123,7 +5125,7 @@ put_file_with_condition (SeafRepoManager *mgr,
         if (conditional) json_decref(conditional);
     }
 
-    if (controlled_edit) {
+    if (controlled_edit || optimistic_edit) {
         json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
         char content_digest[65] = {0};
         if (!json_is_object (condition) || !old_file_id ||

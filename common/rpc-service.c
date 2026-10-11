@@ -2930,9 +2930,14 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     if (!json_is_object (condition))
         goto invalid;
     size_t fields = json_object_size (condition);
-    gboolean leased = fields == 6;
+    /* Optimistic Agent upload is NOT an exclusive Checkout. Its per-device
+     * session proof is re-evaluated in Native Branch under the actual
+     * current user/ACL/lease rows. Ordinary Web uploads remain unchanged. */
+    gboolean agent_write = fields == 6 &&
+        json_object_get (condition, "agent_upload") != NULL;
+    gboolean leased = fields == 6 && !agent_write;
     gboolean session_write = fields == 4 || fields == 5;
-    if (fields != 2 && fields != 3 && !session_write && !leased)
+    if (fields != 2 && fields != 3 && !session_write && !leased && !agent_write)
         goto invalid;
     json_t *head = json_object_get (condition, "head_id");
     json_t *array = json_object_get (condition, "scopes");
@@ -2941,7 +2946,7 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         json_array_size (array) < 2 || json_array_size (array) > 16)
         goto invalid;
     json_t *context = json_object_get (condition, "context");
-    if ((fields == 3 || session_write || leased) && !json_is_object (context))
+    if ((fields == 3 || session_write || leased || agent_write) && !json_is_object (context))
         goto invalid;
     if (session_write && !json_is_object (json_object_get (condition, "oidc_session")))
         goto invalid;
@@ -2950,7 +2955,7 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
      * authoritative against any intervening writer, including no-op saves. */
     json_t *original_file_id = json_object_get(condition, "expected_file_id");
     if (original_file_id &&
-        (fields != 5 || json_object_get(condition, "create") ||
+        ((fields != 5 && !agent_write) || json_object_get(condition, "create") ||
          !json_is_string(original_file_id) ||
          json_string_length(original_file_id) != 40 ||
          !is_object_id_valid(json_string_value(original_file_id))))
@@ -2958,6 +2963,27 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     if (fields == 5 && !original_file_id &&
         !json_is_boolean(json_object_get(condition, "create")))
         goto invalid;
+    if (agent_write) {
+        json_t *agent = json_object_get (condition, "agent_upload");
+        json_t *path = json_object_get (condition, "path");
+        json_t *original = json_object_get (condition, "expected_file_id");
+        if (!json_is_object(agent) || json_object_size(agent) != 5 ||
+            !json_is_string(path) || json_string_length(path) == 0 ||
+            json_string_length(path) > 4096 ||
+            json_string_length(path) != strlen(json_string_value(path)) ||
+            json_string_value(path)[0] != '/' ||
+            !json_is_string(original) || json_string_length(original) != 40 ||
+            !is_object_id_valid(json_string_value(original)) ||
+            !json_object_get(agent, "session_id") ||
+            !json_object_get(agent, "device_id") ||
+            !json_object_get(agent, "device_revision") ||
+            !json_object_get(agent, "session_revision") ||
+            !json_object_get(agent, "intent_id") ||
+            json_object_get(condition, "oidc_session") ||
+            json_object_get(condition, "editing") ||
+            json_object_get(condition, "lease"))
+            goto invalid;
+    }
     if (leased) {
         json_t *path = json_object_get (condition, "path");
         if (!json_is_object (json_object_get (condition, "lease")) ||
@@ -3099,8 +3125,8 @@ invalid:
  * and live Checkout checks as CloudFile publish_edit run inside the existing
  * Branch CAS transaction. No ordinary upload-blks commit is involved.
  */
-char *
-seafile_cloudfile_publish_edit_blocks (const char *repo_id,
+static char *
+cf_cloudfile_publish_blocks (gboolean optimistic, const char *repo_id,
     const char *blockids_json, const char *size_text,
     const char *parent_dir, const char *file_name, const char *user,
     const char *condition_json, GError **error)
@@ -3120,14 +3146,25 @@ seafile_cloudfile_publish_edit_blocks (const char *repo_id,
     json_t *edit = json_object_get(condition, "editing");
     json_t *head = json_object_get(condition, "head_id");
     json_t *path = json_object_get(condition, "path");
+    json_t *agent = json_object_get(condition, "agent_upload");
+    json_t *base = json_object_get(condition, "expected_file_id");
+    gboolean mode_proof = optimistic ?
+        (json_is_object(agent) && json_object_size(agent) == 5 &&
+         json_is_string(base) &&
+         json_string_length(base) == 40 &&
+         is_object_id_valid(json_string_value(base)) &&
+         !json_object_get(condition,"local_commit") &&
+         !json_object_get(condition,"oidc_session") &&
+         !json_object_get(condition,"editing")) :
+        (((json_is_object(json_object_get(condition, "local_commit")) &&
+           !json_object_get(condition, "oidc_session")) ||
+          (json_is_object(json_object_get(condition, "oidc_session")) &&
+           !json_object_get(condition, "local_commit"))) &&
+         !agent && json_is_object(edit) && json_object_size(edit) == 9);
     gboolean valid = json_is_object(condition) && json_object_size(condition) == 6 &&
         json_is_object(json_object_get(condition, "context")) &&
         json_is_array(json_object_get(condition, "scopes")) &&
-        ((json_is_object(json_object_get(condition, "local_commit")) &&
-          !json_object_get(condition, "oidc_session")) ||
-         (json_is_object(json_object_get(condition, "oidc_session")) &&
-          !json_object_get(condition, "local_commit"))) &&
-        json_is_object(edit) && json_object_size(edit) == 9 &&
+        mode_proof &&
         json_is_string(head) && is_object_id_valid(json_string_value(head)) &&
         json_is_string(path) && json_string_length(path) > 0 &&
         json_string_length(path) <= 4096 &&
@@ -3140,7 +3177,7 @@ seafile_cloudfile_publish_edit_blocks (const char *repo_id,
     const char *keys[] = {"repo_id", "resource_uid", "guard_id",
                           "generation", "credential_epoch", "holder", "token",
                           "intent_id", "base_file_id"};
-    for (size_t i = 0; i < G_N_ELEMENTS(keys); ++i) {
+    for (size_t i = 0; !optimistic && i < G_N_ELEMENTS(keys); ++i) {
         json_t *item = json_object_get(edit, keys[i]);
         if (!json_is_string(item) || json_string_length(item) < 1 ||
             json_string_length(item) > 128) {
@@ -3172,6 +3209,28 @@ invalid:
     g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                 "Invalid CloudFile CDC publish condition");
     return NULL;
+}
+
+/* One native CDC indexing path and Branch transaction, with two distinct
+ * authorization conditions. No ordinary upload-blks commit shortcut. */
+char *
+seafile_cloudfile_publish_edit_blocks (const char *repo_id,
+    const char *blockids_json, const char *size_text,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error)
+{
+    return cf_cloudfile_publish_blocks(FALSE, repo_id, blockids_json, size_text,
+        parent_dir, file_name, user, condition_json, error);
+}
+
+char *
+seafile_cloudfile_publish_optimistic_blocks (const char *repo_id,
+    const char *blockids_json, const char *size_text,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error)
+{
+    return cf_cloudfile_publish_blocks(TRUE, repo_id, blockids_json, size_text,
+        parent_dir, file_name, user, condition_json, error);
 }
 
 char *
