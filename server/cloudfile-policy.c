@@ -803,11 +803,26 @@ cf_policy_optimistic_receipt (SeafDBTrans *trans, const char *repo,
     if (!commit_id) return 0;
     /* Same SeafDBTrans holds current ACL/session/lock checks and Branch CAS:
      * either Branch and receipt both commit, or neither can be observed. */
-    return seaf_db_trans_query(trans,
+    if (seaf_db_trans_query(trans,
         "UPDATE cf_optimistic_upload_intent SET state='published',"
         "result_file_id=?,result_commit_id=? "
         "WHERE intent_id=? AND state='prepared'",
-        3, "string", new_id, "string", commit_id, "string", intent);
+        3, "string", new_id, "string", commit_id, "string", intent) < 0)
+        return -1;
+    /* A successfully committed optimistic save advances the SAME local
+     * editing session to the next original File ID. It does not acquire a
+     * Checkout or grant an unguarded write: next upload requires a NEW
+     * device-signed immutable Intent and current live session revision.
+     * Session and published receipt are in the identical Branch transaction.
+     */
+    return seaf_db_trans_query(trans,
+        "UPDATE cf_edit_session SET snapshot=JSON_SET(snapshot,'$.base_version',?),"
+        "revision=revision+1,state='active',updated_at=UTC_TIMESTAMP(6) "
+        "WHERE session_id=? AND device_id=? "
+        "AND state IN ('claimed','active') AND revision<18446744073709551615 "
+        "AND JSON_UNQUOTE(JSON_EXTRACT(snapshot,'$.base_version'))=?",
+        4, "string", new_id, "string", session, "string", device,
+        "string", base);
 }
 
 int cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,
