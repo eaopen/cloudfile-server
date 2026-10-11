@@ -550,7 +550,7 @@ int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
         "AND state='applied' AND step=2 FOR UPDATE", &error, 0) || error) return -1;
     if (!seaf_db_trans_check_for_existence (trans,
         "SELECT version FROM cf_schema_migration WHERE version='031_edit_sessions' "
-        "AND state='applied' AND step=2 FOR UPDATE", &error, 0) || error) return -1;
+        "AND state='applied' AND step=1 FOR UPDATE", &error, 0) || error) return -1;
     if (!seaf_db_trans_check_for_existence (trans,
         "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
         "AND TABLE_NAME IN ('cf_edit_session','cf_local_device','cf_resource') "
