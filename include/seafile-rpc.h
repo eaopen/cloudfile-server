@@ -756,6 +756,16 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     const char *condition_json, GError **error);
 
 /* Publishes one prepared Checkout intent and its receipt in the Branch txn. */
+int
+seafile_cloudfile_stage_raw_block (const char *repo_id, const char *block_id,
+    const char *temp_file_path, const char *user, GError **error);
+
+char *
+seafile_cloudfile_publish_edit_blocks (const char *repo_id,
+    const char *blockids_json, const char *size_text, const char *parent_dir,
+    const char *file_name, const char *user, const char *condition_json,
+    GError **error);
+
 char *
 seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
     const char *parent_dir, const char *file_name, const char *user,

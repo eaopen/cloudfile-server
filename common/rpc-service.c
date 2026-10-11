@@ -5,6 +5,7 @@
 #include <ctype.h>
 
 #include <sys/stat.h>
+#include <errno.h>
 #include <dirent.h>
 #include "utils.h"
 
@@ -2944,7 +2945,18 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
         goto invalid;
     if (session_write && !json_is_object (json_object_get (condition, "oidc_session")))
         goto invalid;
-    if (fields == 5 && !json_is_boolean (json_object_get (condition, "create")))
+    /* One extra key may carry either create intent OR the original file ID
+     * for a locally edited replacement, never both. Branch HEAD CAS is still
+     * authoritative against any intervening writer, including no-op saves. */
+    json_t *original_file_id = json_object_get(condition, "expected_file_id");
+    if (original_file_id &&
+        (fields != 5 || json_object_get(condition, "create") ||
+         !json_is_string(original_file_id) ||
+         json_string_length(original_file_id) != 40 ||
+         !is_object_id_valid(json_string_value(original_file_id))))
+        goto invalid;
+    if (fields == 5 && !original_file_id &&
+        !json_is_boolean(json_object_get(condition, "create")))
         goto invalid;
     if (leased) {
         json_t *path = json_object_get (condition, "path");
@@ -3021,6 +3033,144 @@ seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
 invalid_edit:
     g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                  "Invalid CloudFile editing condition");
+    return NULL;
+}
+
+/* Checked raw SHA-1: never trust a caller-supplied block name to identify
+ * content. The normal Seafile post_blocks path also verifies the digest. */
+static int
+cf_cdc_raw_sha1 (const char *path, char digest[65])
+{
+    FILE *file = g_fopen(path, "rb");
+    if (!file) return -1;
+    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA1);
+    guint8 buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), file)) > 0)
+        g_checksum_update(sum, buf, n);
+    int rc = ferror(file) ? -1 : 0;
+    if (fclose(file) != 0) rc = -1;
+    if (!rc) g_strlcpy(digest, g_checksum_get_string(sum), 65);
+    g_checksum_free(sum);
+    return rc;
+}
+
+/* Only a trusted local Hub RPC caller can invoke these, after validating a
+ * signed per-intent device grant. Stage is pathless, and cannot write Branch.
+ */
+int
+seafile_cloudfile_stage_raw_block (const char *repo_id, const char *block_id,
+    const char *temp_file_path, const char *user, GError **error)
+{
+    if (!repo_id || !is_uuid_valid(repo_id) || !block_id ||
+        strlen(block_id) != 40 || strspn(block_id, "0123456789abcdef") != 40 ||
+        !temp_file_path || !user)
+        goto invalid;
+    SeafRepo *repo = seaf_repo_manager_get_repo(seaf->repo_mgr, repo_id);
+    if (!repo) goto invalid;
+    gboolean supported = !repo->encrypted && repo->version == 1 &&
+        !repo->virtual_info && repo->status == REPO_STATUS_NORMAL;
+    seaf_repo_unref(repo);
+    if (!supported) goto invalid;
+    struct stat stat_result;
+    if (g_stat(temp_file_path, &stat_result) < 0 ||
+        !S_ISREG(stat_result.st_mode) ||
+        stat_result.st_size < 1 || stat_result.st_size > 10 * 1024 * 1024)
+        goto invalid;
+    char hash[65] = {0};
+    if (cf_cdc_raw_sha1(temp_file_path, hash) < 0 || strcmp(hash, block_id))
+        goto invalid;
+    json_t *ids = json_pack("[s]", block_id);
+    json_t *paths = json_pack("[s]", temp_file_path);
+    char *id_json = json_dumps(ids, JSON_COMPACT);
+    char *path_json = json_dumps(paths, JSON_COMPACT);
+    json_decref(ids); json_decref(paths);
+    int rc = seaf_repo_manager_post_blocks(seaf->repo_mgr, repo_id,
+                            id_json, path_json, user, error);
+    free(id_json); free(path_json);
+    return rc;
+invalid:
+    g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                "Invalid raw block staging request");
+    return -1;
+}
+
+/* Native guarded CDC publication. The same write-policy, current device
+ * and live Checkout checks as CloudFile publish_edit run inside the existing
+ * Branch CAS transaction. No ordinary upload-blks commit is involved.
+ */
+char *
+seafile_cloudfile_publish_edit_blocks (const char *repo_id,
+    const char *blockids_json, const char *size_text,
+    const char *parent_dir, const char *file_name, const char *user,
+    const char *condition_json, GError **error)
+{
+    if (!repo_id || !blockids_json || strlen(blockids_json) > 262144 ||
+        !size_text || strlen(size_text) > 20 ||
+        !condition_json || strlen(condition_json) > 16384 ||
+        !parent_dir || !file_name || !user)
+        goto invalid;
+    errno = 0;
+    char *end = NULL;
+    gint64 size = g_ascii_strtoll(size_text, &end, 10);
+    if (errno || end == size_text || *end || size < 0 ||
+        size > G_GINT64_CONSTANT(17179869184))
+        goto invalid;
+    json_t *condition = json_loads(condition_json, JSON_REJECT_DUPLICATES, NULL);
+    json_t *edit = json_object_get(condition, "editing");
+    json_t *head = json_object_get(condition, "head_id");
+    json_t *path = json_object_get(condition, "path");
+    gboolean valid = json_is_object(condition) && json_object_size(condition) == 6 &&
+        json_is_object(json_object_get(condition, "context")) &&
+        json_is_array(json_object_get(condition, "scopes")) &&
+        ((json_is_object(json_object_get(condition, "local_commit")) &&
+          !json_object_get(condition, "oidc_session")) ||
+         (json_is_object(json_object_get(condition, "oidc_session")) &&
+          !json_object_get(condition, "local_commit"))) &&
+        json_is_object(edit) && json_object_size(edit) == 9 &&
+        json_is_string(head) && is_object_id_valid(json_string_value(head)) &&
+        json_is_string(path) && json_string_length(path) > 0 &&
+        json_string_length(path) <= 4096 &&
+        json_string_value(path)[0] == '/' &&
+        json_string_length(path) == strlen(json_string_value(path));
+    if (!valid) {
+        if (condition) json_decref(condition);
+        goto invalid;
+    }
+    const char *keys[] = {"repo_id", "resource_uid", "guard_id",
+                          "generation", "credential_epoch", "holder", "token",
+                          "intent_id", "base_file_id"};
+    for (size_t i = 0; i < G_N_ELEMENTS(keys); ++i) {
+        json_t *item = json_object_get(edit, keys[i]);
+        if (!json_is_string(item) || json_string_length(item) < 1 ||
+            json_string_length(item) > 128) {
+            json_decref(condition);
+            goto invalid;
+        }
+    }
+    char *norm_parent = normalize_utf8_path(parent_dir);
+    char *norm_name = normalize_utf8_path(file_name);
+    if (!norm_parent || !norm_name) {
+        g_free(norm_parent); g_free(norm_name); json_decref(condition);
+        goto invalid;
+    }
+    char *rpath = format_dir_path(norm_parent);
+    char *target = g_build_path("/", rpath, norm_name, NULL);
+    char *result = NULL;
+    if (target && strcmp(target, json_string_value(path)) == 0)
+        seaf_repo_manager_put_file_blocks_with_barriers(seaf->repo_mgr,
+            repo_id, blockids_json, size, rpath, norm_name, user,
+            json_string_value(head), condition_json, &result, error);
+    else
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                    "Invalid guarded CDC target");
+    g_free(target); g_free(rpath);
+    g_free(norm_name); g_free(norm_parent);
+    json_decref(condition);
+    return result;
+invalid:
+    g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                "Invalid CloudFile CDC publish condition");
     return NULL;
 }
 
