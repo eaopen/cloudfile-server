@@ -46,8 +46,10 @@ int cf_policy_edit_publish (SeafDBTrans *trans, const char *repo, const char *pa
                             const char *commit_id);
 
 /* Shared read policy for an actual file/directory target (CF_FILE/CF_DIRECTORY).
- * Caller must establish native active/current subject, barriers, CE library
- * qualification and target existence on this same final transaction. This
+ * Caller must establish native active/current subject, barriers, native library
+ * qualification state and target existence on this same final transaction.
+ * ce_permission=0 is a valid nonmember; negative values are invalid. The scoped
+ * core may qualify a nonmember only through applicable directory ACL/shares. This
  * adapter does not authenticate a snapshot or issue/consume a web ticket. */
 int cf_policy_check_read (SeafDBTrans *trans, const char *repo, const char *path,
                          const char *provider, const char *user, json_t *snapshot,
