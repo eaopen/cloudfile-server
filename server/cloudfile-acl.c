@@ -8,6 +8,7 @@
 #define CF_PATH_LIMIT 4096
 
 int cf_acl_abi_version(void) { return 1; }
+int cf_acl_scoped_abi_version(void) { return 1; }
 
 static int canonical(const char *path)
 {
@@ -99,18 +100,23 @@ static int resolve(const struct cf_acl_context *ctx, const char *path,
     return permission;
 }
 
-int cf_acl_evaluate(const struct cf_acl_context *ctx, const char *path, int kind,
-                    const struct cf_acl_rule *rules, size_t count, struct cf_acl_result *out)
+static int evaluate(const struct cf_acl_context *ctx, const char *path, int kind,
+                    const struct cf_acl_rule *rules, size_t count,
+                    const struct cf_directory_share *shares, size_t share_count,
+                    int scoped, struct cf_acl_result *out)
 {
     const struct cf_acl_rule **candidates;
     size_t selected = 0;
     int permission;
+    int qualified, shared = 0;
+    struct cf_acl_context effective;
     char parent[CF_PATH_LIMIT + 1];
     if (!out) return -1;
     *out = (struct cf_acl_result){0, 0, 0};
     if (!ctx || !ctx->user_id || !*ctx->user_id || !canonical(path) ||
         (kind != CF_DIRECTORY && kind != CF_FILE) || (kind == CF_FILE && strcmp(path, "/") == 0) ||
         count > CF_ACL_LIMIT || (count && !rules) ||
+        share_count > CF_ACL_LIMIT || (share_count && !shares) ||
         ctx->department_count > CF_ACL_LIMIT || ctx->group_count > CF_ACL_LIMIT ||
         (ctx->department_count && !ctx->departments) || (ctx->group_count && !ctx->groups) ||
         (ctx->ready != 0 && ctx->ready != 1) ||
@@ -121,8 +127,20 @@ int cf_acl_evaluate(const struct cf_acl_context *ctx, const char *path, int kind
         if (!ctx->departments[i] || !*ctx->departments[i]) return -1;
     for (size_t i = 0; i < ctx->group_count; ++i)
         if (!ctx->groups[i] || !*ctx->groups[i]) return -1;
-    if (!ctx->ready || !ctx->active || ctx->barrier_active ||
-        (ctx->ce_permission != CF_READ && ctx->ce_permission != CF_WRITE)) return 0;
+    qualified = ctx->ce_permission == CF_READ || ctx->ce_permission == CF_WRITE;
+    if (scoped && ctx->ce_permission != -1 &&
+        (ctx->ce_permission < CF_INVISIBLE || ctx->ce_permission > CF_WRITE)) return -1;
+    if (!ctx->ready || !ctx->active || ctx->barrier_active || (!scoped && !qualified)) return 0;
+    for (size_t i = 0; i < share_count; ++i) {
+        const struct cf_directory_share *s = &shares[i];
+        if (!canonical(s->path) || strcmp(s->path, "/") == 0 ||
+            !s->subject_id || !*s->subject_id ||
+            s->subject_type < CF_GROUP || s->subject_type > CF_USER) return -1;
+        struct cf_acl_rule subject = {s->path, s->subject_id, s->subject_type,
+                                     CF_READ, 1, CF_DIRECTORY};
+        if (member(ctx, &subject) && ancestor(s->path, path)) shared = 1;
+    }
+    qualified |= shared;
     candidates = malloc((count ? count : 1) * sizeof(*candidates));
     if (!candidates) return -1;
     for (size_t i = 0; i < count; ++i) {
@@ -135,22 +153,45 @@ int cf_acl_evaluate(const struct cf_acl_context *ctx, const char *path, int kind
             (r->kind == CF_FILE && (r->permission > CF_NONE || strcmp(r->path, "/") == 0))) {
             free(candidates); return -1;
         }
-        if (member(ctx, r) && ancestor(r->path, path)) candidates[selected++] = r;
+        if (member(ctx, r) && ancestor(r->path, path)) {
+            candidates[selected++] = r;
+            if (scoped && r->kind == CF_DIRECTORY && r->permission >= CF_READ &&
+                strcmp(r->path, "/") != 0 &&
+                (r->inherit || strcmp(r->path, path) == 0)) qualified = 1;
+        }
     }
+    if (!qualified) { free(candidates); return 0; }
+    effective = *ctx;
+    if (ctx->ce_permission != CF_READ && ctx->ce_permission != CF_WRITE)
+        effective.ce_permission = shared ? CF_READ : CF_NONE;
     qsort(candidates, selected, sizeof(*candidates), compare);
     /* Evaluate ancestors separately: a child grant cannot reveal a hidden parent. */
     strcpy(parent, path);
     for (char *slash = strrchr(parent, '/'); slash; slash = strrchr(parent, '/')) {
         if (slash == parent) parent[1] = '\0'; else *slash = '\0';
-        permission = resolve(ctx, parent, candidates, selected);
+        permission = resolve(&effective, parent, candidates, selected);
         if (permission <= CF_INVISIBLE) { free(candidates); return permission < 0 ? -1 : 0; }
         if (slash == parent) break;
     }
-    permission = resolve(ctx, path, candidates, selected);
+    permission = resolve(&effective, path, candidates, selected);
     free(candidates);
     if (permission < 0) return -1;
     out->visible = permission != CF_INVISIBLE;
     out->read = permission >= CF_READ;
     out->write = permission == CF_WRITE && !ctx->hard_readonly;
     return 0;
+}
+
+int cf_acl_evaluate(const struct cf_acl_context *ctx, const char *path, int kind,
+                    const struct cf_acl_rule *rules, size_t count, struct cf_acl_result *out)
+{
+    return evaluate(ctx, path, kind, rules, count, NULL, 0, 0, out);
+}
+
+int cf_acl_evaluate_scoped(const struct cf_acl_context *ctx, const char *path, int kind,
+                    const struct cf_acl_rule *rules, size_t count,
+                    const struct cf_directory_share *shares, size_t share_count,
+                    struct cf_acl_result *out)
+{
+    return evaluate(ctx, path, kind, rules, count, shares, share_count, 1, out);
 }
