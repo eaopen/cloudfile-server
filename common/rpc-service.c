@@ -2930,6 +2930,16 @@ seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_
     if (!json_is_object (condition))
         goto invalid;
     size_t fields = json_object_size (condition);
+    json_t *directory_access = json_object_get (condition, "directory_access");
+    if (directory_access) {
+        /* A separate Web entry selects scoped eligibility; it never replaces
+         * current OIDC identity or the final path/ACL/share decision. */
+        if (!json_is_true (directory_access) ||
+            !json_is_object (json_object_get (condition, "oidc_session")) ||
+            (fields != 5 && fields != 6))
+            goto invalid;
+        --fields;
+    }
     /* Optimistic Agent upload is NOT an exclusive Checkout. Its per-device
      * session proof is re-evaluated in Native Branch under the actual
      * current user/ACL/lease rows. Ordinary Web uploads remain unchanged. */

@@ -50,6 +50,18 @@ CF_S3_TEST_SECRET_KEY=test-secret \
 ./tests/cf-s3/run.sh
 ```
 
+Go 对象存储集成使用同一套凭据变量，同时适用于 RustFS 和 MinIO：
+
+```bash
+cd fileserver
+CF_S3_TEST_ENDPOINT=http://127.0.0.1:9000 \
+CF_S3_TEST_KEY_ID=test-key \
+CF_S3_TEST_SECRET_KEY=test-secret \
+go test ./objstore -count=1 -v
+```
+
+Go 测试会创建独立临时 bucket 并清理；C 测试需要提前创建隔离 bucket。
+
 只有 `CF_S3_TEST_ENDPOINT` 必须显式设置；其余变量在测试代码中有 MinIO 开发默认值。
 设置 `CF_S3_TEST_PAGINATION=1` 会额外覆盖分页列举。没有 endpoint 时脚本返回成功并
 打印 `SKIP`，汇报验证结果时必须把跳过单列出来。

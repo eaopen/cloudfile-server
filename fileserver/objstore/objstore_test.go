@@ -226,10 +226,18 @@ func TestMultipleBackendRoutesByRepoStorageID(t *testing.T) {
 	}
 }
 
+// Match the C integration suite's provider-neutral credential contract.
+func s3TestCredential(name string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return "minioadmin"
+}
+
 func TestMultipleBackendS3Integration(t *testing.T) {
 	endpoint := os.Getenv("CF_S3_TEST_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("set CF_S3_TEST_ENDPOINT to run against MinIO")
+		t.Skip("set CF_S3_TEST_ENDPOINT to run against an S3-compatible service")
 	}
 
 	bucket := fmt.Sprintf("cf-s3-multi-test-%d", time.Now().UnixNano())
@@ -237,8 +245,8 @@ func TestMultipleBackendS3Integration(t *testing.T) {
 	section, _ := file.NewSection("s3")
 	for key, value := range map[string]string{
 		"bucket":             bucket,
-		"key_id":             "minioadmin",
-		"key":                "minioadmin",
+		"key_id":             s3TestCredential("CF_S3_TEST_KEY_ID"),
+		"key":                s3TestCredential("CF_S3_TEST_SECRET_KEY"),
 		"host":               endpoint,
 		"use_https":          "false",
 		"use_v4_signature":   "true",
@@ -310,7 +318,7 @@ func TestMultipleBackendS3Integration(t *testing.T) {
 func TestS3BackendIntegration(t *testing.T) {
 	endpoint := os.Getenv("CF_S3_TEST_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("set CF_S3_TEST_ENDPOINT to run against MinIO")
+		t.Skip("set CF_S3_TEST_ENDPOINT to run against an S3-compatible service")
 	}
 
 	sections := map[string]string{
@@ -325,7 +333,7 @@ func TestS3BackendIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			config := fmt.Sprintf("[%s]\nname = s3\nbucket = %s\nkey_id = minioadmin\nkey = minioadmin\nhost = %s\nuse_https = false\nuse_v4_signature = true\npath_style_request = true\nrequest_timeout = 30\n", section, bucket, endpoint)
+			config := fmt.Sprintf("[%s]\nname = s3\nbucket = %s\nkey_id = %s\nkey = %s\nhost = %s\nuse_https = false\nuse_v4_signature = true\npath_style_request = true\nrequest_timeout = 30\n", section, bucket, s3TestCredential("CF_S3_TEST_KEY_ID"), s3TestCredential("CF_S3_TEST_SECRET_KEY"), endpoint)
 			if _, err = conf.WriteString(config); err != nil {
 				t.Fatal(err)
 			}
@@ -372,6 +380,21 @@ func TestS3BackendIntegration(t *testing.T) {
 			}
 			if exists, err := backend.exists(repoID, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil || exists {
 				t.Fatalf("missing object exists=%t, err=%v", exists, err)
+			}
+			if objType == "blocks" {
+				// Exercise the production unknown-length streaming path beyond
+				// a 64 MiB part, while retaining the zero-byte checks above.
+				large := bytes.Repeat([]byte("cloudfile-s3-stream"), 4*1024*1024)
+				if err := backend.write(repoID, objID, bytes.NewReader(large), false); err != nil {
+					t.Fatal(err)
+				}
+				out.Reset()
+				if err := backend.read(repoID, objID, &out); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(out.Bytes(), large) {
+					t.Fatal("large streamed block differs after S3 round trip")
+				}
 			}
 		})
 	}

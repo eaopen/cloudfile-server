@@ -32,6 +32,20 @@ struct cf_acl_context {
 };
 struct cf_acl_result { int visible; int read; int write; };
 
+/* Current, lifecycle-verified share facts, never caller-supplied grants.
+ * A share has an implicit READ baseline; no duplicate ACL row is required. */
+struct cf_directory_share {
+    const char *path;
+    const char *subject_id;
+    int subject_type;
+};
+
+int cf_acl_scoped_abi_version(void);
+int cf_acl_evaluate_scoped(const struct cf_acl_context *context, const char *path,
+                    int kind, const struct cf_acl_rule *rules, size_t count,
+                    const struct cf_directory_share *shares, size_t share_count,
+                    struct cf_acl_result *result);
+
 int cf_acl_abi_version(void);
 
 /* 0 = evaluated; -1 = invalid input/allocation failure, result stays denied.

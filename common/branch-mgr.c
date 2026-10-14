@@ -1119,7 +1119,8 @@ seaf_branch_manager_check_read_with_barriers (SeafBranchManager *mgr,
         cloudfile_check_repo_mode (trans, repo_id, TRUE) < 0)
         goto out;
     int qualification = cloudfile_library_qualification (mgr, trans, repo_id, native_username);
-    if (qualification <= 0 || cloudfile_check_context (mgr, conditions, &snapshot) < 0 ||
+    if (qualification < 0 || (qualification == 0 && !json_is_true (json_object_get (root, "directory_access"))) ||
+        cloudfile_check_context (mgr, conditions, &snapshot) < 0 ||
         cf_policy_check_read (trans, repo_id, path,
             json_string_value (json_object_get (context, "provider")),
             json_string_value (json_object_get (context, "userId")), snapshot, qualification, kind) < 0 ||
@@ -1494,7 +1495,8 @@ test_and_update_branch (SeafBranchManager *mgr,
         json_t *agent = json_object_get (conditions, "agent_upload");
         json_t *unchanged = json_object_get (conditions, "editing_unchanged");
         const char *path = json_string_value (target);
-        gboolean allowed = qualification > 0 && json_is_string (target) &&
+        gboolean allowed = (qualification > 0 || (qualification == 0 &&
+            json_is_true (json_object_get (conditions, "directory_access")))) && json_is_string (target) &&
             !json_object_get (conditions, "read_transfer_expires_at") &&
             /* Read references never authorize publication. Device writes use
              * a distinct condition and repeat current session/Checkout checks. */

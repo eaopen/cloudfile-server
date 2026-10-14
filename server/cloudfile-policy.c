@@ -3,6 +3,13 @@
 #include "cloudfile-policy.h"
 #include "cloudfile-acl.h"
 #include "cf-lock.h"
+#include "seafile-session.h"
+#include "seafile-error.h"
+#include "repo-mgr.h"
+#include "fs-mgr.h"
+#include "utils.h"
+#include <sys/stat.h>
+#include "log.h"
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -662,6 +669,117 @@ static gboolean schema_count (SeafDBRow *row, void *data)
     int *value = data; *value = seaf_db_row_get_column_int (row, 0); return FALSE;
 }
 
+/* Verify the same bounded path-birth evidence used by Hub NativeResourceReader.
+ * Every commit is immutable; Branch is pinned for the entire caller transaction.
+ * A missing historical path ends this incarnation, never authorizes a new one. */
+static gboolean directory_head_row (SeafDBRow *row, void *data)
+{
+    char **head = data;
+    g_free (*head);
+    *head = g_strdup (seaf_db_row_get_column_text (row, 0));
+    return TRUE;
+}
+
+static int directory_birth_matches (SeafDBTrans *trans, const char *repo_id,
+                                    const char *path, const char *expected)
+{
+    const char *prefix = "ce14:path-birth:";
+    char *head = NULL, *birth = NULL;
+    SeafRepo *repo = NULL;
+    int result = -1;
+    gint64 deadline = g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+    if (!expected || !g_str_has_prefix (expected, prefix) ||
+        !is_object_id_valid (expected + strlen (prefix)) || !seaf) return -1;
+    if (seaf_db_trans_foreach_selected_row (trans,
+        "SELECT commit_id FROM Branch WHERE repo_id=? AND name='master' FOR UPDATE",
+        directory_head_row, &head, 1, "string", repo_id) != 1 ||
+        !head || !is_object_id_valid (head)) goto out;
+    repo = seaf_repo_manager_get_repo (seaf->repo_mgr, repo_id);
+    if (!repo || repo->virtual_info || repo->encrypted) goto out;
+    for (int depth = 0; depth < 256; ++depth) {
+        if (g_get_monotonic_time () >= deadline) goto out;
+        SeafCommit *commit = seaf_commit_manager_get_commit (seaf->commit_mgr,
+            repo_id, repo->version, head);
+        if (!commit) goto out;
+        if (commit->second_parent_id) { seaf_commit_unref (commit); goto out; }
+        GError *error = NULL;
+        guint32 mode = 0;
+        char *object = seaf_fs_manager_path_to_obj_id (seaf->fs_mgr, repo->store_id,
+            repo->version, commit->root_id, path, &mode, &error);
+        gboolean failed = error && !g_error_matches (error, SEAFILE_DOMAIN, SEAF_ERR_PATH_NO_EXIST);
+        if (error) g_error_free (error);
+        gboolean exists = object != NULL && S_ISDIR (mode);
+        g_free (object);
+        if (failed) { seaf_commit_unref (commit); goto out; }
+        if (!exists) {
+            result = birth && !strcmp (birth, expected + strlen (prefix)) ? 1 : 0;
+            seaf_commit_unref (commit);
+            goto out;
+        }
+        g_free (birth); birth = g_strdup (head);
+        g_free (head); head = g_strdup (commit->parent_id);
+        seaf_commit_unref (commit);
+        if (!head || !*head) {
+            result = !strcmp (birth, expected + strlen (prefix)) ? 1 : 0;
+            goto out;
+        }
+        if (!is_object_id_valid (head)) goto out;
+    }
+out:
+    if (repo) seaf_repo_unref (repo);
+    g_free (head); g_free (birth);
+    return result;
+}
+
+typedef struct {
+    GArray *shares;
+    GPtrArray *owned, *lifecycles;
+    GHashTable *paths, *subjects, *births;
+    gboolean valid;
+    SeafDBTrans *trans;
+    const char *repo;
+} DirectoryShareRows;
+
+static gboolean directory_share_row (SeafDBRow *row, void *data)
+{
+    DirectoryShareRows *rows = data;
+    const char *path = seaf_db_row_get_column_text (row, 0);
+    const char *path_hash = seaf_db_row_get_column_text (row, 1);
+    const char *birth = seaf_db_row_get_column_text (row, 2);
+    const char *type = seaf_db_row_get_column_text (row, 3);
+    const char *provider = seaf_db_row_get_column_text (row, 4);
+    const char *namespace = seaf_db_row_get_column_text (row, 5);
+    const char *external = seaf_db_row_get_column_text (row, 6);
+    const char *subject_hash = seaf_db_row_get_column_text (row, 7);
+    char *id = NULL, *hash = NULL;
+    struct cf_directory_share share = {0};
+    if (!path || !strcmp (path, "/") || !g_hash_table_contains (rows->paths, path) ||
+        !valid_id (provider, 32) || !valid_id (namespace, 255) ||
+        !valid_id (external, 255) || !valid_id (birth, 512)) goto invalid;
+    hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
+    if (g_strcmp0 (hash, path_hash)) goto invalid;
+    g_free (hash); hash = NULL;
+    share.subject_type = !g_strcmp0 (type, "user") ? CF_USER :
+        !g_strcmp0 (type, "dept") ? CF_DEPT : !g_strcmp0 (type, "group") ? CF_GROUP : -1;
+    if (share.subject_type < 0 || (share.subject_type == CF_USER &&
+        (strcmp (namespace, "user") || !valid_id (external, 225)))) goto invalid;
+    id = subject_id (type, provider, namespace, external);
+    if (!id) goto invalid;
+    hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, id, -1);
+    if (g_strcmp0 (hash, subject_hash)) goto invalid;
+    if (g_hash_table_contains (rows->subjects, id)) {
+        share.path = g_strdup (path); share.subject_id = id;
+        g_ptr_array_add (rows->owned, (gpointer)share.path);
+        g_ptr_array_add (rows->owned, id); id = NULL;
+        g_ptr_array_add (rows->lifecycles, g_strdup (birth));
+        g_array_append_val (rows->shares, share);
+    }
+    g_free (hash); free (id);
+    return TRUE;
+invalid:
+    g_free (hash); free (id); rows->valid = FALSE; return FALSE;
+}
+
 static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
                           const char *provider, const char *user, json_t *snapshot,
                           int ce_permission, int kind, gboolean write)
@@ -671,10 +789,13 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
         (kind != CF_FILE && kind != CF_DIRECTORY) ||
         (strlen (path) == 1 && kind != CF_DIRECTORY) ||
         (strlen (path) > 1 && path[strlen (path)-1] == '/') || !valid_id (provider, 32) ||
-        !valid_id (user, 225) || (ce_permission != 1 && ce_permission != 2)) return -1;
+        !valid_id (user, 225) || (ce_permission < 0 || ce_permission > 2)) return -1;
     RuleRows rows = {g_array_new (FALSE, FALSE, sizeof (struct cf_acl_rule)),
                     g_ptr_array_new_with_free_func (g_free),
                     g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL), TRUE};
+    DirectoryShareRows shared = {g_array_new (FALSE, FALSE, sizeof (struct cf_directory_share)),
+        rows.owned, g_ptr_array_new_with_free_func (g_free), rows.paths, g_hash_table_new (g_str_hash, g_str_equal),
+        g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL), TRUE, trans, repo};
     GPtrArray *departments = g_ptr_array_new_with_free_func (g_free), *groups = g_ptr_array_new_with_free_func (g_free);
     GHashTable *seen = g_hash_table_new (g_str_hash, g_str_equal);
     char *identity = subject_id ("user", provider, "user", user);
@@ -722,14 +843,58 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
         2, "string", repo, "string", target_hash);
     g_free (target_hash);
     if (count < 0 || !rows.valid || count > 4096) goto out;
+    /* Do not convert a directory qualification into library permission. */
+    g_hash_table_add (shared.subjects, identity);
+    for (guint i = 0; i < departments->len; ++i) g_hash_table_add (shared.subjects, departments->pdata[i]);
+    for (guint i = 0; i < groups->len; ++i) g_hash_table_add (shared.subjects, groups->pdata[i]);
+    contract = 0;
+    if (seaf_db_trans_foreach_selected_row (trans, "SELECT id FROM cf_dir_share LIMIT 0 FOR UPDATE",
+        schema_count, &contract, 0) != 0) goto out;
+    const char *share_schema = "SELECT IF("
+        "(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_dir_share' AND engine='InnoDB')=1 AND "
+        "(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_dir_share' AND index_name='share_ancestors' AND sub_part IS NULL AND non_unique=1 AND ((seq_in_index=1 AND column_name='repo_id') OR (seq_in_index=2 AND column_name='path_hash') OR (seq_in_index=3 AND column_name='id')))=3,1,0)";
+    if (seaf_db_trans_foreach_selected_row (trans, share_schema, schema_count, &contract, 0) != 1 || contract != 1) goto out;
+    query = g_string_new ("SELECT path,path_hash,lifecycle_ref,subject_type,provider,namespace,external_id,subject_hash "
+        "FROM cf_dir_share FORCE INDEX (share_ancestors) WHERE repo_id=? AND path_hash IN (");
+    first = TRUE;
+    g_hash_table_iter_init (&iter, rows.paths);
+    while (g_hash_table_iter_next (&iter, &candidate, NULL)) {
+        char *hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, candidate, -1);
+        g_string_append_printf (query, "%s'%s'", first ? "" : ",", hash);
+        g_free (hash); first = FALSE;
+    }
+    g_string_append (query, ") ORDER BY path_hash,id LIMIT 4097 FOR UPDATE");
+    g_free (sql); sql = g_string_free (query, FALSE);
+    count = seaf_db_trans_foreach_selected_row (trans, sql, directory_share_row, &shared, 1, "string", repo);
+    if (count < 0 || count > 4096 || !shared.valid) goto out;
+    /* Finish the SQL result before issuing lifecycle queries on this connection. */
+    guint kept = 0;
+    for (guint i = 0; i < shared.shares->len; ++i) {
+        struct cf_directory_share item = g_array_index (shared.shares, struct cf_directory_share, i);
+        const char *birth = shared.lifecycles->pdata[i];
+        char *key = g_strdup_printf ("%s\n%s", item.path, birth);
+        gpointer stored = g_hash_table_lookup (shared.births, key);
+        int matches = stored ? GPOINTER_TO_INT (stored) - 2 :
+            directory_birth_matches (trans, repo, item.path, birth);
+        if (!stored) g_hash_table_insert (shared.births, key, GINT_TO_POINTER (matches + 2));
+        else g_free (key);
+        if (matches < 0) goto out;
+        if (matches) g_array_index (shared.shares, struct cf_directory_share, kept++) = item;
+    }
+    g_array_set_size (shared.shares, kept);
+    int repo_status = -1;
+    if (seaf_db_trans_foreach_selected_row (trans,
+        "SELECT status FROM RepoInfo WHERE repo_id=? FOR UPDATE", schema_count, &repo_status,
+        1, "string", repo) != 1 || (repo_status != 0 && repo_status != 1)) goto out;
     struct cf_acl_context context = {identity, (const char *const *)departments->pdata, departments->len,
         (const char *const *)groups->pdata, groups->len,
-        ce_permission == 2 ? CF_WRITE : CF_READ, 1, 1, 0, 0};
+        ce_permission == 2 ? CF_WRITE : ce_permission == 1 ? CF_READ : CF_NONE, 1, 1, repo_status == 1, 0};
     struct cf_acl_result evaluated;
-    if (cf_acl_evaluate (&context, path, kind, (struct cf_acl_rule *)rows.rules->data,
-                         rows.rules->len, &evaluated) == 0 &&
+    if (cf_acl_evaluate_scoped (&context, path, kind, (struct cf_acl_rule *)rows.rules->data,
+                         rows.rules->len, (struct cf_directory_share *)shared.shares->data, shared.shares->len, &evaluated) == 0 &&
         (write ? evaluated.write : evaluated.read)) result = 0;
 out:
+    g_hash_table_destroy (shared.subjects); g_hash_table_destroy (shared.births); g_array_free (shared.shares, TRUE); g_ptr_array_free (shared.lifecycles, TRUE);
     g_hash_table_destroy (seen); g_ptr_array_free (departments, TRUE); g_ptr_array_free (groups, TRUE);
     g_hash_table_destroy (rows.paths); g_array_free (rows.rules, TRUE); g_ptr_array_free (rows.owned, TRUE);
     free (identity); g_free (current); g_free (sql);
