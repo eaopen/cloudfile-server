@@ -631,6 +631,8 @@ static gboolean rule_row (SeafDBRow *row, void *data)
     const char *subject_hash = seaf_db_row_get_column_text (row, 7);
     const char *permission = seaf_db_row_get_column_text (row, 8);
     const char *inherit = seaf_db_row_get_column_text (row, 9);
+    const char *share_mode = seaf_db_row_get_column_text (row, 10);
+    const char *birth = seaf_db_row_get_column_text (row, 11);
     struct cf_acl_rule rule = {0};
     char *id = NULL, *hash = NULL;
     if (!path || !g_hash_table_contains (rows->paths, path) || strlen (path) > 4096 ||
@@ -649,6 +651,10 @@ static gboolean rule_row (SeafDBRow *row, void *data)
     if (rule.kind < 0 || rule.subject_type < 0 || rule.permission < 0 || rule.inherit < 0 ||
         (rule.kind == CF_FILE && (rule.inherit || rule.permission > CF_NONE)) ||
         (rule.subject_type == CF_USER && (strcmp (namespace, "user") || !valid_id (external, 225)))) goto invalid;
+    if (g_strcmp0 (share_mode, "0") && g_strcmp0 (share_mode, "1")) goto invalid;
+    if (!strcmp (share_mode, "1")) {
+        if (rule.kind != CF_DIRECTORY || !strcmp (path, "/") || !valid_id (birth, 512)) goto invalid;
+    } else if (!birth || *birth) goto invalid;
     id = subject_id (type, provider, namespace, external);
     if (!id) goto invalid;
     hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, id, -1);
@@ -826,7 +832,7 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
         if (slash == current) current[1] = '\0'; else *slash = '\0';
     }
     GString *query = g_string_new (
-        "SELECT path,path_hash,kind,subject_type,provider,namespace,external_id,subject_hash,permission,inherit "
+        "SELECT path,path_hash,kind,subject_type,provider,namespace,external_id,subject_hash,permission,inherit,share_mode,lifecycle_ref "
         "FROM cf_dir_acl FORCE INDEX (acl_ancestors) WHERE repo_id=? AND path_hash IN (");
     GHashTableIter iter; gpointer candidate; gboolean first = TRUE;
     g_hash_table_iter_init (&iter, rows.paths);
@@ -847,15 +853,10 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
     g_hash_table_add (shared.subjects, identity);
     for (guint i = 0; i < departments->len; ++i) g_hash_table_add (shared.subjects, departments->pdata[i]);
     for (guint i = 0; i < groups->len; ++i) g_hash_table_add (shared.subjects, groups->pdata[i]);
-    contract = 0;
-    if (seaf_db_trans_foreach_selected_row (trans, "SELECT id FROM cf_dir_share LIMIT 0 FOR UPDATE",
-        schema_count, &contract, 0) != 0) goto out;
-    const char *share_schema = "SELECT IF("
-        "(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_dir_share' AND engine='InnoDB')=1 AND "
-        "(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_dir_share' AND index_name='share_ancestors' AND sub_part IS NULL AND non_unique=1 AND ((seq_in_index=1 AND column_name='repo_id') OR (seq_in_index=2 AND column_name='path_hash') OR (seq_in_index=3 AND column_name='id')))=3,1,0)";
-    if (seaf_db_trans_foreach_selected_row (trans, share_schema, schema_count, &contract, 0) != 1 || contract != 1) goto out;
+    /* Sharing is a projection of the same ACL row, never an independent grant.
+     * The first query already pinned and verified the ACL index contract. */
     query = g_string_new ("SELECT path,path_hash,lifecycle_ref,subject_type,provider,namespace,external_id,subject_hash "
-        "FROM cf_dir_share FORCE INDEX (share_ancestors) WHERE repo_id=? AND path_hash IN (");
+        "FROM cf_dir_acl FORCE INDEX (acl_ancestors) WHERE share_mode=1 AND kind='dir' AND repo_id=? AND path_hash IN (");
     first = TRUE;
     g_hash_table_iter_init (&iter, rows.paths);
     while (g_hash_table_iter_next (&iter, &candidate, NULL)) {
@@ -863,9 +864,9 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
         g_string_append_printf (query, "%s'%s'", first ? "" : ",", hash);
         g_free (hash); first = FALSE;
     }
-    g_string_append (query, ") ORDER BY path_hash,id LIMIT 4097 FOR UPDATE");
+    g_string_append (query, ") AND (inherit=1 OR path=?) ORDER BY path_hash,id LIMIT 4097 FOR UPDATE");
     g_free (sql); sql = g_string_free (query, FALSE);
-    count = seaf_db_trans_foreach_selected_row (trans, sql, directory_share_row, &shared, 1, "string", repo);
+    count = seaf_db_trans_foreach_selected_row (trans, sql, directory_share_row, &shared, 2, "string", repo, "string", path);
     if (count < 0 || count > 4096 || !shared.valid) goto out;
     /* Finish the SQL result before issuing lifecycle queries on this connection. */
     guint kept = 0;

@@ -33,7 +33,8 @@ struct cf_acl_context {
 struct cf_acl_result { int visible; int read; int write; };
 
 /* Current, lifecycle-verified share facts, never caller-supplied grants.
- * A share has an implicit READ baseline; no duplicate ACL row is required. */
+ * These are projections of share_mode=1 ACL rows; permissions come from ACLs.
+ * Callers filter inheritance and verify lifecycle before invoking scoped ABI 2. */
 struct cf_directory_share {
     const char *path;
     const char *subject_id;

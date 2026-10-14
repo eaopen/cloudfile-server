@@ -1,6 +1,7 @@
 """Exercise scoped qualification against the compiled production policy core."""
 import ctypes as c
 import json
+import os
 from pathlib import Path
 import unittest
 
@@ -20,7 +21,7 @@ class ScopedAclTest(legacy.CloudfileAclTest):
         cls.scoped.argtypes = [c.POINTER(Context), c.c_char_p, c.c_int,
             c.POINTER(Rule), c.c_size_t, c.POINTER(Share), c.c_size_t, c.POINTER(Result)]
         cls.scoped.restype = c.c_int
-        cls.scoped_vectors = json.loads((ROOT.parent / "cloudfile-docker/docs/directory-access-v09-cases.json").read_text())
+        cls.scoped_vectors = json.loads((Path(os.environ.get("CF_TEST_DOCKER_ROOT", ROOT.parent / "cloudfile-docker")) / "docs/directory-access-v09-cases.json").read_text())
 
     def scoped_result(self, changes):
         v = {**self.scoped_vectors['defaults'], **changes}

@@ -8,7 +8,7 @@
 #define CF_PATH_LIMIT 4096
 
 int cf_acl_abi_version(void) { return 1; }
-int cf_acl_scoped_abi_version(void) { return 1; }
+int cf_acl_scoped_abi_version(void) { return 2; }
 
 static int canonical(const char *path)
 {
@@ -155,15 +155,14 @@ static int evaluate(const struct cf_acl_context *ctx, const char *path, int kind
         }
         if (member(ctx, r) && ancestor(r->path, path)) {
             candidates[selected++] = r;
-            if (scoped && r->kind == CF_DIRECTORY && r->permission >= CF_READ &&
-                strcmp(r->path, "/") != 0 &&
-                (r->inherit || strcmp(r->path, path) == 0)) qualified = 1;
+            /* Only lifecycle-verified share_mode=1 rows qualify non-members.
+             * A plain positive ACL must not bypass disabled sharing. */
         }
     }
     if (!qualified) { free(candidates); return 0; }
     effective = *ctx;
     if (ctx->ce_permission != CF_READ && ctx->ce_permission != CF_WRITE)
-        effective.ce_permission = shared ? CF_READ : CF_NONE;
+        effective.ce_permission = CF_NONE;
     qsort(candidates, selected, sizeof(*candidates), compare);
     /* Evaluate ancestors separately: a child grant cannot reveal a hidden parent. */
     strcpy(parent, path);
