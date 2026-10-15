@@ -5,8 +5,17 @@ import os
 from pathlib import Path
 import unittest
 
-import test_cloudfile_acl as legacy
-from test_cloudfile_acl import Context, Rule, Result, ROOT
+# pytest collects this file as part of the tests package (tests/__init__.py
+# exists), so a bare "import test_cloudfile_acl" cannot resolve the sibling
+# module; running the file directly instead puts the tests directory on
+# sys.path. Support both so the whole-repo collection in ci/run.py does not
+# abort on this import.
+try:
+    import tests.test_cloudfile_acl as legacy
+    from tests.test_cloudfile_acl import Context, Rule, Result, ROOT
+except ModuleNotFoundError:
+    import test_cloudfile_acl as legacy
+    from test_cloudfile_acl import Context, Rule, Result, ROOT
 
 
 class Share(c.Structure):
