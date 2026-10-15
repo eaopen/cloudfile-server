@@ -4592,8 +4592,18 @@ seafile_check_permission_by_path (const char *repo_id, const char *path,
     if (!perm)
         return NULL;
 
-    char *narrowed = cf_ext_check_permission (repo_id, path, user, perm);
+    gboolean unavailable = FALSE;
+    char *narrowed = cf_ext_check_permission (repo_id, path, user, perm, &unavailable);
     g_free (perm);
+    /* A provider that could not read its own data must not be reported as a
+     * permission denial: the client cannot tell the two apart and shows
+     * "no permission" for an outage. Surface it as an explicit RPC error so
+     * the Hub answers 503 with a distinguishable code. */
+    if (!narrowed && unavailable) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "CloudFile permission runtime is unavailable");
+        return NULL;
+    }
     return narrowed;
 #else
     return perm;

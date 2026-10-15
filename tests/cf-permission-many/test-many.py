@@ -54,6 +54,20 @@ class ManyTests(unittest.TestCase):
         self.assertEqual([i['permission'] for i in result['items']], [None, None])
         self.assertEqual(lib.fixture_count(1), 2)
 
+    def test_unreadable_boundary_is_an_error_not_a_denial(self):
+        # P0-5: a runtime that cannot read the managed schema must not be
+        # reported as "no permission". The scalar entry answers an explicit RPC
+        # error so the Hub can return 503 with a distinguishable code.
+        lib.fixture_boundary_unavailable(1)
+        self.assertEqual(json.loads(call('fixture_scalar', REPO, '/a', 'alice')),
+                         {'rpc_error': True})
+        self.assertEqual(json.loads(call('fixture_many', json.dumps(request(['/a', '/b'])))),
+                         {'rpc_error': True})
+        # The deliberate managed-library boundary still denies without an error.
+        lib.fixture_reset()
+        lib.fixture_manage(1)
+        self.assertIsNone(call('fixture_scalar', REPO, '/a', 'alice'))
+
     def test_normalized_unicode_root_and_duplicates(self):
         paths = ['/', '/中文/', '/中文', '/percent%20literal']
         result = json.loads(call('fixture_many', json.dumps(request(paths))))

@@ -66,11 +66,19 @@ gboolean cf_ext_active (void);
  * Must return a newly allocated string, or NULL for no access, and must never
  * return something more privileged than @native_perm -- extensions may only
  * tighten. @native_perm is borrowed.
+ *
+ * @unavailable is optional (may be NULL). A provider must set it TRUE only
+ * when it could not read its own authoritative data -- managed schema missing
+ * or drifted, SQL/transaction failure -- and therefore refuses. It must be
+ * left untouched for a deliberate denial. The dispatcher turns that into an
+ * explicit RPC error, because reporting an infrastructure failure as "no
+ * permission" is indistinguishable to the client from a real denial.
  */
 typedef char * (*CfPermFunc) (const char *repo_id,
                               const char *path,
                               const char *user,
-                              const char *native_perm);
+                              const char *native_perm,
+                              gboolean *unavailable);
 
 /*
  * Drop entries of a directory listing that @user may not see, and rewrite the
@@ -105,11 +113,17 @@ void cf_ext_register (const char *name,
  * registration order, each receiving the previous result. Returns a newly
  * allocated string, or NULL for no access. With no provider registered this
  * is a plain g_strdup of @native_perm.
+ *
+ * @unavailable is optional. It is reset to FALSE on entry and set TRUE only
+ * when the provider that refused could not read its authoritative data; the
+ * caller must then answer with an explicit unavailable error instead of a
+ * permission denial. Callers that cannot distinguish may pass NULL.
  */
 char *cf_ext_check_permission (const char *repo_id,
                                const char *path,
                                const char *user,
-                               const char *native_perm);
+                               const char *native_perm,
+                               gboolean *unavailable);
 
 /* Run a listing through every registered filter. Consumes @dirents. */
 GList *cf_ext_filter_dirents (const char *repo_id,

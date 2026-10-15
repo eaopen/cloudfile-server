@@ -15,6 +15,13 @@ gboolean cf_policy_allow_legacy_managed_reads (GKeyFile *config);
 gboolean cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config);
 int cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo);
 int cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo);
+/* Same decision, additionally reporting whether the refusal came from an
+ * unreadable runtime (schema missing/drifted, SQL/transaction failure) rather
+ * than the deliberate managed-library boundary. Callers that surface the
+ * answer to a user must use this form and answer "unavailable" for the
+ * former, never "no permission". @unavailable may be NULL. */
+int cf_policy_check_legacy_access_reason (SeafDB *db, GKeyFile *config,
+                                          const char *repo, gboolean *unavailable);
 int cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo);
 
 /* Same final transaction, authenticated current snapshot and exact RPC target.

@@ -94,16 +94,28 @@ managed_origin (SeafDBRow *row, void *data)
     return TRUE;
 }
 
-int
-cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo)
+/* One decision, two outputs: refuse/enroll and, when refusing, whether the
+ * runtime could actually read its authoritative state. A deliberate
+ * managed-library boundary and an unreadable schema/SQL failure both refuse,
+ * but only the latter is an availability fault -- reporting it as "no
+ * permission" hides an outage behind an authorization answer. */
+static int
+cf_policy_legacy_library_decision (SeafDBTrans *trans, const char *repo,
+                                   gboolean *unavailable)
 {
-    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) return -1;
+    if (unavailable) *unavailable = FALSE;
+    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) {
+        if (unavailable) *unavailable = TRUE;
+        return -1;
+    }
     char *origin = NULL;
     int count = seaf_db_trans_foreach_selected_row (trans,
         "SELECT origin_repo FROM VirtualRepo WHERE repo_id=? FOR UPDATE",
         managed_origin, &origin, 1, "string", repo);
     if (count < 0 || count > 1 || (count == 1 && (!origin || strlen (origin) != 36))) {
-        g_free (origin); return -1;
+        g_free (origin);
+        if (unavailable) *unavailable = TRUE;
+        return -1;
     }
     const char *first = repo, *second = origin;
     if (second && strcmp (first, second) > 0) { first = origin; second = repo; }
@@ -116,19 +128,42 @@ cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo)
             "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", &error,
             1, "string", second);
     g_free (origin);
-    return !blocked && !error ? 0 : -1;
+    if (error) {
+        if (unavailable) *unavailable = TRUE;
+        return -1;
+    }
+    /* Reached only with a readable schema: this is the boundary itself. */
+    return blocked ? -1 : 0;
+}
+
+int
+cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo)
+{
+    return cf_policy_legacy_library_decision (trans, repo, NULL);
+}
+
+int
+cf_policy_check_legacy_access_reason (SeafDB *db, GKeyFile *config,
+                                      const char *repo, gboolean *unavailable)
+{
+    if (unavailable) *unavailable = FALSE;
+    if (!cf_policy_managed_guard_required (db, config)) return 0;
+    SeafDBTrans *trans = seaf_db_begin_transaction (db);
+    if (!trans) {
+        /* The guard is required but no transaction can be opened. */
+        if (unavailable) *unavailable = TRUE;
+        return -1;
+    }
+    int result = cf_policy_legacy_library_decision (trans, repo, unavailable);
+    seaf_db_rollback (trans);
+    seaf_db_trans_close (trans);
+    return result;
 }
 
 int
 cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo)
 {
-    if (!cf_policy_managed_guard_required (db, config)) return 0;
-    SeafDBTrans *trans = seaf_db_begin_transaction (db);
-    if (!trans) return -1;
-    int result = cf_policy_check_legacy_library (trans, repo);
-    seaf_db_rollback (trans);
-    seaf_db_trans_close (trans);
-    return result;
+    return cf_policy_check_legacy_access_reason (db, config, repo, NULL);
 }
 
 int

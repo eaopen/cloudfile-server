@@ -34,8 +34,13 @@ gboolean cf_acl_enabled (void);
  * Whether a legacy entry must refuse @repo_id: managed library, drifted
  * managed schema or storage failure all deny (fail closed). Returns FALSE
  * for plain CE repositories, which keep native behaviour.
+ *
+ * @unavailable is optional (may be NULL). It is set TRUE only when the
+ * refusal came from an unreadable runtime (schema missing/drifted, SQL or
+ * transaction failure) rather than the deliberate managed-library boundary,
+ * so the caller can answer "unavailable" instead of "no permission".
  */
-gboolean cf_acl_legacy_entry_denied (const char *repo_id);
+gboolean cf_acl_legacy_entry_denied (const char *repo_id, gboolean *unavailable);
 
 /*
  * The native permission for @user on @path, or NULL when a legacy entry must
@@ -43,12 +48,14 @@ gboolean cf_acl_legacy_entry_denied (const char *repo_id);
  *
  * Returns a newly allocated permission string; @native_perm is not consumed.
  * On a stock CE deployment (no CloudFile managed schema, no guard) this is a
- * plain g_strdup of @native_perm.
+ * plain g_strdup of @native_perm. @unavailable is optional and carries the
+ * refusal reason as described above.
  */
 char *cf_acl_apply (const char *repo_id,
                     const char *path,
                     const char *user,
-                    const char *native_perm);
+                    const char *native_perm,
+                    gboolean *unavailable);
 
 /*
  * First path at or below @path that @user cannot access at all, or NULL when

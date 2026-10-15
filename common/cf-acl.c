@@ -83,28 +83,35 @@ cf_acl_enabled (void)
  * and the v0.9 core adjudicates managed reads on its own native path.
  */
 gboolean
-cf_acl_legacy_entry_denied (const char *repo_id)
+cf_acl_legacy_entry_denied (const char *repo_id, gboolean *unavailable)
 {
+    if (unavailable) *unavailable = FALSE;
     if (!repo_id)
         return FALSE;
 
-    return cf_policy_check_legacy_access (seaf->db, seaf->config, repo_id) != 0;
+    return cf_policy_check_legacy_access_reason (seaf->db, seaf->config,
+                                                 repo_id, unavailable) != 0;
 }
 
 char *
 cf_acl_apply (const char *repo_id,
               const char *path,
               const char *user,
-              const char *native_perm)
+              const char *native_perm,
+              gboolean *unavailable)
 {
+    if (unavailable) *unavailable = FALSE;
     if (!cf_acl_on || !native_perm)
         return g_strdup (native_perm);
 
     if (!repo_id || !user || *user == '\0')
         return g_strdup (native_perm);
 
-    if (cf_acl_legacy_entry_denied (repo_id)) {
-        /* Fail closed: a managed library has no adjudicable legacy answer. */
+    if (cf_acl_legacy_entry_denied (repo_id, unavailable)) {
+        /* Fail closed either way. @unavailable distinguishes "this library is
+         * managed, so a legacy entry cannot adjudicate it" from "the policy
+         * runtime could not be read": the dispatcher must report the latter as
+         * an infrastructure error, not as a permission decision. */
         return NULL;
     }
 
@@ -123,7 +130,7 @@ cf_acl_filter_dirents (const char *repo_id,
     if (!repo_id || !user || *user == '\0')
         return dirents;
 
-    if (cf_acl_legacy_entry_denied (repo_id)) {
+    if (cf_acl_legacy_entry_denied (repo_id, NULL)) {
         /* Fail closed: show nothing rather than list a managed library
          * through an entry that cannot adjudicate its rules. */
         g_list_free_full (dirents, g_object_unref);
@@ -145,7 +152,7 @@ cf_acl_find_restricted_path (const char *repo_id,
     if (!repo_id || !user || *user == '\0')
         return NULL;
 
-    if (cf_acl_legacy_entry_denied (repo_id)) {
+    if (cf_acl_legacy_entry_denied (repo_id, NULL)) {
         /* Fail closed: report the root as restricted so the sync or download
          * is refused rather than allowed without an adjudicable answer. */
         return cf_acl_normalize_path (path);

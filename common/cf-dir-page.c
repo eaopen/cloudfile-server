@@ -82,7 +82,9 @@ cf_list_dir_page_json (const char *request_json, GError **error)
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_REPO_AUTH, "Access denied");
         goto out;
     }
-    parent_perm = cf_ext_check_permission (repo_id, path, user, native_perm);
+    /* Availability is not part of this contract: paging already answers its
+     * own error when the parent permission is missing. */
+    parent_perm = cf_ext_check_permission (repo_id, path, user, native_perm, NULL);
     if (!parent_perm) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_REPO_AUTH, "Access denied");
         goto out;

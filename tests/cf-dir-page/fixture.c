@@ -58,9 +58,11 @@ static char *format_dir_path (const char *path) { return g_strdup(path); }
 static char *seaf_repo_manager_check_permission (SeafRepoManager *mgr, const char *repo, const char *user, GError **error)
 { return g_strdup("rw"); }
 /* Mirrors the production seam: the parent gate refuses a managed library
- * (real cf_acl_apply returns NULL) before any entry is filtered. */
-static char *cf_ext_check_permission (const char *repo, const char *path, const char *user, const char *perm)
-{ return (denied || managed) ? NULL : g_strdup(perm); }
+ * (real cf_acl_apply returns NULL) before any entry is filtered. The optional
+ * unavailable flag stays untouched here: this fixture models a deliberate deny. */
+static char *cf_ext_check_permission (const char *repo, const char *path, const char *user,
+                                      const char *perm, gboolean *unavailable)
+{ (void)unavailable; return (denied || managed) ? NULL : g_strdup(perm); }
 static char *seafile_get_dir_id_by_path (const char *repo, const char *path, GError **error)
 { return g_strdup(current_revision); }
 static SeafRepo *seaf_repo_manager_get_repo (SeafRepoManager *mgr, const char *id)
@@ -99,9 +101,11 @@ static void seaf_dir_free (SeafDir *dir)
     g_list_free(dir->entries); g_free(dir);
 }
 /* 2026-10-15 v0.9-only: the retired v0.8 rule loader is replaced by the
- * managed-library boundary; the fixture flips it per test case. */
-gboolean cf_acl_legacy_entry_denied (const char *repo)
+ * managed-library boundary; the fixture flips it per test case. The optional
+ * unavailable flag stays FALSE: this fixture models the deliberate boundary. */
+gboolean cf_acl_legacy_entry_denied (const char *repo, gboolean *unavailable)
 {
+    if (unavailable) *unavailable = FALSE;
     return managed;
 }
 

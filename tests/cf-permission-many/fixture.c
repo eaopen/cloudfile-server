@@ -5,11 +5,12 @@
 #include "cf-permission-many.h"
 #define SEAFILE_DOMAIN (g_quark_from_static_string("fixture"))
 #define SEAF_ERR_BAD_ARGS 503
+#define SEAF_ERR_GENERAL 500
 static struct { void *repo_mgr; } session;
 static __typeof__(session) *seaf = &session;
 static gboolean cf_acl_on = TRUE;
 static int counters[3]; /* qualification, managed-boundary check, provider hook */
-static int fail_at, timeout_at, deny_repo, managed;
+static int fail_at, timeout_at, deny_repo, managed, boundary_unavailable;
 static gint64 now;
 gint64 fixture_clock(void) { return now; }
 static gboolean is_uuid_valid(const char *repo) { return g_uuid_string_is_valid(repo); }
@@ -24,19 +25,28 @@ static char *seaf_repo_manager_check_permission(void *mgr, const char *repo, con
     return deny_repo ? NULL : g_strdup("rw");
 }
 /* 2026-10-15 v0.9-only: the retired v0.8 rule loader is replaced by the
- * managed-library boundary; the fixture flips it per test case. */
-gboolean cf_acl_legacy_entry_denied(const char *repo)
+ * managed-library boundary; the fixture flips it per test case.
+ * boundary_unavailable models an unreadable runtime (schema drift / SQL
+ * failure): it must refuse AND report the reason, never look like a denial. */
+gboolean cf_acl_legacy_entry_denied(const char *repo, gboolean *unavailable)
 {
     ++counters[1];
-    return managed != 0;
+    if (managed) return TRUE;
+    if (boundary_unavailable) {
+        if (unavailable) *unavailable = TRUE;
+        return TRUE;
+    }
+    return FALSE;
 }
-static char *provider_hook(const char *repo, const char *path, const char *user, const char *native)
+static char *provider_hook(const char *repo, const char *path, const char *user,
+                           const char *native, gboolean *unavailable)
 {
+    (void)unavailable;
     ++counters[2];
     return strcmp(path, "/hook") ? g_strdup(native) : NULL;
 }
-static char *cf_acl_apply(const char *, const char *, const char *, const char *);
-typedef struct { char *(*perm)(const char *, const char *, const char *, const char *); } CfProvider;
+static char *cf_acl_apply(const char *, const char *, const char *, const char *, gboolean *);
+typedef struct { char *(*perm)(const char *, const char *, const char *, const char *, gboolean *); } CfProvider;
 static CfProvider acl = {cf_acl_apply}, hook = {provider_hook};
 static GList *providers;
 #include "production.c"
@@ -44,13 +54,14 @@ static GList *providers;
 void fixture_reset(void)
 {
     memset(counters, 0, sizeof(counters));
-    now = 0; fail_at = timeout_at = deny_repo = managed = 0;
+    now = 0; fail_at = timeout_at = deny_repo = managed = boundary_unavailable = 0;
     if (!providers) { providers = g_list_append(providers, &acl); providers = g_list_append(providers, &hook); }
 }
 void fixture_fail_at(int at) { fail_at = at; }
 void fixture_timeout_at(int at) { timeout_at = at; }
 void fixture_deny_repo(int value) { deny_repo = value; }
 void fixture_manage(int value) { managed = value; }
+void fixture_boundary_unavailable(int value) { boundary_unavailable = value; }
 int fixture_count(int index) { return counters[index]; }
 static char *finish(char *result, GError *error)
 {

@@ -85,8 +85,11 @@ char *
 cf_ext_check_permission (const char *repo_id,
                          const char *path,
                          const char *user,
-                         const char *native_perm)
+                         const char *native_perm,
+                         gboolean *unavailable)
 {
+    if (unavailable)
+        *unavailable = FALSE;
     if (!providers || !native_perm)
         return g_strdup (native_perm);
 
@@ -98,7 +101,7 @@ cf_ext_check_permission (const char *repo_id,
         if (!p->perm)
             continue;
 
-        char *narrowed = p->perm (repo_id, path, user, perm);
+        char *narrowed = p->perm (repo_id, path, user, perm, unavailable);
         g_free (perm);
         perm = narrowed;
 
