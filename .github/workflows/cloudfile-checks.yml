@@ -65,6 +65,10 @@ jobs:
   # TOPDIR/'seafile-server' 是写死的，只要把本仓库 checkout 成那个目录名，
   # 它就会直接用我们的代码构建（目录已存在时它只 fetch，不会去 clone 上游）。
   # 靠布局迁就上游脚本，而不是改上游脚本——省下一个登记项。
+  #
+  # ci/run.py 末尾会在本仓树上跑整个 py.test，其中 tests/test_cloudfile_scoped_acl.py
+  # 读取 cloudfile-docker 的共享用例集（ROOT.parent/cloudfile-docker/docs/...），
+  # 所以要在这里把兄弟仓按同样的相对位置放好；否则编译通过、测试收集时缺文件。
   build-c:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -72,6 +76,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: seafile-server
+
+      - uses: actions/checkout@v4
+        with:
+          repository: eaopen/cloudfile-docker
+          ref: dev
+          path: cloudfile-docker
 
       - uses: actions/setup-python@v5
         with:
