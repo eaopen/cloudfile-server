@@ -27,8 +27,8 @@ workspace/
 ```
 
 跨仓规格与部署说明在 `cloudfile-docker/`：
-[BRANCHING.md](../cloudfile-docker/BRANCHING.md)、
-[docs/BRANCHES.md](../cloudfile-docker/docs/BRANCHES.md)。
+[BRANCHING.md](https://github.com/eaopen/cloudfile-docker/blob/dev/BRANCHING.md)、
+[docs/BRANCHES.md](https://github.com/eaopen/cloudfile-docker/blob/dev/docs/BRANCHES.md)。
 
 ## 本仓库的职责边界
 
@@ -182,7 +182,7 @@ go test -count=1 -run 'Cf[A-Z]' .
 扩展版，本仓基线里本就有不受开关约束的改动——登记在
 `cloudfile-docker/docs/upstream-patches/cloudfile-server.txt` 的那些，例如
 `server/repo-mgr.c` 的 `storage_id` 参数、`lib/Makefile.am` 的 Vala 构建规则。
-理由与裁决顺序见 [cloudfile-docker/BRANCHING.md](../cloudfile-docker/BRANCHING.md)。）
+理由与裁决顺序见 [cloudfile-docker/BRANCHING.md](https://github.com/eaopen/cloudfile-docker/blob/dev/BRANCHING.md)。）
 
 **2. 扩展只能收紧权限，不能放宽。**
 
@@ -200,9 +200,13 @@ go test -count=1 -run 'Cf[A-Z]' .
 
 ## 约定
 
-- 代码、注释、commit message 用英文；文档（`*.md`）用中文。
+- 代码、注释、commit message 用英文；公开入口 `README.md` 用英文，`README.zh-CN.md` 用中文；成对文档同次更新并提供语言切换。既有未翻译技术参考保留中文并明确标注；内部记录以中文为主。
 - C 代码沿用上游风格：4 空格缩进，`snake_case`，`seaf_warning()` / `seaf_message()` 打日志。
   文件头保留 `/* -*- Mode: C; tab-width: 4; ... -*- */`。
 - 内存所有权在函数注释里写清楚。返回 `char *` 的一律是新分配、调用方 `g_free`。
 - 新 RPC 命名以 `cf_` 开头，避免和上游将来的函数撞名。
 - 不要提交 `.codegraph/`、构建产物。
+
+## 文档归属（2026-10-13）
+
+公开产品方案、架构概览、路线图、AI 方向、使用导航与服务信息统一在 [cloudfile](https://github.com/eaopen/cloudfile/blob/main/docs/zh-CN/README.md) 中英维护。本仓维护随代码更新的技术说明；Docker 保留构建、部署、发布矩阵及共享技术契约。内部方案权衡、开发排期与复盘归私有内部管理仓库，客户配置与交付归客户私有工程。公开说明不得依赖私有文档，一项正式内容只保留一个权威正文。

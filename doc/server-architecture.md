@@ -1,5 +1,7 @@
-<!-- generated-by: gsd-doc-writer -->
 # CloudFile Server 边界、扩展点与证据
+
+> 阅读边界：本文包含早期实现与验证快照，原记录日期保留。当前构建、配置和跨组件支持范围见 [Docker 能力矩阵](https://github.com/eaopen/cloudfile-docker/blob/dev/docs/feature-matrix.md)，不能将历史“已完成”解释为所有当前入口均已验收。
+
 
 > 用途：说明本仓在 CloudFile 三仓架构中的终判职责，并标注各扩展的实现和验证状态。
 > 适用版本：CloudFile `dev`（`8b7ee9a`，2026-08-28，ahead of upstream 45 commits），基于本地 Seafile CE 14 上游快照 `8c47d5f`（2026-08-11）。
@@ -122,13 +124,13 @@ SSO 同步、搜索任务和部署编排属于 Hub 或 Docker 仓；SMB/NFS/Open
   以及新增的 `cf-acl.c`、`cf-fileop-json.c`、`cf-fileop-test.c` 在 CI 完整构建中验证。
 - 12 个 `seafile_cf_*` RPC 集中在 `common/rpc-service.c` 单点（`cf_ext_*` 注册中心
   内部分发），跨仓 Hub 通过 `python/seafile/rpcclient.py` 消费。
-- 上游文件改动面见 [`../../cloudfile-docker/docs/upstream-patches/cloudfile-server.txt`](../../cloudfile-docker/docs/upstream-patches/cloudfile-server.txt)，
+- 上游文件改动面见 [`../../cloudfile-docker/docs/upstream-patches/cloudfile-server.txt`](https://github.com/eaopen/cloudfile-docker/blob/dev/docs/upstream-patches/cloudfile-server.txt)，
   当前登记 38 个允许改动的上游文件；登记与实际 git diff 可能略多（"清单已付成本，
   在已登记文件里加改动块不再计新成本"），以 `tools/check-upstream-patches.sh`
   强制清单不被悄悄变长为准。
 - 主要同步风险集中在：RPC seam（`common/rpc-service.c`、`include/seafile-rpc.h`）、
   写入口（`server/repo-op.c`、`fileserver/fileop.go`、`fileserver/sync_api.go`，
-  理由见 [fileop-lifecycle.md §5](../../cloudfile-docker/docs/fileop-lifecycle.md)）、
+  理由见 [fileop-lifecycle.md §5](https://github.com/eaopen/cloudfile-docker/blob/dev/docs/fileop-lifecycle.md)）、
   对象存储接口（`common/{obj,block,fs}-*`、`fileserver/objstore/*`）和 GC。
   每次同步后用以下命令重算，不维护容易失真的手写全量表：
 
