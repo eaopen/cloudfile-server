@@ -81,7 +81,11 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 	}()
 	repo := repomgr.Get(info.repoID)
 	if repo == nil || repo.VirtualInfo != nil {
-		return &appError{nil, "Read target unavailable", http.StatusForbidden}
+		// Native repository metadata/object-store unavailability, not a
+		// permission decision: a 403 here made the client report "no
+		// permission" for a storage fault. Every sibling unavailability branch
+		// in this handler already answers 503.
+		return &appError{nil, "Read target unavailable", http.StatusServiceUnavailable}
 	}
 	guarded := &cloudFileGuardedResponse{ResponseWriter: tracked, writer: writer}
 	guarded.Header().Set("Cache-Control", "no-store, max-age=0")
