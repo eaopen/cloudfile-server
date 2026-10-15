@@ -1151,6 +1151,7 @@ cloudfile_check_agent_upload (SeafDBTrans *trans, const char *repo,
         !is_object_id_valid(json_string_value(base)) ||
         json_object_get(conditions, "local_session") ||
         json_object_get(conditions, "oidc_session") ||
+        json_object_get(conditions, "browser_session") ||
         json_object_get(conditions, "editing") ||
         json_object_get(conditions, "local_commit") ||
         json_object_get(conditions, "lease"))
@@ -1176,9 +1177,11 @@ cloudfile_check_agent_upload (SeafDBTrans *trans, const char *repo,
 }
 
 /* Optional only for non-OIDC trusted callers. An OIDC host must include this
- * server-derived reference and its provider scope; omission is not logout proof. */
+ * server-derived reference and its provider scope; omission is not logout proof.
+ * Shared by every native session reference: the value must be a JSON string
+ * whose byte length equals its character length (no embedded NUL) and fits. */
 static const char *
-cloudfile_oidc_identifier (json_t *object, const char *name, size_t maximum)
+cloudfile_reference_text (json_t *object, const char *name, size_t maximum)
 {
     json_t *value = json_object_get (object, name);
     const char *text = json_string_value (value);
@@ -1221,11 +1224,11 @@ cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json
     json_t *reference = json_object_get (root, "oidc_session");
     if (!reference) return 0;
     if (!json_is_object (reference) || json_object_size (reference) != 5) return -1;
-    const char *scope = cloudfile_oidc_identifier (reference, "scope_hash", 64);
-    const char *key = cloudfile_oidc_identifier (reference, "session_key", 32);
-    const char *subject = cloudfile_oidc_identifier (reference, "subject_hash", 64);
+    const char *scope = cloudfile_reference_text (reference, "scope_hash", 64);
+    const char *key = cloudfile_reference_text (reference, "session_key", 32);
+    const char *subject = cloudfile_reference_text (reference, "subject_hash", 64);
     json_t *sid_value = json_object_get (reference, "sid_hash");
-    const char *sid = json_is_null (sid_value) ? NULL : cloudfile_oidc_identifier (reference, "sid_hash", 64);
+    const char *sid = json_is_null (sid_value) ? NULL : cloudfile_reference_text (reference, "sid_hash", 64);
     json_t *issued = json_object_get (reference, "authenticated_at");
     if (!scope || strlen (scope) != 64 || strspn (scope, "0123456789abcdef") != 64 ||
         !key || strlen (key) != 32 || strspn (key, "0123456789abcdefghijklmnopqrstuvwxyz") != 32 ||
@@ -1265,6 +1268,27 @@ cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json
     return ccnet_user_manager_lock_live_session (mgr->seaf->user_mgr, trans, key);
 }
 
+/* Legacy CE/Authentik OAuth browser session proof. The trusted Hub has already
+ * decoded the signed session, its auth backend and the exact Profile mapping;
+ * the native check re-proves that this exact persisted row is still live at
+ * issuance and at every consumption/chunk, which is the legacy logout proof
+ * (logout deletes the row). It deliberately carries no OIDC scope/subject/sid,
+ * and the two proofs are mutually exclusive so an ambiguous ticket is refused
+ * rather than resolved by preference. A session proof still grants nothing:
+ * context, qualification, barriers and cf_policy_check_read decide access. */
+static int
+cloudfile_check_browser_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json_t *root)
+{
+    json_t *reference = json_object_get (root, "browser_session");
+    if (!reference) return 0;
+    if (!json_is_object (reference) || json_object_size (reference) != 1) return -1;
+    if (json_object_get (root, "oidc_session")) return -1;
+    const char *key = cloudfile_reference_text (reference, "session_key", 32);
+    if (!key || strlen (key) != 32 ||
+        strspn (key, "0123456789abcdefghijklmnopqrstuvwxyz") != 32) return -1;
+    return ccnet_user_manager_lock_live_session (mgr->seaf->user_mgr, trans, key);
+}
+
 static int
 cloudfile_check_local_reference (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, const char *object_id, int kind,
@@ -1287,6 +1311,24 @@ cloudfile_check_local_reference (SeafBranchManager *mgr, SeafDBTrans *trans,
     return result;
 }
 
+/* One read ticket may carry at most one native session/device proof. OIDC keeps
+ * its scope and logout-fence checks, the legacy OAuth browser session proves the
+ * exact persisted row is live, and a paired device proves its own credential.
+ * The order is fixed here so no call site can silently skip one of them. */
+static int
+cloudfile_check_session_reference (SeafBranchManager *mgr, SeafDBTrans *trans,
+    const char *repo_id, const char *path, const char *object_id, int kind,
+    const char *conditions, const char *native_username, json_t *root)
+{
+    int result = cloudfile_check_oidc_reference (mgr, trans, root);
+    if (result == 0)
+        result = cloudfile_check_browser_reference (mgr, trans, root);
+    if (result == 0)
+        result = cloudfile_check_local_reference (mgr, trans, repo_id, path,
+            object_id, kind, conditions, native_username, root);
+    return result;
+}
+
 int
 seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, int kind, const char *head_id,
@@ -1303,10 +1345,8 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
             kind, conditions, native_username) < 0)
         return -2;
     json_t *reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
-    int reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
-    if (reference_result == 0)
-        reference_result = cloudfile_check_local_reference (mgr, trans, repo_id, path,
-            object_id, kind, conditions, native_username, reference_root);
+    int reference_result = cloudfile_check_session_reference (mgr, trans, repo_id, path,
+        object_id, kind, conditions, native_username, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) return -2;
     /* Pin the actual master row after repository/authority locks. A cached
@@ -1332,10 +1372,8 @@ seaf_branch_manager_check_read_target (SeafBranchManager *mgr, SeafDBTrans *tran
         cloudfile_check_context (mgr, conditions, NULL) < 0)
         goto out;
     reference_root = json_loads (conditions, JSON_REJECT_DUPLICATES, NULL);
-    reference_result = cloudfile_check_oidc_reference (mgr, trans, reference_root);
-    if (reference_result == 0)
-        reference_result = cloudfile_check_local_reference (mgr, trans, repo_id, path,
-            object_id, kind, conditions, native_username, reference_root);
+    reference_result = cloudfile_check_session_reference (mgr, trans, repo_id, path,
+        object_id, kind, conditions, native_username, reference_root);
     if (reference_root) json_decref (reference_root);
     if (reference_result < 0) goto out;
     result = 0;
@@ -1501,6 +1539,7 @@ test_and_update_branch (SeafBranchManager *mgr,
             /* Read references never authorize publication. Device writes use
              * a distinct condition and repeat current session/Checkout checks. */
             !json_object_get (conditions, "local_session") &&
+            !json_object_get (conditions, "browser_session") &&
             (!json_object_get (conditions, "local_commit") || editing) &&
             (!agent || (!editing && !lease && !json_object_get(conditions, "oidc_session") &&
                 !json_object_get(conditions, "create"))) &&
