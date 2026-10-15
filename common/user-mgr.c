@@ -674,10 +674,11 @@ static gboolean
 cloudfile_library_administrator (SeafDBRow *row, void *data)
 {
     const char *role = seaf_db_row_get_column_text (row, 0);
-    if (!role || !*role) role = "system_admin"; /* Native AdminRole default. */
     gboolean *allowed = data;
-    *allowed = g_strcmp0 (role, "system_admin") == 0 ||
-        g_strcmp0 (role, "daily_admin") == 0 || g_strcmp0 (role, "default_admin") == 0;
+    /* Background library management must not imply access to every file.
+     * Missing role rows receive the CE default in SQL, never empty/invalid roles. */
+    *allowed = g_strcmp0 (role, "system_admin") == 0;
+    if (!*allowed) return FALSE;
     /* Reuse the existing native role override, not a second permission list.
      * Native role overrides replace that role's capability dictionary. */
     const char *configured = g_getenv ("CF_ADMIN_ROLE_PERMISSIONS_JSON");
@@ -705,7 +706,7 @@ ccnet_user_manager_is_global_library_admin (CcnetUserManager *manager,
     if (!native || !username || !*username) { g_free (hub); return FALSE; }
     /* Database names are deployment configuration; double identifier quotes
      * and bind the authenticated native username exactly as existing SQL does. */
-    GString *sql = g_string_new ("SELECT COALESCE(r.role,'system_admin') FROM `");
+    GString *sql = g_string_new ("SELECT CASE WHEN r.email IS NULL THEN 'system_admin' ELSE r.role END FROM `");
     for (const char *p = native; *p; ++p) {
         if (*p == '`') g_string_append_c (sql, '`');
         g_string_append_c (sql, *p);

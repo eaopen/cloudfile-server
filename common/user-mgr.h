@@ -171,7 +171,7 @@ int
 ccnet_user_manager_lock_live_session (CcnetUserManager *manager,
                                      struct SeafDBTrans *trans,
                                      const char *session_key);
-/* Existing native can_manage_library qualification, with optional final SQL
+/* Active native system_admin content qualification, with optional final SQL
  * transaction. This supplies a library baseline, never bypasses directory ACL. */
 gboolean ccnet_user_manager_is_global_library_admin (CcnetUserManager *manager,
                                                     struct SeafDBTrans *trans,
