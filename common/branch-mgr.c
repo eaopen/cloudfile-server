@@ -975,6 +975,10 @@ cloudfile_library_qualification (SeafBranchManager *mgr, SeafDBTrans *trans,
         "SELECT owner_id FROM RepoOwner WHERE repo_id=? FOR UPDATE", cloudfile_owner_row,
         &q, 1, "string", repo) != 1 || !q.valid) goto out;
     if (q.permission) { result = q.permission; goto out; }
+    /* Reuse global-library qualification in the existing final transaction. */
+    if (ccnet_user_manager_is_global_library_admin (mgr->seaf->user_mgr, trans, username)) {
+        result = 2; goto out;
+    }
     int rows = seaf_db_trans_foreach_selected_row (trans,
         "SELECT permission,to_email FROM SharedRepo WHERE repo_id=? AND to_email=? LIMIT 2 FOR UPDATE",
         cloudfile_share_row, &q, 2, "string", repo, "string", username);

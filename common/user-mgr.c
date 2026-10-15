@@ -4,6 +4,7 @@
 
 #include <sys/stat.h>
 #include <dirent.h>
+#include <jansson.h>
 
 #include "utils.h"
 
@@ -667,6 +668,64 @@ cloudfile_account_engine (SeafDBRow *row, void *data)
     gboolean *innodb = data;
     *innodb = g_strcmp0 (seaf_db_row_get_column_text (row, 0), "InnoDB") == 0;
     return FALSE;
+}
+
+static gboolean
+cloudfile_library_administrator (SeafDBRow *row, void *data)
+{
+    const char *role = seaf_db_row_get_column_text (row, 0);
+    if (!role || !*role) role = "system_admin"; /* Native AdminRole default. */
+    gboolean *allowed = data;
+    *allowed = g_strcmp0 (role, "system_admin") == 0 ||
+        g_strcmp0 (role, "daily_admin") == 0 || g_strcmp0 (role, "default_admin") == 0;
+    /* Reuse the existing native role override, not a second permission list.
+     * Native role overrides replace that role's capability dictionary. */
+    const char *configured = g_getenv ("CF_ADMIN_ROLE_PERMISSIONS_JSON");
+    if (configured && *configured) {
+        json_t *roles = json_loads (configured, 0, NULL);
+        json_t *permissions = role && json_is_object (roles) ? json_object_get (roles, role) : NULL;
+        if (!json_is_object (roles)) *allowed = FALSE;
+        else if (permissions) *allowed = json_is_true (json_object_get (permissions, "can_manage_library"));
+        json_decref (roles);
+    }
+    return FALSE;
+}
+
+gboolean
+ccnet_user_manager_is_global_library_admin (CcnetUserManager *manager,
+                                           SeafDBTrans *trans, const char *username)
+{
+    const char *native = seaf_db_mysql_shared_database (manager->session->db, manager->priv->db);
+    char *hub = g_key_file_get_string (manager->session->config, "cloudfile", "identity_database", NULL);
+    if (!hub) {
+        const char *configured = g_getenv ("SEAFILE_MYSQL_DB_SEAHUB_DB_NAME");
+        hub = g_strdup (configured && *configured ? configured : "seahub_db");
+    }
+    gboolean allowed = FALSE;
+    if (!native || !username || !*username) { g_free (hub); return FALSE; }
+    /* Database names are deployment configuration; double identifier quotes
+     * and bind the authenticated native username exactly as existing SQL does. */
+    GString *sql = g_string_new ("SELECT COALESCE(r.role,'system_admin') FROM `");
+    for (const char *p = native; *p; ++p) {
+        if (*p == '`') g_string_append_c (sql, '`');
+        g_string_append_c (sql, *p);
+    }
+    g_string_append (sql, "`.EmailUser u LEFT JOIN `");
+    for (const char *p = hub; *p; ++p) {
+        if (*p == '`') g_string_append_c (sql, '`');
+        g_string_append_c (sql, *p);
+    }
+    g_string_append (sql, "`.role_permissions_adminrole r ON r.email=u.email "
+        "WHERE u.email=? AND u.is_active=1 AND u.is_staff=1 FOR UPDATE");
+    /* Final v0.9 checks reuse their transaction; ordinary native checks keep
+     * their existing query path. Neither creates shares or administrator rows. */
+    int count = trans ? seaf_db_trans_foreach_selected_row (trans, sql->str,
+        cloudfile_library_administrator, &allowed, 1, "string", username) :
+        seaf_db_statement_foreach_row (manager->session->db, sql->str,
+        cloudfile_library_administrator, &allowed, 1, "string", username);
+    g_string_free (sql, TRUE);
+    g_free (hub);
+    return count == 1 && allowed;
 }
 
 int
