@@ -1,4 +1,4 @@
-"""Strict native envelope and actual scalar/provider/C ACL parity."""
+"""Strict native envelope and actual scalar/provider/boundary parity."""
 import ctypes
 import json
 import os
@@ -9,7 +9,6 @@ for name, args in [('fixture_many', [ctypes.c_char_p]), ('fixture_scalar', [ctyp
     function = getattr(lib, name)
     function.argtypes, function.restype = args, ctypes.c_void_p
 lib.fixture_free.argtypes = [ctypes.c_void_p]
-lib.fixture_rule.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
 REPO = '11111111-1111-4111-8111-111111111111'
 
 
@@ -28,20 +27,32 @@ class ManyTests(unittest.TestCase):
     def setUp(self): lib.fixture_reset()
 
     def test_scalar_equivalence(self):
-        for mode in ('allow', 'repo_deny', 'file_deny', 'ancestor', 'mixed'):
+        # 2026-10-15 v0.9-only: the ACL provider is the managed-library
+        # boundary. allow: every path keeps the native permission except the
+        # hook provider's own denial; managed: every path is refused.
+        for mode in ('allow', 'managed', 'repo_deny'):
             with self.subTest(mode=mode):
                 lib.fixture_reset()
-                lib.fixture_rule(b'/', 3, 1)
+                if mode == 'managed': lib.fixture_manage(1)
                 if mode == 'repo_deny': lib.fixture_deny_repo(1)
-                if mode == 'file_deny': lib.fixture_rule(b'/a/file', 1, 0)
-                if mode in ('ancestor', 'mixed'): lib.fixture_rule(b'/a', 0, 1)
                 paths = ['/', '/a', '/a/file', '/a/file', '/b/file', '/hook']
                 scalar = [call('fixture_scalar', REPO, p, 'alice') for p in paths]
-                expected = [p if p in ('r', 'rw') else None for p in scalar]
+                if mode == 'repo_deny':
+                    for value in scalar: self.assertIsNone(value)
+                    continue
+                expected = [None if mode == 'managed' or p == '/hook' else 'rw'
+                            for p in paths]
+                self.assertEqual(scalar, expected)
                 result = json.loads(call('fixture_many', json.dumps(request(paths))))
                 self.assertEqual([i['permission'] for i in result['items']], expected)
                 self.assertEqual([i['path'] for i in result['items']], paths)
                 self.assertEqual(lib.fixture_count(0), len(paths) * 2)
+
+    def test_managed_boundary_is_checked_per_path(self):
+        lib.fixture_manage(1)
+        result = json.loads(call('fixture_many', json.dumps(request(['/a', '/b']))))
+        self.assertEqual([i['permission'] for i in result['items']], [None, None])
+        self.assertEqual(lib.fixture_count(1), 2)
 
     def test_normalized_unicode_root_and_duplicates(self):
         paths = ['/', '/中文/', '/中文', '/percent%20literal']
@@ -74,9 +85,8 @@ class ManyTests(unittest.TestCase):
         self.assertEqual(lib.fixture_count(0), 2)
 
     def test_counters_do_not_confuse_transport_with_engine(self):
-        lib.fixture_rule(b'/', 3, 1)
         result = json.loads(call('fixture_many', json.dumps(request(['/' + str(i) for i in range(50)]))))
         self.assertEqual(len(result['items']), 50)
-        self.assertEqual([lib.fixture_count(i) for i in range(5)], [50] * 5)
+        self.assertEqual([lib.fixture_count(i) for i in range(3)], [50] * 3)
 
 if __name__ == '__main__': unittest.main()

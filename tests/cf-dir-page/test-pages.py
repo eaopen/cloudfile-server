@@ -81,6 +81,20 @@ class NativePagesTest(unittest.TestCase):
         self.native.lib.fixture_deny_parent(1)
         with self.assertRaises(RuntimeError): self.native.page(6)
 
+    def test_managed_library_is_refused_by_the_legacy_page(self):
+        # 2026-10-15 v0.9-only: the legacy directory page cannot adjudicate
+        # managed libraries, so the parent gate refuses instead of falling
+        # back to the native permission.
+        self.native.lib.fixture_manage(1)
+        with self.assertRaises(RuntimeError): self.native.page()
+        # The per-entry filter refuses the same repository, so a legacy
+        # listing is empty rather than silently native.
+        self.assertEqual(self.native.lib.fixture_filter_count(), 0)
+        self.native.lib.fixture_manage(0)
+        self.assertEqual(len(self.native.page()['visible_items']), 3)
+        self.assertEqual(self.native.lib.fixture_filter_count(), 3)
+        self.assertEqual(self.native.lib.fixture_legacy_count(), 10)
+
     def test_invalid_object_still_advances_raw_cursor(self):
         self.native.lib.fixture_invalid(1)
         page = self.native.page()

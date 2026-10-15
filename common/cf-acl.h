@@ -1,19 +1,19 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
 /*
- * CloudFile directory-level ACL.
+ * CloudFile directory-level ACL (v0.8) -- retired to the managed boundary.
  *
- * This is the authoritative enforcement point. Seahub applies the same rules
- * for the sake of the UI, but WebDAV writes and every RPC caller land here, so
- * a client that talks to seaf-server directly cannot go around it.
+ * 2026-10-15, v0.9-only: the v0.8 rule loader and resolver are gone (the
+ * unified cf_dir_acl schema has no `subject` column, so that reader failed
+ * closed on every call and denied every library). What remains here is the
+ * managed-library boundary for legacy entry points: managed libraries are
+ * refused because the four-argument cf_ext seam cannot carry the trusted
+ * provider/subject snapshot the v0.9 scoped core needs, and non-managed
+ * libraries keep plain CE behaviour.
  *
- * This header is the Seafile-facing half: config, database and group lookups.
- * The policy itself lives in cf-acl-resolve.h, which depends on nothing but
- * glib so it can be tested against the shared case set in
- * cloudfile-docker/docs/acl-cases.json alongside the Python and Go
- * implementations.
- *
- * Semantics: cloudfile-docker/docs/acl-semantics.md
+ * The v0.8 policy itself lives on in cf-acl-resolve.h, which depends on
+ * nothing but glib so it can be tested against the shared case set in
+ * cloudfile-docker/docs/acl-cases.json alongside the Python implementation.
  */
 
 #ifndef CF_ACL_H
@@ -23,21 +23,27 @@
 
 #include "cf-acl-resolve.h"
 
-/* Read [cloudfile] dir_acl_enabled from seafile.conf. Call once at startup,
- * after the config manager exists.
+/* Decide at startup whether the managed boundary is active. Call once after
+ * the config manager exists.
  */
 void cf_acl_init (void);
 
 gboolean cf_acl_enabled (void);
 
 /*
- * Narrow @native_perm according to the directory ACL for @user on @path.
+ * Whether a legacy entry must refuse @repo_id: managed library, drifted
+ * managed schema or storage failure all deny (fail closed). Returns FALSE
+ * for plain CE repositories, which keep native behaviour.
+ */
+gboolean cf_acl_legacy_entry_denied (const char *repo_id);
+
+/*
+ * The native permission for @user on @path, or NULL when a legacy entry must
+ * refuse the repository.
  *
- * Returns a newly allocated permission string, or NULL for no access.
- * @native_perm is not consumed; pass NULL to get NULL back.
- *
- * When the feature is off this is a plain g_strdup of @native_perm, so the
- * whole call is a no-op on a stock CE deployment.
+ * Returns a newly allocated permission string; @native_perm is not consumed.
+ * On a stock CE deployment (no CloudFile managed schema, no guard) this is a
+ * plain g_strdup of @native_perm.
  */
 char *cf_acl_apply (const char *repo_id,
                     const char *path,
@@ -48,10 +54,8 @@ char *cf_acl_apply (const char *repo_id,
  * First path at or below @path that @user cannot access at all, or NULL when
  * the whole subtree is reachable.
  *
- * Backs "may this repo be synced" and "may this folder be zip-downloaded":
- * both ship an entire subtree in one operation, and neither has a per-file
- * authorization point once it has started, so one unreadable descendant has
- * to block the whole thing up front.
+ * Backs "may this repo be synced": the sync protocol trades whole-library
+ * commits, so a managed library has to be refused up front.
  */
 char *cf_acl_find_restricted_path (const char *repo_id,
                                    const char *path,
@@ -59,15 +63,10 @@ char *cf_acl_find_restricted_path (const char *repo_id,
                                    const char *native_perm);
 
 /*
- * Apply the directory ACL to a listing of @dir_path.
+ * Apply the boundary to a listing of @dir_path: a managed library yields no
+ * listing, anything else returns @dirents unchanged.
  *
- * Drops entries resolving to no access, and rewrites the `permission`
- * property of the rest. Upstream resolves the permission once at repo level
- * and stamps it on every entry, so without this an `invisible` folder would
- * still be listed and a read-only one would still advertise `rw`.
- *
- * Consumes @dirents and returns the filtered list; entries that are dropped
- * are unreffed. Returns @dirents unchanged when the feature is off.
+ * Consumes @dirents. Returns @dirents unchanged when the boundary is off.
  */
 GList *cf_acl_filter_dirents (const char *repo_id,
                               const char *dir_path,

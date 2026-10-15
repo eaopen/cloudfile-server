@@ -3,37 +3,31 @@ package main
 import (
 	"errors"
 	"testing"
-
-	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
-func withRestrictedPathStub(t *testing.T, enabled bool,
+// 2026-10-15, v0.9-only: the [cloudfile] dir_acl_enabled switch no longer
+// gates the legacy sync entry. A managed library must be refused even when
+// that old switch is off, so there is no "disabled" pass-through to assert.
+func withRestrictedPathStub(t *testing.T,
 	stub func(string, string) (interface{}, error)) {
 	t.Helper()
-	originalEnabled := option.CloudFileDirACLEnabled
 	originalCall := cfCallRestrictedPath
-	option.CloudFileDirACLEnabled = enabled
 	cfCallRestrictedPath = stub
-	t.Cleanup(func() {
-		option.CloudFileDirACLEnabled = originalEnabled
-		cfCallRestrictedPath = originalCall
-	})
+	t.Cleanup(func() { cfCallRestrictedPath = originalCall })
 }
 
-func TestCfAclDisabledPassesThrough(t *testing.T) {
-	called := false
-	withRestrictedPathStub(t, false, func(string, string) (interface{}, error) {
-		called = true
-		return nil, errors.New("must not be called")
+func TestCfAclAuthorityAllowPassesThrough(t *testing.T) {
+	withRestrictedPathStub(t, func(string, string) (interface{}, error) {
+		return nil, nil
 	})
 
-	if got := cfFindRestrictedPath("repo", "user"); got != "" || called {
-		t.Fatalf("disabled ACL must pass through, got=%q called=%v", got, called)
+	if got := cfFindRestrictedPath("repo", "user"); got != "" {
+		t.Fatalf("unrestricted authority reply must pass through, got %q", got)
 	}
 }
 
-func TestCfAclEnabledFailsClosed(t *testing.T) {
-	withRestrictedPathStub(t, true, func(string, string) (interface{}, error) {
+func TestCfAclAuthorityFailureFailsClosed(t *testing.T) {
+	withRestrictedPathStub(t, func(string, string) (interface{}, error) {
 		return nil, errors.New("authority unavailable")
 	})
 
@@ -44,7 +38,7 @@ func TestCfAclEnabledFailsClosed(t *testing.T) {
 
 func TestCfAclDecisionIsNotCached(t *testing.T) {
 	replies := []interface{}{nil, "/secret"}
-	withRestrictedPathStub(t, true, func(string, string) (interface{}, error) {
+	withRestrictedPathStub(t, func(string, string) (interface{}, error) {
 		result := replies[0]
 		replies = replies[1:]
 		return result, nil
@@ -59,7 +53,7 @@ func TestCfAclDecisionIsNotCached(t *testing.T) {
 }
 
 func TestCfAclMalformedReplyFailsClosed(t *testing.T) {
-	withRestrictedPathStub(t, true, func(string, string) (interface{}, error) {
+	withRestrictedPathStub(t, func(string, string) (interface{}, error) {
 		return 42, nil
 	})
 

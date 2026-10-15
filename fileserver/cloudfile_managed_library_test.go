@@ -88,3 +88,35 @@ func TestLegacyManagedReadCompatibilityDoesNotPermitPublication(t *testing.T) {
 		t.Fatalf("native mutation bypassed managed-library publication guard: err=%v fixture=%+v", err, fixture)
 	}
 }
+
+// 2026-10-15, v0.9-only: the legacy sync entry must refuse managed libraries
+// even when the temporary native-read carve-out is on, and it must fail
+// closed when no authority is reachable.
+func TestSyncLegacyEntryDeniesManagedLibraries(t *testing.T) {
+	originalDB, originalGuard, originalReads, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard,
+		option.CloudFileAllowLegacyManagedReads, option.DBOpTimeout
+	defer func() {
+		seafileDB = originalDB
+		option.CloudFileManagedLibraryGuard = originalGuard
+		option.CloudFileAllowLegacyManagedReads = originalReads
+		option.DBOpTimeout = originalTimeout
+	}()
+	option.CloudFileManagedLibraryGuard = true
+	option.CloudFileAllowLegacyManagedReads = true
+	option.DBOpTimeout = 2 * time.Second
+
+	// The fake connector answers "managed" for every repo, so the read
+	// carve-out must not reach the sync boundary.
+	fixture := &readAuditSQLFixture{}
+	seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture})
+	if !syncLegacyEntryDenied(context.Background(), "22222222-2222-2222-2222-222222222222") {
+		t.Fatal("managed library was allowed on the legacy sync entry")
+	}
+	seafileDB.Close()
+
+	// No authority at all: refuse rather than fall back to the cached grant.
+	seafileDB = nil
+	if !syncLegacyEntryDenied(context.Background(), "22222222-2222-2222-2222-222222222222") {
+		t.Fatal("missing authority must fail closed on the legacy sync entry")
+	}
+}

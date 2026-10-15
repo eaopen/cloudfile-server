@@ -16,10 +16,14 @@
 //
 // Seahub asks the same question via is_repo_syncable so it can show a useful
 // error. This check exists because a modified client can simply skip that.
+//
+// 2026-10-15, v0.9-only: the [cloudfile] dir_acl_enabled switch no longer
+// gates this call. Once the deployment has the managed schema installed the
+// legacy sync entry must be refused for managed libraries, and an off switch
+// must not reopen them. The C side answers 0/"" for non-managed repositories,
+// so plain CE keeps native behaviour.
 
 package main
-
-import "github.com/haiwen/seafile-server/fileserver/option"
 
 var cfCallRestrictedPath = func(repoID, user string) (interface{}, error) {
 	return rpcclient.Call("cf_find_restricted_path", repoID, "/", user)
@@ -33,10 +37,6 @@ var cfCallRestrictedPath = func(repoID, user string) (interface{}, error) {
 // cache-invalidation protocol. Once enabled, an unavailable or malformed
 // authority reply refuses sync at the repository root.
 func cfFindRestrictedPath(repoID, user string) string {
-	if !option.CloudFileDirACLEnabled {
-		return ""
-	}
-
 	ret, err := cfCallRestrictedPath(repoID, user)
 	if err != nil {
 		return "/"

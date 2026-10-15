@@ -6,7 +6,6 @@
 #include <sys/stat.h>
 #include "seafile-object.h"
 #include "cf-dir-page.h"
-#include "cf-acl-resolve.h"
 #include "seafile-error.h"
 
 #define SEAFILE_DOMAIN (g_quark_from_static_string("seafile"))
@@ -19,15 +18,19 @@ typedef struct { int unused; } SeafRepoManager;
 static struct { SeafRepoManager *repo_mgr; void *fs_mgr, *share_mgr; } session;
 static __typeof__(session) *seaf = &session;
 static int total, invalid_index = -1;
-static gboolean denied, read_failed, cf_acl_on = TRUE;
+static gboolean denied, read_failed, cf_acl_on = TRUE, managed;
 static char current_revision[41];
 static GHashTable *hidden;
+/* 2026-10-15 v0.9-only: per-entry ACL hiding retired with the v0.8 reader.
+ * "hidden" entries now carry invalid object ids, which the real scan still
+ * counts (scanned_count) but never returns -- the same engine contract the
+ * shared pagination cases pin, driven by the only remaining skip cause. */
 
 void fixture_reset (int count)
 {
     total = count;
     invalid_index = -1;
-    denied = read_failed = FALSE;
+    denied = read_failed = managed = FALSE;
     memset (current_revision, 'a', 40);
     current_revision[40] = 0;
     if (hidden) g_hash_table_destroy (hidden);
@@ -40,6 +43,7 @@ void fixture_hide (int index, int value)
 }
 void fixture_set_revision (const char *revision) { g_strlcpy(current_revision, revision, 41); }
 void fixture_deny_parent (int value) { denied = value; }
+void fixture_manage (int value) { managed = value; }
 void fixture_fail_read (int value) { read_failed = value; }
 void fixture_invalid (int index) { invalid_index = index; }
 
@@ -53,8 +57,10 @@ static gboolean is_object_id_valid (const char *id)
 static char *format_dir_path (const char *path) { return g_strdup(path); }
 static char *seaf_repo_manager_check_permission (SeafRepoManager *mgr, const char *repo, const char *user, GError **error)
 { return g_strdup("rw"); }
+/* Mirrors the production seam: the parent gate refuses a managed library
+ * (real cf_acl_apply returns NULL) before any entry is filtered. */
 static char *cf_ext_check_permission (const char *repo, const char *path, const char *user, const char *perm)
-{ return denied ? NULL : g_strdup(perm); }
+{ return (denied || managed) ? NULL : g_strdup(perm); }
 static char *seafile_get_dir_id_by_path (const char *repo, const char *path, GError **error)
 { return g_strdup(current_revision); }
 static SeafRepo *seaf_repo_manager_get_repo (SeafRepoManager *mgr, const char *id)
@@ -72,7 +78,9 @@ static SeafDir *seaf_fs_manager_get_seafdir (void *mgr, const char *repo, int ve
     SeafDir *dir = g_new0(SeafDir, 1);
     for (int i = 0; i < total; i++) {
         SeafDirent *entry = g_new0(SeafDirent, 1);
-        entry->id = g_strdup(i == invalid_index ? "invalid" : current_revision);
+        entry->id = g_strdup((i == invalid_index ||
+                              g_hash_table_contains(hidden, GINT_TO_POINTER(i + 1)))
+                             ? "invalid" : current_revision);
         entry->name = g_strdup_printf("d%05d", i);
         entry->mode = S_IFDIR | 0755; entry->version = 1;
         entry->mtime = G_GINT64_CONSTANT(9000000000000);
@@ -90,21 +98,11 @@ static void seaf_dir_free (SeafDir *dir)
     }
     g_list_free(dir->entries); g_free(dir);
 }
-static GList *load_repo_rules (const char *repo, gboolean *db_error)
+/* 2026-10-15 v0.9-only: the retired v0.8 rule loader is replaced by the
+ * managed-library boundary; the fixture flips it per test case. */
+gboolean cf_acl_legacy_entry_denied (const char *repo)
 {
-    GList *rules = NULL;
-    for (int i = 0; i < total; i++) if (g_hash_table_contains(hidden, GINT_TO_POINTER(i + 1))) {
-        char *path = g_strdup_printf("/d%05d", i);
-        rules = g_list_prepend(rules, cf_acl_rule_new(path, CF_SUBJ_USER, "user", CF_PERM_INVISIBLE, 1));
-        g_free(path);
-    }
-    return rules;
-}
-static GHashTable *build_subject_set (const char *user)
-{
-    GHashTable *subjects = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    g_hash_table_add(subjects, cf_acl_subject_key(CF_SUBJ_USER, user));
-    return subjects;
+    return managed;
 }
 
 #include "production-functions.c"
@@ -122,6 +120,24 @@ char *fixture_page (const char *request)
     return result;
 }
 void fixture_free (void *result) { g_free(result); }
+/* Direct probe of the real per-entry filter (the page path denies at the
+ * parent gate first, so this is the only coverage of the filter's own
+ * managed branch): returns how many entries survive. */
+int fixture_filter_count (void)
+{
+    GList *entries = NULL;
+    for (int i = 0; i < 3; i++) {
+        entries = g_list_prepend (entries, g_object_new (SEAFILE_TYPE_DIRENT,
+            "obj_id", current_revision, "obj_name", "f00000",
+            "mode", (int)(S_IFREG | 0644), "version", 1,
+            "permission", "rw", NULL));
+    }
+    GList *kept = cf_ext_filter_dirents ("11111111-1111-4111-8111-111111111111",
+                                         "/", "user", entries);
+    int count = g_list_length (kept);
+    if (kept) g_list_free_full (kept, g_object_unref);
+    return count;
+}
 int fixture_legacy_count (void)
 {
     GError *error = NULL;

@@ -1284,6 +1284,28 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	return nil
 }
 
+// syncLegacyEntryDenied reports whether the legacy sync entry must refuse
+// repoID: a CloudFile managed library, a drifted managed schema or a failed
+// authority read all deny.
+//
+// It deliberately ignores option.CloudFileAllowLegacyManagedReads. That
+// switch is a temporary compatibility carve-out for existing native download
+// links; the sync protocol trades whole-library commits with no per-file
+// authorization point, so it must not ride the same exception.
+func syncLegacyEntryDenied(ctx context.Context, repoID string) bool {
+	if seafileDB == nil {
+		return true
+	}
+	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	tx, err := seafileDB.BeginTx(deadline, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return true
+	}
+	defer tx.Rollback()
+	return checkLegacyLibrary(deadline, tx, repoID) != nil
+}
+
 func checkPermission(repoID, user, op string, skipCache bool) *appError {
 	var info *permInfo
 	if !skipCache {
@@ -1292,7 +1314,14 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 		}
 	}
 	if info != nil {
-		return nil
+		// A cached grant must not outlive the boundary: a library enrolled as
+		// managed after the grant was cached would otherwise keep sync access
+		// for up to permExpireTime. Managed repositories always re-evaluate;
+		// ordinary revocations keep the documented two-hour window.
+		if !syncLegacyEntryDenied(context.Background(), repoID) {
+			return nil
+		}
+		permCache.Delete(fmt.Sprintf("%s:%s:%s", repoID, user, op))
 	}
 
 	permCache.Delete(fmt.Sprintf("%s:%s:%s", repoID, user, op))
