@@ -156,18 +156,43 @@ key_file_from_spec (json_t *spec)
     return config;
 }
 
+/* A storage class's configured base directory must already exist.
+ *
+ * obj_backend_fs_new()/block_backend_fs_new() create <base>/storage/<kind>, which
+ * is right for the single-store path and for the automatic per-library child
+ * (the parent is lstat-checked there). For a *configured static class* the base
+ * is a mount: creating it turns "the volume is not mounted" into a brand new
+ * empty store, and every object then looks missing instead of the deployment
+ * reporting an unavailable mapping. Subdirectories under an existing base are
+ * still created on first use. */
+static gboolean
+class_base_available (const char *dir)
+{
+    return dir && dir[0] && g_file_test (dir, G_FILE_TEST_IS_DIR);
+}
+
 static ObjBackend *
 obj_backend_from_spec (json_t *spec,
-                       const char *obj_type)
+                       const char *obj_type,
+                       gboolean *unavailable)
 {
     const char *name;
 
+    if (unavailable)
+        *unavailable = FALSE;
     if (!json_is_object (spec))
         return NULL;
     name = json_string_value (json_object_get (spec, "backend"));
     if (g_strcmp0 (name, "fs") == 0) {
         const char *dir = json_string_value (json_object_get (spec, "dir"));
-        return dir && dir[0] ? obj_backend_fs_new (dir, obj_type) : NULL;
+        if (!dir || !dir[0])
+            return NULL;
+        if (!class_base_available (dir)) {
+            if (unavailable)
+                *unavailable = TRUE;
+            return NULL;
+        }
+        return obj_backend_fs_new (dir, obj_type);
     }
     if (g_strcmp0 (name, "s3") == 0) {
         GKeyFile *config = key_file_from_spec (spec);
@@ -180,17 +205,26 @@ obj_backend_from_spec (json_t *spec,
 
 static BlockBackend *
 block_backend_from_spec (json_t *spec,
-                         const char *tmp_dir)
+                         const char *tmp_dir,
+                         gboolean *unavailable)
 {
     const char *name;
 
+    if (unavailable)
+        *unavailable = FALSE;
     if (!json_is_object (spec))
         return NULL;
     name = json_string_value (json_object_get (spec, "backend"));
     if (g_strcmp0 (name, "fs") == 0) {
         const char *dir = json_string_value (json_object_get (spec, "dir"));
-        return dir && dir[0] ?
-            block_backend_fs_new (dir, tmp_dir) : NULL;
+        if (!dir || !dir[0])
+            return NULL;
+        if (!class_base_available (dir)) {
+            if (unavailable)
+                *unavailable = TRUE;
+            return NULL;
+        }
+        return block_backend_fs_new (dir, tmp_dir);
     }
     if (g_strcmp0 (name, "s3") == 0) {
         GKeyFile *config = key_file_from_spec (spec);
@@ -438,9 +472,20 @@ load_obj_classes (MultiPriv *priv,
                                           NULL, NULL))
             return -1;
         spec_name = strcmp (obj_type, "commits") == 0 ? "commits" : "fs";
+        gboolean unavailable = FALSE;
         backend = obj_backend_from_spec (json_object_get (item, spec_name),
-                                         obj_type);
+                                         obj_type, &unavailable);
         if (!backend) {
+            if (unavailable &&
+                !json_is_true (json_object_get (item, "is_default"))) {
+                /* Leave the class out: a repository already bound to it then
+                 * fails closed through the existing unknown-class path with a
+                 * clear per-repo error, while unbound libraries keep using the
+                 * default. A missing default class still fails loudly below. */
+                seaf_warning ("%s storage class %s directory is unavailable; "
+                              "leaving it out.\n", obj_type, storage_id);
+                continue;
+            }
             seaf_warning ("Invalid %s backend for storage class %s.\n",
                           obj_type, storage_id);
             return -1;
@@ -479,9 +524,18 @@ load_block_classes (MultiPriv *priv,
             g_hash_table_lookup_extended (priv->backends, storage_id,
                                           NULL, NULL))
             return -1;
+        gboolean unavailable = FALSE;
         backend = block_backend_from_spec (
-            json_object_get (item, "blocks"), tmp_dir);
+            json_object_get (item, "blocks"), tmp_dir, &unavailable);
         if (!backend) {
+            if (unavailable &&
+                !json_is_true (json_object_get (item, "is_default"))) {
+                /* Same rule as the object classes: bound repositories fail
+                 * closed per-repo, unbound ones keep the default store. */
+                seaf_warning ("blocks storage class %s directory is unavailable; "
+                              "leaving it out.\n", storage_id);
+                continue;
+            }
             seaf_warning ("Invalid blocks backend for storage class %s.\n",
                           storage_id);
             return -1;

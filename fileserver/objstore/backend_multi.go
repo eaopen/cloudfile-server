@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,11 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/option"
 	"gopkg.in/ini.v1"
 )
+
+// errClassDirUnavailable marks a class whose spec is valid but whose
+// configured base directory is not there (typically an unmounted volume).
+// It is kept apart from a malformed spec so only the former may be skipped.
+var errClassDirUnavailable = errors.New("storage class directory is unavailable")
 
 type storageClass struct {
 	StorageID string                 `json:"storage_id"`
@@ -88,6 +95,15 @@ func newMultiBackend(config *ini.File, seafileConfPath, objType string) (*multiB
 		}
 		backend, err := backendFromClassSpec(spec, objType)
 		if err != nil {
+			// A non-default class whose base directory is not mounted is left
+			// out: a repository already bound to it fails closed through the
+			// existing unknown-class path with a clear per-repo error, while
+			// unbound libraries keep using the default store. A malformed spec
+			// or a missing default store still stops startup.
+			if errors.Is(err, errClassDirUnavailable) && !class.Default {
+				log.Printf("CloudFile: storage class %q is unavailable; leaving it out: %v", class.StorageID, err)
+				continue
+			}
 			return nil, fmt.Errorf("storage class %s: %w", class.StorageID, err)
 		}
 		m.backends[class.StorageID] = backend
@@ -144,6 +160,15 @@ func backendFromClassSpec(spec map[string]interface{}, objType string) (storageB
 		dir, _ := spec["dir"].(string)
 		if dir == "" {
 			return nil, fmt.Errorf("fs backend requires dir")
+		}
+		// newFSBackend creates <dir>/storage/<kind>, which is right for the
+		// single-store path and for the automatic per-library child (its parent
+		// is checked there). For a configured static class the base is a mount:
+		// creating it would turn "the volume is not mounted" into a brand new
+		// empty store, and every object would look missing.
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("%w: %s", errClassDirUnavailable, dir)
 		}
 		return newFSBackend(dir, objType)
 	case "s3":

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -159,6 +160,88 @@ func TestMultipleBackendRejectsDuplicateStorageID(t *testing.T) {
 	}
 	if _, err := newBackend(conf, dir, "commits"); err == nil || !strings.Contains(err.Error(), "duplicate storage_id") {
 		t.Fatalf("error = %v, want duplicate storage id", err)
+	}
+}
+
+func writeMultiTestConfig(t *testing.T, dir, classes string) string {
+	t.Helper()
+	if err := os.WriteFile(path.Join(dir, "classes.json"), []byte(classes), 0600); err != nil {
+		t.Fatal(err)
+	}
+	conf := path.Join(dir, "seafile.conf")
+	if err := os.WriteFile(conf, []byte("[database]\nhost = db\nuser = user\npassword = pass\ndb_name = seafile_db\n\n[storage]\nenable_storage_classes = true\nstorage_classes_file = classes.json\n\n[commit_object_backend]\nname = multiple\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return conf
+}
+
+// A configured static class whose base directory is not mounted must not have
+// that directory created: an empty store makes every object look missing. The
+// class is left out instead, so a repository already bound to it fails closed
+// through the unknown-class path while unbound libraries keep the default.
+func TestMultipleBackendLeavesOutUnmountedClass(t *testing.T) {
+	dir := t.TempDir()
+	missing := path.Join(dir, "unmounted")
+	conf := writeMultiTestConfig(t, dir, `[
+  {"storage_id":"local","is_default":true,"commits":{"backend":"fs","dir":"`+dir+`"}},
+  {"storage_id":"rustfs","commits":{"backend":"fs","dir":"`+missing+`"}}
+]`)
+
+	backend, err := newBackend(conf, dir, "commits")
+	if err != nil {
+		t.Fatalf("an unmounted non-default class must not block startup: %v", err)
+	}
+	multi, ok := backend.(*multiBackend)
+	if !ok {
+		t.Fatalf("backend = %T, want *multiBackend", backend)
+	}
+	if _, ok := multi.backends["rustfs"]; ok {
+		t.Fatal("unmounted class must be left out, not registered as an empty store")
+	}
+	if _, ok := multi.backends["local"]; !ok {
+		t.Fatal("default class must still be registered")
+	}
+	if _, err := os.Stat(path.Join(missing, "storage")); err == nil {
+		t.Fatal("the unavailable class directory must not be created")
+	}
+}
+
+// The default store is not optional: without it an unbound library would be
+// served from nothing, so a missing default class directory stops startup.
+func TestMultipleBackendRejectsUnmountedDefaultClass(t *testing.T) {
+	dir := t.TempDir()
+	missing := path.Join(dir, "unmounted")
+	conf := writeMultiTestConfig(t, dir, `[
+  {"storage_id":"local","is_default":true,"commits":{"backend":"fs","dir":"`+missing+`"}}
+]`)
+
+	_, err := newBackend(conf, dir, "commits")
+	if !errors.Is(err, errClassDirUnavailable) {
+		t.Fatalf("error = %v, want errClassDirUnavailable", err)
+	}
+	if _, err := os.Stat(path.Join(missing, "storage")); err == nil {
+		t.Fatal("the unavailable default class directory must not be created")
+	}
+}
+
+// A malformed spec stays a hard error: only an unmounted directory may be
+// skipped, otherwise a typo would silently degrade into a missing class.
+func TestBackendFromClassSpecDistinguishesMalformedSpec(t *testing.T) {
+	missing := path.Join(t.TempDir(), "unmounted")
+	for name, spec := range map[string]map[string]interface{}{
+		"no dir":             {"backend": "fs"},
+		"unsupported":        {"backend": "nfs", "dir": missing},
+		"missing fs backend": {"dir": missing},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := backendFromClassSpec(spec, "commits")
+			if err == nil {
+				t.Fatal("malformed spec must be rejected")
+			}
+			if errors.Is(err, errClassDirUnavailable) {
+				t.Fatalf("malformed spec reported as an unavailable mount: %v", err)
+			}
+		})
 	}
 }
 
