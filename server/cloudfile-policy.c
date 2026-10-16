@@ -61,21 +61,32 @@ managed_isolation (SeafDBRow *row, void *data)
 }
 
 static int
-managed_schema (SeafDBTrans *trans)
+managed_schema (SeafDBTrans *trans, gboolean *m1)
 {
     gboolean error = FALSE;
+    *m1 = seaf_db_trans_check_for_existence (trans,
+        "SELECT version FROM cf_schema_migration WHERE version='100_m1_storage' FOR UPDATE", &error, 0);
+    if (error) return -1;
     /* Pin the table before metadata inspection and use current locking reads. */
     if (seaf_db_trans_foreach_selected_row (trans,
+            *m1 ? "SELECT id FROM cf_dir_acl LIMIT 0 FOR UPDATE" :
             "SELECT repo_id FROM cf_managed_library LIMIT 0 FOR UPDATE", NULL, NULL, 0) < 0)
         return -1;
     const char *checks[] = {
-        "SELECT version FROM cf_schema_migration WHERE version IN ('032_managed_libraries','101_m1_native_boundary') AND state='applied'",
+        "SELECT version FROM cf_schema_migration WHERE version='032_managed_libraries' AND state='applied'",
         "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND ENGINE='InnoDB'",
         "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_managed_library' GROUP BY table_name HAVING COUNT(*)=2 AND SUM(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO')=1 AND SUM(column_name='created_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO')=1",
         "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1"
     };
-    for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
-        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
+    const char *m1_checks[] = {
+        "SELECT version FROM cf_schema_migration WHERE version='102_m1_directory_acl' AND state='applied' AND step=4",
+        "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_dir_acl' AND ENGINE='InnoDB'",
+        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_dir_acl' AND index_name='acl_ancestors' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(non_unique=1 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='repo_id') OR (seq_in_index=2 AND column_name='path_hash') OR (seq_in_index=3 AND column_name='id')))=3"
+    };
+    const char **required = *m1 ? m1_checks : checks;
+    size_t length = *m1 ? G_N_ELEMENTS (m1_checks) : G_N_ELEMENTS (checks);
+    for (size_t i = 0; i < length; ++i)
+        if (!seaf_db_trans_check_for_existence (trans, required[i], &error, 0) || error) return -1;
     /* Reuse qualification's MySQL/MariaDB variable compatibility. */
     gboolean isolation = FALSE;
     int rows = seaf_db_trans_foreach_selected_row (trans,
@@ -104,7 +115,8 @@ cf_policy_legacy_library_decision (SeafDBTrans *trans, const char *repo,
                                    gboolean *unavailable)
 {
     if (unavailable) *unavailable = FALSE;
-    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) {
+    gboolean m1 = FALSE;
+    if (!repo || strlen (repo) != 36 || managed_schema (trans, &m1) < 0) {
         if (unavailable) *unavailable = TRUE;
         return -1;
     }
@@ -120,12 +132,16 @@ cf_policy_legacy_library_decision (SeafDBTrans *trans, const char *repo,
     const char *first = repo, *second = origin;
     if (second && strcmp (first, second) > 0) { first = origin; second = repo; }
     gboolean error = FALSE;
+    /* M1 has no historical enrollment. Only currently configured ACLs make
+     * context-free native access unavailable; an empty configuration is CE. */
+    const char *query = m1 ? "SELECT repo_id FROM cf_dir_acl WHERE repo_id=? LIMIT 1 FOR UPDATE" :
+                            "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE";
     gboolean blocked = seaf_db_trans_check_for_existence (trans,
-        "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", &error,
+        query, &error,
         1, "string", first);
     if (!blocked && !error && second)
         blocked = seaf_db_trans_check_for_existence (trans,
-            "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", &error,
+            query, &error,
             1, "string", second);
     g_free (origin);
     if (error) {
@@ -169,7 +185,9 @@ cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo)
 int
 cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo)
 {
-    if (!repo || strlen (repo) != 36 || managed_schema (trans) < 0) return -1;
+    gboolean m1 = FALSE;
+    if (!repo || strlen (repo) != 36 || managed_schema (trans, &m1) < 0) return -1;
+    if (m1) return 0;
     return seaf_db_trans_query (trans,
         "INSERT INTO cf_managed_library(repo_id,created_at) VALUES(?,UTC_TIMESTAMP(6)) "
         "ON DUPLICATE KEY UPDATE repo_id=VALUES(repo_id)", 1, "string", repo);
