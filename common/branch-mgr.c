@@ -15,6 +15,10 @@
 #endif
 
 #include "branch-mgr.h"
+#ifdef SEAFILE_SERVER
+#include "cf-v2-edit-fence.h"
+#endif
+
 
 #define BRANCH_DB "branch.db"
 
@@ -461,6 +465,15 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
         return -1;
     }
     if (strcmp (old_commit_id, commit_id) != 0) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return -1;
+    }
+
+    /* Guard must be checked under the Branch row lock. A pre-upload check
+     * cannot protect against a Checkout acquired while bytes are indexing. */
+    if (cf_v2_edit_check_unscoped_branch(trans, mgr->seaf, branch->repo_id,
+                                         old_commit_id, branch->commit_id) < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -1;
