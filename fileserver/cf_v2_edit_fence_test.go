@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/haiwen/seafile-server/fileserver/diff"
+	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 // These are guard-hit tests only. They do not certify MariaDB native publish.
@@ -26,5 +28,14 @@ func TestCFV2EditTouchesPath(t *testing.T) {
 				t.Fatalf("touches=%v, expected=%v", got, tc.hit)
 			}
 		})
+	}
+}
+
+func TestCFV2EditDisabledNeedsNoDatabase(t *testing.T) {
+	old := option.V2EditEnabled
+	option.V2EditEnabled = false
+	defer func() { option.V2EditEnabled = old }()
+	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "", "", ""); err != nil {
+		t.Fatalf("disabled feature must make no database call: %v", err)
 	}
 }
