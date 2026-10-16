@@ -160,6 +160,16 @@ class MariaDBFeatureTests(TestCase):
             # Generous CI guardrail only: lookups should take much less than
             # a second each despite 12k historical Guard slots.
             self.assertLess(elapsed, 5.0)
+            # Once the only active reservation is released, 12,000 dormant
+            # historical rows still must yield an empty indexed range.
+            c.execute(
+                "UPDATE cf_edit_guard SET guard_id=NULL,mode=NULL,"
+                "owner_uid=NULL,proof_digest=NULL,checkout_policy=NULL,"
+                "base_file_id=NULL,credential_epoch=0 "
+                "WHERE repo_id=%s AND path_hash=%s",
+                (REPO, history[5000][1]))
+            c.execute(query, (REPO,))
+            self.assertEqual(c.fetchall(), ())
         self.db.commit()
 
     def test_branch_lock_serializes_checkout_and_publish(self):
