@@ -30,7 +30,7 @@ func TestCFEditScopedTicketValidation(t *testing.T) {
 	now := time.Now()
 	user := uuid.New().String()
 	sign := func(mode, path string, expiry time.Duration) string {
-		c := cfEditClaims{RepoID: user, FilePath: path, Mode: mode, BaseID: "a" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		c := cfEditClaims{UID: "uid-test", RepoID: user, FilePath: path, Mode: mode, BaseID: "a" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			RegisteredClaims: jwt.RegisteredClaims{Issuer: "cloudfile-v2-edit",
 				Audience: jwt.ClaimStrings{"cloudfile-edit-agent"}, Subject: "user@auth.local",
 				IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(expiry))}}
