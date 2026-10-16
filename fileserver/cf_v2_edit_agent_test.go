@@ -73,20 +73,19 @@ func TestCFEditCredentialDigestDoesNotTrustUnrelatedActor(t *testing.T) {
 	}
 }
 
-
 func TestCFEditPeerIPOnlyTrustsLoopbackProxy(t *testing.T) {
- cases:=[]struct{remote,header,expected string}{
-  {"127.0.0.1:4321","203.0.113.21","203.0.113.21"},
-  {"[::1]:4321","2001:db8::21","2001:db8::21"},
-  {"198.51.100.8:4321","203.0.113.21","198.51.100.8"},
-  {"127.0.0.1:4321","not-an-ip","127.0.0.1"},
- }
- for _,tc:=range cases{
-  r:=httptest.NewRequest("GET","/cf-edit/v1/status",nil)
-  r.RemoteAddr=tc.remote
-  r.Header.Set("X-Real-IP",tc.header)
-  if got:=cfEditPeerIP(r);got!=tc.expected {
-   t.Fatalf("remote=%s header=%s got=%s want=%s",tc.remote,tc.header,got,tc.expected)
-  }
- }
+	cases := []struct{ remote, header, expected string }{
+		{"127.0.0.1:4321", "203.0.113.21", "203.0.113.21"},
+		{"[::1]:4321", "2001:db8::21", "2001:db8::21"},
+		{"198.51.100.8:4321", "203.0.113.21", "198.51.100.8"},
+		{"127.0.0.1:4321", "not-an-ip", "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		r := httptest.NewRequest("GET", "/cf-edit/v1/status", nil)
+		r.RemoteAddr = tc.remote
+		r.Header.Set("X-Real-IP", tc.header)
+		if got := cfEditPeerIP(r); got != tc.expected {
+			t.Fatalf("remote=%s header=%s got=%s want=%s", tc.remote, tc.header, got, tc.expected)
+		}
+	}
 }
