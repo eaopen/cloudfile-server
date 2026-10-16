@@ -369,7 +369,9 @@ diff_commits (SeafCommit *commit1, SeafCommit *commit2, GList **results,
     roots[0] = commit1->root_id;
     roots[1] = commit2->root_id;
 
-    diff_trees (2, roots, &opt);
+    int rc = diff_trees (2, roots, &opt);
+    if (rc < 0)
+        return -1;
     diff_resolve_renames (results);
 
     return 0;
@@ -398,7 +400,9 @@ diff_commit_roots (const char *store_id, int version,
     roots[0] = root1;
     roots[1] = root2;
 
-    diff_trees (2, roots, &opt);
+    int rc = diff_trees (2, roots, &opt);
+    if (rc < 0)
+        return -1;
     diff_resolve_renames (results);
 
     return 0;
