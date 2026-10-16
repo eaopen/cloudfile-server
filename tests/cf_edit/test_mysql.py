@@ -44,11 +44,13 @@ class MariaDBFeatureTests(TestCase):
                       "commit_id CHAR(40) NOT NULL, PRIMARY KEY(repo_id,name)) ENGINE=InnoDB")
         cls.db.commit()
         ddl = Path(os.getenv("CF_EDIT_SQL", "scripts/sql/mysql/cloudfile-v2-edit.sql")).read_text()
+        # Strip SQL comments BEFORE splitting statements: comments can contain
+        # literal semicolons that are not SQL statement delimiters.
+        ddl = "\n".join(line for line in ddl.splitlines() if not line.lstrip().startswith("--"))
         with cls.db.cursor() as c:
             for clause in ddl.split(";"):
-                cleaned = "\n".join(line for line in clause.splitlines() if not line.lstrip().startswith("--"))
-                if cleaned.strip():
-                    c.execute(cleaned)
+                if clause.strip():
+                    c.execute(clause)
             c.execute("INSERT INTO Branch VALUES(%s,'master',%s)", (REPO, "a" * 40))
         cls.db.commit()
 
