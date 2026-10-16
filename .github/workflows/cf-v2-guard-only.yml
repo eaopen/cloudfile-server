@@ -1,5 +1,6 @@
 name: CF-EDIT Guard-only native Go
 on:
+  workflow_dispatch:
   push:
     branches: [feature/v2-rust-guard-only]
   pull_request:
