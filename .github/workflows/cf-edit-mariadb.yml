@@ -1,0 +1,56 @@
+name: CF-EDIT MariaDB atomic schema (feature only)
+
+on:
+  push:
+    branches: [feature/cf-edit]
+    paths:
+      - "scripts/sql/mysql/cloudfile-v2-edit.sql"
+      - "tests/cf_edit/**"
+      - ".github/workflows/cf-edit-mariadb.yml"
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mariadb:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: test
+          MARIADB_DATABASE: seafile_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -ptest"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test DB client
+        run: python -m pip install "pymysql==1.1.1"
+      - name: MariaDB schema and atomicity tests
+        env:
+          CF_EDIT_MYSQL_HOST: 127.0.0.1
+          CF_EDIT_MYSQL_PASSWORD: test
+          CF_EDIT_MYSQL_DB: seafile_db
+          CF_EDIT_SQL: scripts/sql/mysql/cloudfile-v2-edit.sql
+        run: python -m unittest discover -s tests/cf_edit -p "test_mysql.py" -v
+
+  go-fence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fileserver/go.mod
+          cache-dependency-path: fileserver/go.sum
+      - name: Build the Fileserver package and run protected path tests
+        working-directory: fileserver
+        run: go test . -run '^TestCFV2EditTouchesPath$' -count=1 -v

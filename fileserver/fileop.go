@@ -2225,6 +2225,13 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		return false, err
 	}
 
+	// Final and transactional: an upload preflight cannot protect against a
+	// Checkout acquired during indexing. Never publish through an old token.
+	if err := cfV2EditCheckUnscopedBranch(ctx, trans, repoID, oldCommitID, newCommitID); err != nil {
+		trans.Rollback()
+		return false, err
+	}
+
 	sqlStr = "UPDATE Branch SET commit_id = ? WHERE name = ? AND repo_id = ?"
 	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, name, repoID)
 	if err != nil {
