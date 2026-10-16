@@ -30,7 +30,6 @@ CREATE TABLE cf_edit_guard (
     KEY cf_edit_guard_owner (owner_uid, guard_id),
     CONSTRAINT cf_edit_mode CHECK (mode IS NULL OR mode IN ('lock','checkout')),
     CONSTRAINT cf_edit_policy CHECK (checkout_policy IS NULL OR checkout_policy IN ('renewable','persistent')),
-    CONSTRAINT cf_edit_generation CHECK (generation >= credential_epoch),
     CONSTRAINT cf_edit_active_shape CHECK (
         (guard_id IS NULL AND mode IS NULL AND owner_uid IS NULL AND
          proof_digest IS NULL AND pending_intent IS NULL)
