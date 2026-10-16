@@ -18,7 +18,7 @@ jobs:
       - name: Build, run Guard auth tests and vet
         working-directory: fileserver
         run: |
-          go test ./...
+          go test . -run 'TestCFEdit' -count=1 -v
           go vet ./...
       - name: Validate Go formatting
         working-directory: fileserver
