@@ -169,6 +169,12 @@ func cfEditVerified(c *cfEditClaims, g cfEditGuard, p cfEditProof, expiredAllowe
 	sum := sha256.Sum256([]byte(p.Proof))
 	return subtle.ConstantTimeCompare(sum[:], digest) == 1
 }
+// cfEditResumable lets the owner renew a lapsed lease with a fresh browser
+// ticket. Checkout always rotates guard_id, so a still-verified Guard means no
+// one else checked out; an unchanged file means no optimistic save intervened.
+func cfEditResumable(g cfEditGuard, current string, now time.Time) bool {
+	return g.Expires.After(now) || (g.BaseID != "" && current == g.BaseID)
+}
 func cfEditCurrentPermission(ctx context.Context, tx *sql.Tx, c *cfEditClaims) error {
 	protected, err := cfACLProtected(ctx, tx, c.RepoID)
 	if err != nil {
@@ -340,14 +346,28 @@ func cfEditGuardAction(w http.ResponseWriter, r *http.Request, c *cfEditClaims, 
 		return
 	}
 	defer tx.Rollback()
-	if _, err = cfEditHead(ctx, tx, repo.ID); err != nil {
+	head, err := cfEditHead(ctx, tx, repo.ID)
+	if err != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
 		return
 	}
 	g, err := cfEditRow(ctx, tx, c)
-	if err != nil || !cfEditVerified(c, g, p.cfEditProof, action == "release") {
+	if err != nil || !cfEditVerified(c, g, p.cfEditProof, true) {
 		cfEditFail(w, 409, "STALE_GUARD")
 		return
+	}
+	if action == "renew" {
+		now, current := time.Now().UTC(), ""
+		if !g.Expires.After(now) {
+			if current, _, err = cfEditActual(repo, head, c.FilePath); err != nil {
+				cfEditFail(w, 409, "STALE_GUARD")
+				return
+			}
+		}
+		if !cfEditResumable(g, current, now) {
+			cfEditFail(w, 409, "STALE_GUARD")
+			return
+		}
 	}
 	if action == "renew" {
 		_, err = tx.ExecContext(ctx, "UPDATE cf_edit_guard SET lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)),updated_at=UTC_TIMESTAMP(6) WHERE repo_id=? AND path_hash=?", repo.ID, cfEditHash(c.FilePath))

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +88,24 @@ func TestCFEditPeerIPOnlyTrustsLoopbackProxy(t *testing.T) {
 		if got := cfEditPeerIP(r); got != tc.expected {
 			t.Fatalf("remote=%s header=%s got=%s want=%s", tc.remote, tc.header, got, tc.expected)
 		}
+	}
+}
+
+func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
+	now := time.Now().UTC()
+	base := strings.Repeat("a", 40)
+	live := cfEditGuard{BaseID: base, Expires: now.Add(time.Minute)}
+	lapsed := cfEditGuard{BaseID: base, Expires: now.Add(-time.Minute)}
+	if !cfEditResumable(live, "", now) {
+		t.Fatal("live lease must renew without a file lookup")
+	}
+	if !cfEditResumable(lapsed, base, now) {
+		t.Fatal("lapsed Guard on the unchanged file must resume")
+	}
+	if cfEditResumable(lapsed, strings.Repeat("b", 40), now) {
+		t.Fatal("lapsed Guard resumed after another save changed the file")
+	}
+	if cfEditResumable(cfEditGuard{Expires: now.Add(-time.Minute)}, "", now) {
+		t.Fatal("lapsed Guard without a base resumed")
 	}
 }
