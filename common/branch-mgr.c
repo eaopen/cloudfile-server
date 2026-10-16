@@ -293,14 +293,6 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
 
     return 0;
 #else
-#ifdef FULL_FEATURE
-    SeafBranch *old = seaf_branch_manager_get_branch(mgr, branch->repo_id, branch->name);
-    if (!old) return -1;
-    int result = seaf_branch_manager_test_and_update_branch(mgr, branch, old->commit_id,
-                                                           FALSE, NULL, NULL, NULL);
-    seaf_branch_unref(old);
-    return result;
-#else
     int rc = seaf_db_statement_query (mgr->seaf->db,
                                       "UPDATE Branch SET commit_id = ? "
                                       "WHERE name = ? AND repo_id = ?",
@@ -310,7 +302,6 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
     if (rc < 0)
         return -1;
     return 0;
-#endif
 #endif
 }
 

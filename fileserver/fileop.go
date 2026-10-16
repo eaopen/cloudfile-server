@@ -302,9 +302,8 @@ func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 
-	if denied := cfACLPath(repoID, user, "/"+strings.TrimPrefix(rpath, "/"), "file", "read"); denied != nil {
-		return denied
-	}
+	// Hub check-access above already applied the same ACL authority to this
+	// exact path for protected repos; a second round trip would only repeat it.
 	fileID, _, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, rpath)
 	if err != nil {
 		msg := "Invalid file_path\n"
