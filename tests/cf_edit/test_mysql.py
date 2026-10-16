@@ -4,6 +4,7 @@ Usage: CF_EDIT_SQL=<path> CF_EDIT_MYSQL_* env python3 -m unittest tests.cf_edit.
 This does NOT stand in for Seafile Native C/Go integration E2E.
 """
 import hashlib
+import time
 import os
 from pathlib import Path
 from threading import Event, Thread
@@ -120,6 +121,46 @@ class MariaDBFeatureTests(TestCase):
         with self.db.cursor() as c:
             c.execute("SELECT state,result_commit_id FROM cf_commit_intent WHERE intent_id=%s", (REPO,))
             self.assertEqual(c.fetchone(), ("published", "c" * 40))
+
+    def test_guard_lookup_scales_with_active_locks_not_history(self):
+        """A large dormant Guard history must not be scanned per native write.
+
+        This is a database-index + query-plan regression, not a full throughput
+        benchmark of Seafile uploads or C tree-diff operations.
+        """
+        history = []
+        for i in range(12000):
+            path = "/Archive/historical-%05d.step" % i
+            history.append((REPO, hashlib.sha256(path.encode()).digest(), path))
+        with self.db.cursor() as c:
+            c.executemany(
+                "INSERT INTO cf_edit_guard(repo_id,path_hash,path) VALUES(%s,%s,%s)",
+                history)
+            c.execute(
+                "UPDATE cf_edit_guard SET guard_id=%s,generation=1,"
+                "credential_epoch=1,mode='checkout',owner_uid='owner',"
+                "proof_digest=%s,checkout_policy='persistent',base_file_id=%s "
+                "WHERE repo_id=%s AND path_hash=%s",
+                (REPO, "f"*64, "a"*40, REPO, history[5000][1]))
+        self.db.commit()
+
+        query = ("SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
+                 "WHERE repo_id=%s AND guard_id IS NOT NULL FOR UPDATE")
+        with self.db.cursor() as c:
+            c.execute("EXPLAIN " + query, (REPO,))
+            plan = c.fetchone()
+            self.assertEqual(plan[5], "cf_edit_guard_active")  # chosen key
+            self.assertLess(int(plan[8]), 100)  # estimated active rows
+            t0 = time.perf_counter()
+            for _ in range(25):
+                c.execute(query, (REPO,))
+                rows = c.fetchall()
+                self.assertEqual(rows, ((history[5000][2],),))
+            elapsed = time.perf_counter() - t0
+            # Generous CI guardrail only: lookups should take much less than
+            # a second each despite 12k historical Guard slots.
+            self.assertLess(elapsed, 5.0)
+        self.db.commit()
 
     def test_branch_lock_serializes_checkout_and_publish(self):
         locked, attempted, acquired = Event(), Event(), Event()
