@@ -226,6 +226,26 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 	w.WriteHeader(200)
 	_, _ = io.Copy(w, tmp)
 }
+// cfEditPeerIP trusts proxy metadata ONLY from a loopback connection.
+// Direct clients cannot spoof a public IP by supplying X-Real-IP.
+func cfEditPeerIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return ""
+	}
+	peer := net.ParseIP(host)
+	if peer == nil {
+		return ""
+	}
+	if peer.IsLoopback() {
+		forwarded := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP")))
+		if forwarded != nil {
+			return forwarded.String()
+		}
+	}
+	return peer.String()
+}
+
 func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo) {
 	if r.Method != "POST" || c.Mode != "exclusive-edit" {
 		cfEditFail(w, 405, "METHOD")
@@ -282,10 +302,7 @@ func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, rep
 	}
 	proof := hex.EncodeToString(key[:])
 	guardID := uuid.New().String()
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if net.ParseIP(ip) == nil {
-		ip = ""
-	}
+	ip := cfEditPeerIP(r)
 	_, err = tx.ExecContext(ctx,
 		"UPDATE cf_edit_guard SET guard_id=?,generation=?,owner_uid=?,owner_native_user=?,"+
 			"terminal_type=?,terminal_name=?,checkout_ip=?,proof_digest=?,base_file_id=?,"+
