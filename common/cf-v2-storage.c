@@ -74,9 +74,11 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
 {
     Route route = {0};
     char *root = NULL, *key_dir = NULL, *obj_type = NULL, *result = NULL;
-    if (!cf_v2_storage_enabled ())
+    /* Preserve native offline export. Automatic-root discovery for export is
+     * a separate follow-up; never add a SQL prerequisite to native recovery. */
+    if (!cf_v2_storage_enabled () || !seaf->db)
         return g_build_filename (native_obj_dir, repo_id, NULL);
-    if (!seaf->db || !repo_id || !is_uuid_valid (repo_id) || !(root = storage_root ()))
+    if (!repo_id || !is_uuid_valid (repo_id) || !(root = storage_root ()))
         return NULL;
     /* One query distinguishes unmapped native libraries from corrupt routes.
      * No cache: separate C/Go processes must see the same committed binding. */

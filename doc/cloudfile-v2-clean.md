@@ -45,9 +45,11 @@ remove objects from the correct location. Failed creation may leave a reserved
 binding or directory for inspection; it must not be automatically reused or
 deleted. Existing data, shares and repo IDs are not rewritten.
 
-FSCK and explicit-library export use the same route. When automatic storage is
-configured, export requires the configured database, including its native
-binding and key reservation; it cannot infer a missing route from disk names.
+The native FSCK/export flow and its offline mode remain unchanged. Offline
+export continues to scan native data directories without a SQL connection.
+Discovery/export of automatic library roots is a follow-up, outside the current
+MVP; it is not yet supported by the native offline exporter. No database
+prerequisite is added to offline recovery.
 
 `go test -race ./objstore` covers native/routed byte separation and route
 failures. The Docker V2 runtime suite additionally exercises mixed libraries,

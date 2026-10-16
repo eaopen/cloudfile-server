@@ -68,8 +68,7 @@ seafile_session_new(const char *central_config_dir,
     session->tmp_file_dir = tmp_file_dir;
     session->config = config;
 
-    /* Automatic local stores require CE's authoritative route even for export. */
-    if (need_db || g_key_file_has_key (config, "cloudfile_v2", "auto_local_root", NULL)) {
+    if (need_db) {
         if (load_database_config (session) < 0) {
             seaf_warning ("Failed to load database config.\n");
             goto onerror;
