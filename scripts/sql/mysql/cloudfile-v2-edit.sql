@@ -27,6 +27,7 @@ CREATE TABLE cf_edit_guard (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (repo_id, path_hash),
     UNIQUE KEY cf_edit_guard_id (guard_id),
+    KEY cf_edit_guard_active (repo_id, guard_id),
     KEY cf_edit_guard_owner (owner_uid, guard_id),
     CONSTRAINT cf_edit_mode CHECK (mode IS NULL OR mode IN ('lock','checkout')),
     CONSTRAINT cf_edit_policy CHECK (checkout_policy IS NULL OR checkout_policy IN ('renewable','persistent')),
