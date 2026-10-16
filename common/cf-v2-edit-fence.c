@@ -79,8 +79,8 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
 
     GuardPaths guards = {g_ptr_array_new_with_free_func(g_free), FALSE};
     int count = seaf_db_trans_foreach_selected_row(trans,
-        "SELECT path FROM cf_edit_guard WHERE repo_id=? "
-        "AND guard_id IS NOT NULL FOR UPDATE",
+        "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
+        "WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE",
         read_guard_path, &guards, 1, "string", repo_id);
     int rc = -1;
     if (count < 0 || guards.invalid)
