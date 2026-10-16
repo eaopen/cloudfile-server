@@ -225,7 +225,7 @@ func cfEditStatus(w http.ResponseWriter,r *http.Request,c *cfEditClaims,repo *re
  if r.Method!="GET"{cfEditFail(w,405,"METHOD");return}
  id,_,err:=cfEditActual(repo,repo.HeadCommitID,c.FilePath)
  if err!=nil{cfEditFail(w,404,"FILE_MISSING");return}
- out:=map[string]interface{}{"file_id":id,"head_commit_id":repo.HeadCommitID}
+ out:=map[string]interface{}{"file_id":id,"head_commit_id":repo.HeadCommitID,"checked_out":false}
  // Recovery may need to confirm CONTENT even if another native commit advanced
  // the File ID. Stream-hash only on explicit status, never on ordinary reads.
  nativeFile,e:=fsmgr.GetSeafile(repo.StoreID,id)
