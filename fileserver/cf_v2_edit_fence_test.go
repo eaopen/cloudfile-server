@@ -10,7 +10,7 @@ import (
 func TestCFV2EditTouchesPath(t *testing.T) {
 	cases := []struct {
 		name, previous, renamed, guarded string
-		hit bool
+		hit                              bool
 	}{
 		{"same file", "Engineering/part.step", "", "/Engineering/part.step", true},
 		{"other file", "Engineering/other.step", "", "/Engineering/part.step", false},
