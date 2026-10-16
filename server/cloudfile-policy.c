@@ -69,7 +69,7 @@ managed_schema (SeafDBTrans *trans)
             "SELECT repo_id FROM cf_managed_library LIMIT 0 FOR UPDATE", NULL, NULL, 0) < 0)
         return -1;
     const char *checks[] = {
-        "SELECT version FROM cf_schema_migration WHERE version='032_managed_libraries' AND state='applied'",
+        "SELECT version FROM cf_schema_migration WHERE version IN ('032_managed_libraries','101_m1_native_boundary') AND state='applied'",
         "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND ENGINE='InnoDB'",
         "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_managed_library' GROUP BY table_name HAVING COUNT(*)=2 AND SUM(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO')=1 AND SUM(column_name='created_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO')=1",
         "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1"
