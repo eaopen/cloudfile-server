@@ -5,18 +5,21 @@ CloudFile overlay `89f645f1e46a8b2d3d05e813a3a18aa980bc2735` as this branch's pa
 Hub baseline: `64ed374bc8ceeb7d610baf9f3a99c6a60cffa93f`.
 
 See the matching Hub `cloudfile_ext/v2/ACL_CONTRACT.md` for the shared policy and
-wire contract. The authoritative algorithm and bounded decision cache remain in Hub. Existing v0.9 design
+wire contract. The authoritative algorithm and bounded library rule cache remain in Hub. Existing v0.9 design
 discussions are not implementation or acceptance evidence.
 
 `[cloudfile] v2_acl_enabled=true` enables the minimal native integration in both C
 and Go. Invalid values fail closed. The default preserves native behavior. Public
 rule publication in Hub remains blocked independently of this option.
 
-- Current-path file reads call the same Hub authority before bytes/Range/304.
+- Current-path file reads are authorized by Hub `check-access`, which applies the
+  same authority before bytes/Range/304. Go does not repeat that round trip, so
+  Hub and Server must come from the matching source-set pins.
 - Upload/overwrite actors originate in native request tokens or trusted RPC
   arguments. Final native tree diffs are checked after locking Branch(master).
-- Hub rule mutation must take that same lock first. A previous ticket alone is insufficient; Hub may return its bounded
-  policy cache result (60 seconds by default, configurable 0–300 seconds). A failed check rolls back the native publication.
+- Hub rule mutation must take that same lock first. A previous ticket alone is insufficient; Hub may evaluate
+  its cached library rules (180 seconds by default, configurable 0–300 seconds;
+  rule writes through Hub invalidate them on commit). A failed check rolls back the native publication.
 - C post/put of fresh bytes have explicit actor context. C unscoped commits, native
   sync, public links and object-ID-only tickets cannot access protected repos.
 - Copy/move is disabled globally in ACL mode until source/destination proof is

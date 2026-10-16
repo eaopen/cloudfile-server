@@ -222,6 +222,8 @@ v2_acl_enabled=true
                 checks.append('Unscoped structural C operation remains closed')
                 from django.test import override_settings
                 from django.core.cache import cache
+                # This store has no commit hook, like a direct SQL edit: the
+                # cached library rules stay valid until their bounded expiry.
                 with override_settings(CF_ACL_CACHE_TTL=2,CACHES={'default':{'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'native-acl-proof'}}):
                     cache.clear()
                     assert upload('cache-warm.txt').status_code==200

@@ -37,8 +37,15 @@ func cfACLProtected(ctx context.Context, db cfACLQuery, repoID string) (bool, er
 	return protected, err
 }
 
+// Request-path lookups are bounded like other native DB operations.
+func cfACLProtectedNow(repoID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+	return cfACLProtected(ctx, seafileDB, repoID)
+}
+
 func cfACLUnscoped(repoID string) *appError {
-	protected, err := cfACLProtected(context.Background(), seafileDB, repoID)
+	protected, err := cfACLProtectedNow(repoID)
 	if err != nil || protected {
 		return &appError{errCFACL, "Current path authorization required", http.StatusForbidden}
 	}
@@ -115,7 +122,7 @@ func cfACLAuthorize(ctx context.Context, repoID, user string, checks []cfACLChec
 }
 
 func cfACLPath(repoID, user, value, kind, action string) *appError {
-	protected, err := cfACLProtected(context.Background(), seafileDB, repoID)
+	protected, err := cfACLProtectedNow(repoID)
 	if err != nil {
 		return &appError{errCFACL, "ACL unavailable", http.StatusServiceUnavailable}
 	}
