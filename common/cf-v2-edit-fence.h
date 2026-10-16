@@ -1,6 +1,7 @@
 #ifndef CF_V2_EDIT_FENCE_H
 #define CF_V2_EDIT_FENCE_H
 
+#include <glib.h>
 #include "seaf-db.h"
 
 struct _SeafileSession;
