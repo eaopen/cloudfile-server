@@ -189,7 +189,7 @@ func cfEditCheckout(w http.ResponseWriter,r *http.Request,c *cfEditClaims,repo *
  var key [32]byte
  if _,err=rand.Read(key[:]);err!=nil{cfEditFail(w,503,"IO_ERROR");return}
  proof:=hex.EncodeToString(key[:])
- guardID:=uuid.NewString()
+ guardID:=uuid.New().String()
  ip,_,_:=net.SplitHostPort(r.RemoteAddr)
  if net.ParseIP(ip)==nil{ip=""}
  _,err=tx.ExecContext(ctx,
