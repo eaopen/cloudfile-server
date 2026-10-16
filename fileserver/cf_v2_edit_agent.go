@@ -10,6 +10,7 @@ import (
  "crypto/subtle"
  "database/sql"
  "encoding/hex"
+ "encoding/base64"
  "encoding/json"
  "errors"
  "io"
@@ -156,6 +157,9 @@ func cfEditRead(w http.ResponseWriter,r *http.Request,c *cfEditClaims,repo *repo
  w.Header().Set("Content-Type","application/octet-stream")
  w.Header().Set("Content-Length",strconv.FormatInt(n,10))
  w.Header().Set("X-CF-File-ID",id)
+ w.Header().Set("X-CF-Repo-ID",c.RepoID)
+ w.Header().Set("X-CF-Path-B64",base64.RawURLEncoding.EncodeToString([]byte(c.FilePath)))
+ w.Header().Set("X-CF-Mode",c.Mode)
  w.Header().Set("Cache-Control","no-store")
  w.WriteHeader(200);_,_=io.Copy(w,tmp)
 }
@@ -222,6 +226,15 @@ func cfEditStatus(w http.ResponseWriter,r *http.Request,c *cfEditClaims,repo *re
  id,_,err:=cfEditActual(repo,repo.HeadCommitID,c.FilePath)
  if err!=nil{cfEditFail(w,404,"FILE_MISSING");return}
  out:=map[string]interface{}{"file_id":id,"head_commit_id":repo.HeadCommitID}
+ // Recovery may need to confirm CONTENT even if another native commit advanced
+ // the File ID. Stream-hash only on explicit status, never on ordinary reads.
+ nativeFile,e:=fsmgr.GetSeafile(repo.StoreID,id)
+ if e!=nil||nativeFile.FileSize>uint64(cfEditMaxSize){cfEditFail(w,503,"STATUS_UNAVAILABLE");return}
+ hasher:=sha256.New()
+ for _,block:=range nativeFile.BlkIDs{
+  if !cfEditHex(block,40)||blockmgr.Read(repo.StoreID,block,hasher)!=nil{cfEditFail(w,503,"STATUS_UNAVAILABLE");return}
+ }
+ out["sha256"]=hex.EncodeToString(hasher.Sum(nil))
  var gID,owner sql.NullString;var generation uint64;var expires sql.NullTime
  err=seafileDB.QueryRowContext(r.Context(),
  "SELECT guard_id,generation,owner_native_user,lease_expires_at FROM cf_edit_guard WHERE repo_id=? AND path_hash=?",
