@@ -226,6 +226,7 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 	w.WriteHeader(200)
 	_, _ = io.Copy(w, tmp)
 }
+
 // cfEditPeerIP trusts proxy metadata ONLY from a loopback connection.
 // Direct clients cannot spoof a public IP by supplying X-Real-IP.
 func cfEditPeerIP(r *http.Request) string {
