@@ -868,6 +868,63 @@ out:
     return result;
 }
 
+typedef struct {
+    const char *username;
+    const char *digest;
+    gboolean exact;
+} CloudFileReadToken;
+
+static gboolean
+cloudfile_read_token_row (SeafDBRow *row, void *data)
+{
+    CloudFileReadToken *proof = data;
+    const char *user = seaf_db_row_get_column_text (row, 0);
+    const char *key = seaf_db_row_get_column_text (row, 1);
+    char *digest = key ? g_compute_checksum_for_string (G_CHECKSUM_SHA256, key, -1) : NULL;
+    proof->exact = !g_strcmp0 (user, proof->username) && key && strlen (key) == 40 &&
+        strspn (key, "0123456789abcdef") == 40 && !g_strcmp0 (digest, proof->digest);
+    g_free (digest);
+    return TRUE;
+}
+
+int
+ccnet_user_manager_lock_read_token (CcnetUserManager *manager,
+                                   SeafDBTrans *trans,
+                                   const char *username, const char *digest)
+{
+    char *schema = g_key_file_get_string (manager->session->config,
+        "cloudfile", "identity_database", NULL);
+    int result = -1;
+    if (!schema || !*schema || !g_utf8_validate (schema, -1, NULL) ||
+        g_utf8_strlen (schema, -1) > 64 || !username || !*username ||
+        !digest || strlen (digest) != 64 || strspn (digest, "0123456789abcdef") != 64)
+        goto out;
+    GString *qualified = g_string_new ("`");
+    for (const char *p = schema; *p; ++p) {
+        if (*p == '`') g_string_append_c (qualified, '`');
+        g_string_append_c (qualified, *p);
+    }
+    g_string_append (qualified, "`.api2_token");
+    /* Lookup by the existing unique owner index, not a whole-table hash scan.
+     * The row lock lasts through the final byte authorization transaction. */
+    char *sql = g_strdup_printf ("SELECT user,`key` FROM %s WHERE user=? LIMIT 2 FOR UPDATE", qualified->str);
+    CloudFileReadToken proof = {username, digest, FALSE};
+    int rows = seaf_db_trans_foreach_selected_row (trans, sql,
+        cloudfile_read_token_row, &proof, 1, "string", username);
+    g_free (sql);
+    g_string_free (qualified, TRUE);
+    if (rows != 1 || !proof.exact) goto out;
+    gboolean innodb = FALSE;
+    if (seaf_db_trans_foreach_selected_row (trans,
+        "SELECT ENGINE FROM information_schema.tables WHERE table_schema=? AND table_name='api2_token'",
+        cloudfile_account_engine, &innodb, 1, "string", schema) != 1 || !innodb)
+        goto out;
+    result = 0;
+out:
+    g_free (schema);
+    return result;
+}
+
 static char*
 ccnet_user_manager_get_role_emailuser (CcnetUserManager *manager,
                                      const char* email);

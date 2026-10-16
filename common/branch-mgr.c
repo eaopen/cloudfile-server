@@ -1324,6 +1324,19 @@ cloudfile_check_session_reference (SeafBranchManager *mgr, SeafDBTrans *trans,
     const char *repo_id, const char *path, const char *object_id, int kind,
     const char *conditions, const char *native_username, json_t *root)
 {
+    json_t *token = json_object_get (root, "native_read_token");
+    if (token) {
+        /* This is the authenticated v1 Token's digest, not a client actor or
+         * a reusable secret. Do not choose between ambiguous proof kinds. */
+        if (!json_is_object (token) || json_object_size (token) != 1 ||
+            json_object_get (root, "oidc_session") ||
+            json_object_get (root, "browser_session") ||
+            json_object_get (root, "local_session") ||
+            json_object_get (root, "user_delegation"))
+            return -1;
+        return ccnet_user_manager_lock_read_token (mgr->seaf->user_mgr, trans,
+            native_username, cloudfile_reference_text (token, "sha256", 64));
+    }
     int result = cloudfile_check_oidc_reference (mgr, trans, root);
     if (result == 0)
         result = cloudfile_check_browser_reference (mgr, trans, root);
@@ -1544,6 +1557,7 @@ test_and_update_branch (SeafBranchManager *mgr,
              * a distinct condition and repeat current session/Checkout checks. */
             !json_object_get (conditions, "local_session") &&
             !json_object_get (conditions, "browser_session") &&
+            !json_object_get (conditions, "native_read_token") &&
             (!json_object_get (conditions, "local_commit") || editing) &&
             (!agent || (!editing && !lease && !json_object_get(conditions, "oidc_session") &&
                 !json_object_get(conditions, "create"))) &&
