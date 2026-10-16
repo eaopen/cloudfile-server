@@ -64,6 +64,16 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
                                             const char *last_gc_id,
                                             const char *origin_repo_id,
                                             gboolean *gc_conflict);
+
+/* Trusted file upload/overwrite callers only; other callers stay unscoped. */
+int
+seaf_branch_manager_test_and_update_branch_scoped (SeafBranchManager *mgr,
+                                            SeafBranch *branch,
+                                            const char *old_commit_id,
+                                            gboolean check_gc,
+                                            const char *last_gc_id,
+                                            const char *origin_repo_id,
+                                            gboolean *gc_conflict, const char *acl_actor);
 #endif
 
 SeafBranch *

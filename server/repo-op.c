@@ -15,6 +15,7 @@
 #include "seafile-session.h"
 #include "commit-mgr.h"
 #include "branch-mgr.h"
+#include "cf-v2-acl.h"
 #include "repo-mgr.h"
 #include "fs-mgr.h"
 #include "seafile-error.h"
@@ -438,7 +439,7 @@ gen_merge_description (SeafRepo *repo,
 }
 
 static int
-gen_new_commit (const char *repo_id,
+gen_new_commit_scoped (const char *repo_id,
                 SeafCommit *base,
                 const char *new_root,
                 const char *user,
@@ -447,7 +448,7 @@ gen_new_commit (const char *repo_id,
                 gboolean handle_concurrent_update,
                 gboolean check_gc,
                 const char *last_gc_id,
-                GError **error)
+                GError **error, const char *acl_actor)
 {
 #define MAX_RETRY_COUNT 10
 
@@ -568,14 +569,19 @@ retry:
     if (check_gc)
         gc_conflict = FALSE;
 
-    if (seaf_branch_manager_test_and_update_branch(seaf->branch_mgr,
+    int branch_result = seaf_branch_manager_test_and_update_branch_scoped(seaf->branch_mgr,
                                                    repo->head,
                                                    current_head->commit_id,
                                                    check_gc,
                                                    last_gc_id,
                                                    repo->store_id,
-                                                   &gc_conflict) < 0)
-    {
+                                                   &gc_conflict, acl_actor);
+    if (branch_result < 0) {
+        if (branch_result == -2) {
+            g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "Current path authorization denied");
+            ret = -1;
+            goto out;
+        }
         if (check_gc && gc_conflict) {
             seaf_warning ("Head branch update for repo %s conflicts with GC.\n",
                           repo->id);
@@ -631,6 +637,22 @@ static void
 update_repo_size(const char *repo_id)
 {
     schedule_repo_size_computation (seaf->size_sched, repo_id);
+}
+
+static int
+gen_new_commit (const char *repo_id,
+                SeafCommit *base,
+                const char *new_root,
+                const char *user,
+                const char *desc,
+                char *new_commit_id,
+                gboolean handle_concurrent_update,
+                gboolean check_gc,
+                const char *last_gc_id,
+                GError **error)
+{
+    return gen_new_commit_scoped(repo_id, base, new_root, user, desc, new_commit_id,
+        handle_concurrent_update, check_gc, last_gc_id, error, NULL);
 }
 
 int
@@ -732,8 +754,8 @@ retry:
     }
 
     snprintf(buf, SEAF_PATH_MAX, "Added \"%s\"", file_name);
-    if (gen_new_commit (repo_id, head_commit, root_id,
-                        user, buf, NULL, FALSE, TRUE, gc_id, error) < 0) {
+    if (gen_new_commit_scoped (repo_id, head_commit, root_id,
+                        user, buf, NULL, FALSE, TRUE, gc_id, error, user) < 0) {
         if (*error == NULL || (*error)->code != SEAF_ERR_CONCURRENT_UPLOAD) {
             ret = -1;
             goto out;
@@ -2807,6 +2829,12 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
                              int synchronous,
                              GError **error)
 {
+    if (cf_v2_acl_transfer(seaf) < 0) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                    "Source/destination ACL transaction proof unavailable");
+        return NULL;
+    }
+
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent *src_dent = NULL, *dst_dent = NULL;
     char *src_canon_path = NULL, *dst_canon_path = NULL;
@@ -2962,6 +2990,12 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
                                        int synchronous,
                                        GError **error)
 {
+    if (cf_v2_acl_transfer(seaf) < 0) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                    "Source/destination ACL transaction proof unavailable");
+        return NULL;
+    }
+
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent **src_dents = NULL, **dst_dents = NULL;
     char *src_canon_path = NULL, *dst_canon_path = NULL;
@@ -3500,6 +3534,12 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
                                        int synchronous,
                                        GError **error)
 {
+    if (cf_v2_acl_transfer(seaf) < 0) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                    "Source/destination ACL transaction proof unavailable");
+        return NULL;
+    }
+
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent **src_dents = NULL, **dst_dents = NULL;
     char *src_canon_path = NULL, *dst_canon_path = NULL;
@@ -4450,7 +4490,7 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr,
 
     /* Commit. */
     snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
-    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, NULL, TRUE, TRUE, gc_id, error) < 0) {
+    if (gen_new_commit_scoped (repo_id, head_commit, root_id, user, buf, NULL, TRUE, TRUE, gc_id, error, user) < 0) {
         ret = -1;
         goto out;       
     }

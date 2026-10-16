@@ -17,6 +17,7 @@
 #include "branch-mgr.h"
 #ifdef SEAFILE_SERVER
 #include "cf-v2-edit-fence.h"
+#include "cf-v2-acl.h"
 #endif
 
 
@@ -292,6 +293,14 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
 
     return 0;
 #else
+#ifdef FULL_FEATURE
+    SeafBranch *old = seaf_branch_manager_get_branch(mgr, branch->repo_id, branch->name);
+    if (!old) return -1;
+    int result = seaf_branch_manager_test_and_update_branch(mgr, branch, old->commit_id,
+                                                           FALSE, NULL, NULL, NULL);
+    seaf_branch_unref(old);
+    return result;
+#else
     int rc = seaf_db_statement_query (mgr->seaf->db,
                                       "UPDATE Branch SET commit_id = ? "
                                       "WHERE name = ? AND repo_id = ?",
@@ -301,6 +310,7 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
     if (rc < 0)
         return -1;
     return 0;
+#endif
 #endif
 }
 
@@ -398,6 +408,19 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
                                             const char *origin_repo_id,
                                             gboolean *gc_conflict)
 {
+    return seaf_branch_manager_test_and_update_branch_scoped(mgr, branch, old_commit_id,
+        check_gc, last_gc_id, origin_repo_id, gc_conflict, NULL);
+}
+
+int
+seaf_branch_manager_test_and_update_branch_scoped (SeafBranchManager *mgr,
+                                            SeafBranch *branch,
+                                            const char *old_commit_id,
+                                            gboolean check_gc,
+                                            const char *last_gc_id,
+                                            const char *origin_repo_id,
+                                            gboolean *gc_conflict, const char *acl_actor)
+{
     SeafDBTrans *trans;
     char *sql;
     char commit_id[41] = { 0 };
@@ -472,6 +495,11 @@ seaf_branch_manager_test_and_update_branch (SeafBranchManager *mgr,
 
     /* Guard must be checked under the Branch row lock. A pre-upload check
      * cannot protect against a Checkout acquired while bytes are indexing. */
+    if (cf_v2_acl_final_scoped(trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id, acl_actor) < 0) {
+        seaf_db_rollback(trans);
+        seaf_db_trans_close(trans);
+        return -2;
+    }
     if (cf_v2_edit_check_unscoped_branch(trans, mgr->seaf, branch->repo_id,
                                          old_commit_id, branch->commit_id) < 0) {
         seaf_db_rollback (trans);

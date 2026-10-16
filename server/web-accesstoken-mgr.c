@@ -8,6 +8,7 @@
 
 #include "seafile-session.h"
 #include "web-accesstoken-mgr.h"
+#include "cf-v2-acl.h"
 #include "seafile-error.h"
 
 #include "utils.h"
@@ -239,6 +240,12 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                 pthread_mutex_unlock (&mgr->priv->lock);
             }
 
+            if (g_strcmp0(seafile_web_access_get_op(webaccess), "upload") != 0 &&
+                g_strcmp0(seafile_web_access_get_op(webaccess), "update") != 0 &&
+                cf_v2_acl_unscoped(seaf, seafile_web_access_get_repo_id(webaccess)) < 0) {
+                g_object_unref(webaccess);
+                return NULL;
+            }
             return webaccess;
         }
     }

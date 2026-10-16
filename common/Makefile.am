@@ -21,6 +21,7 @@ noinst_HEADERS = \
 	obj-backend.h \
 	cf-v2-storage.h \
 	cf-v2-edit-fence.h \
+	cf-v2-acl.h \
 	block-backend.h \
 	block.h \
 	mq-mgr.h \

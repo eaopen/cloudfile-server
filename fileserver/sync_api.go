@@ -1303,6 +1303,9 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 }
 
 func validateToken(r *http.Request, repoID string, skipCache bool) (string, *appError) {
+	if denied := cfACLUnscoped(repoID); denied != nil {
+		return "", denied
+	}
 	token := r.Header.Get("Seafile-Repo-Token")
 	if token == "" {
 		token = utils.GetAuthorizationToken(r.Header)
