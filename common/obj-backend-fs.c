@@ -5,6 +5,7 @@
 #include "common.h"
 #include "utils.h"
 #include "obj-backend.h"
+#include "cf-v2-storage.h"
 
 #ifndef WIN32
 #include <sys/types.h>
@@ -25,28 +26,17 @@ typedef struct FsPriv {
     int   dir_len;
 } FsPriv;
 
-static void
+static int
 id_to_path (FsPriv *priv, const char *obj_id, char path[],
             const char *repo_id, int version)
 {
-    char *pos = path;
+    char *dir = cf_v2_store_dir (priv->obj_dir, repo_id);
     int n;
-
-#if defined MIGRATION || defined SEAFILE_CLIENT
-    if (version > 0) {
-        n = snprintf (path, SEAF_PATH_MAX, "%s/%s/", priv->obj_dir, repo_id);
-        pos += n;
-    }
-#else
-    n = snprintf (path, SEAF_PATH_MAX, "%s/%s/", priv->obj_dir, repo_id);
-    pos += n;
-#endif
-
-    memcpy (pos, obj_id, 2);
-    pos[2] = '/';
-    pos += 3;
-
-    memcpy (pos, obj_id + 2, 41 - 2);
+    if (!dir)
+        return -1;
+    n = g_snprintf (path, SEAF_PATH_MAX, "%s/%.2s/%s", dir, obj_id, obj_id + 2);
+    g_free (dir);
+    return n >= SEAF_PATH_MAX ? -1 : 0;
 }
 
 static int
@@ -61,7 +51,8 @@ obj_backend_fs_read (ObjBackend *bend,
     gsize tmp_len;
     GError *error = NULL;
 
-    id_to_path (bend->priv, obj_id, path, repo_id, version);
+    if (id_to_path (bend->priv, obj_id, path, repo_id, version) < 0)
+        return -1;
 
     /* seaf_debug ("object path: %s\n", path); */
 
@@ -292,7 +283,8 @@ obj_backend_fs_write (ObjBackend *bend,
 {
     char path[SEAF_PATH_MAX];
 
-    id_to_path (bend->priv, obj_id, path, repo_id, version);
+    if (id_to_path (bend->priv, obj_id, path, repo_id, version) < 0)
+        return -1;
 
     /* GTimeVal s, e; */
 
@@ -327,7 +319,8 @@ obj_backend_fs_exists (ObjBackend *bend,
     char path[SEAF_PATH_MAX];
     SeafStat st;
 
-    id_to_path (bend->priv, obj_id, path, repo_id, version);
+    if (id_to_path (bend->priv, obj_id, path, repo_id, version) < 0)
+        return FALSE;
 
     if (seaf_stat (path, &st) == 0)
         return TRUE;
@@ -343,7 +336,8 @@ obj_backend_fs_delete (ObjBackend *bend,
 {
     char path[SEAF_PATH_MAX];
 
-    id_to_path (bend->priv, obj_id, path, repo_id, version);
+    if (id_to_path (bend->priv, obj_id, path, repo_id, version) < 0)
+        return;
     g_unlink (path);
 }
 
@@ -363,12 +357,11 @@ obj_backend_fs_foreach_obj (ObjBackend *bend,
     char path[SEAF_PATH_MAX], *pos;
     int ret = 0;
 
-#if defined MIGRATION || defined SEAFILE_CLIENT
-    if (version > 0)
-        obj_dir = g_build_filename (priv->obj_dir, repo_id, NULL);
-#else
-    obj_dir = g_build_filename (priv->obj_dir, repo_id, NULL);
-#endif
+    obj_dir = cf_v2_store_dir (priv->obj_dir, repo_id);
+    if (!obj_dir || strlen (obj_dir) + 130 >= SEAF_PATH_MAX) {
+        g_free (obj_dir);
+        return -1;
+    }
     dir_len = strlen (obj_dir);
 
     dir1 = g_dir_open (obj_dir, 0, NULL);
@@ -417,8 +410,9 @@ obj_backend_fs_copy (ObjBackend *bend,
     char src_path[SEAF_PATH_MAX];
     char dst_path[SEAF_PATH_MAX];
 
-    id_to_path (bend->priv, obj_id, src_path, src_repo_id, src_version);
-    id_to_path (bend->priv, obj_id, dst_path, dst_repo_id, dst_version);
+    if (id_to_path (bend->priv, obj_id, src_path, src_repo_id, src_version) < 0 ||
+        id_to_path (bend->priv, obj_id, dst_path, dst_repo_id, dst_version) < 0)
+        return -1;
 
     if (g_file_test (dst_path, G_FILE_TEST_EXISTS))
         return 0;
@@ -437,7 +431,7 @@ obj_backend_fs_copy (ObjBackend *bend,
     }
     return 0;
 #else
-    int ret = link (src_path, dst_path);
+    int ret = cf_v2_storage_copy (src_path, dst_path);
     if (ret < 0 && errno != EEXIST) {
         seaf_warning ("Failed to link %s to %s: %s.\n",
                       src_path, dst_path, strerror(errno));
@@ -462,7 +456,9 @@ obj_backend_fs_remove_store (ObjBackend *bend,
     GError *error = NULL;
     int ret = 0;
 
-    obj_dir = g_build_filename (priv->obj_dir, store_id, NULL);
+    obj_dir = cf_v2_store_dir (priv->obj_dir, store_id);
+    if (!obj_dir)
+        return -1;
 
     dir1 = g_dir_open (obj_dir, 0, &error);
     if (!dir1) {

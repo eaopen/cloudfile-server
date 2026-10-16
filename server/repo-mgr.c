@@ -1,6 +1,7 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
 #include "common.h"
+#include "cf-v2-storage.h"
 
 #include <glib/gstdio.h>
 
@@ -2868,6 +2869,11 @@ seaf_repo_manager_del_repo_from_trash (SeafRepoManager *mgr,
                                        const char *repo_id,
                                        GError **error)
 {
+    if (cf_v2_storage_retire (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to retire library storage");
+        return -1;
+    }
     /* As long as the repo is successfully moved into GarbageRepo table,
      * we consider this operation successful.
      */
@@ -3873,6 +3879,12 @@ create_repo_common (SeafRepoManager *mgr,
         }
     }
 
+    /* Reserve before the first commit object can be written. */
+    if (cf_v2_storage_reserve (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to reserve library storage");
+        return -1;
+    }
     repo = seaf_repo_new (repo_id, repo_name, repo_desc);
 
     repo->no_local_history = TRUE;
@@ -3935,6 +3947,11 @@ create_repo_common (SeafRepoManager *mgr,
     }
 
     seaf_repo_manager_update_repo_info (mgr, repo->id, repo->head->commit_id);
+    if (cf_v2_storage_activate (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to activate library storage");
+        goto out;
+    }
 
     ret = 0;
 out:

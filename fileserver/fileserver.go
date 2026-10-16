@@ -23,6 +23,7 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/commitmgr"
 	"github.com/haiwen/seafile-server/fileserver/fsmgr"
 	"github.com/haiwen/seafile-server/fileserver/metrics"
+	"github.com/haiwen/seafile-server/fileserver/objstore"
 	"github.com/haiwen/seafile-server/fileserver/option"
 	"github.com/haiwen/seafile-server/fileserver/repomgr"
 	"github.com/haiwen/seafile-server/fileserver/searpc"
@@ -249,6 +250,7 @@ func main() {
 	option.LoadFileServerOptions(centralDir)
 	loadCcnetDB()
 	loadSeafileDB()
+	objstore.InitV2Storage(seafileDB)
 
 	level, err := log.ParseLevel(option.LogLevel)
 	if err != nil {

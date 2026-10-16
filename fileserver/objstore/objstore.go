@@ -3,6 +3,7 @@
 package objstore
 
 import (
+	"fmt"
 	"io"
 )
 
@@ -31,7 +32,14 @@ type storageBackend interface {
 func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectStore {
 	obj := new(ObjectStore)
 	obj.ObjType = objType
-	obj.backend, _ = newFSBackend(seafileDataDir, objType)
+	native, err := newFSBackend(seafileDataDir, objType)
+	if err != nil {
+		panic(fmt.Sprintf("object storage: %v", err))
+	}
+	obj.backend, err = newV2StorageBackend(seafileConfPath, native)
+	if err != nil {
+		panic(fmt.Sprintf("V2 storage configuration: %v", err))
+	}
 	return obj
 }
 

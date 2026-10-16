@@ -73,6 +73,7 @@ seaf_server_SOURCES = \
 	../common/seaf-utils.c \
 	../common/obj-store.c \
 	../common/obj-backend-fs.c \
+	../common/cf-v2-storage.c \
 	../common/seafile-crypt.c \
 	../common/password-hash.c \
 	../common/diff-simple.c \
