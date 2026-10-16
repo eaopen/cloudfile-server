@@ -1,0 +1,60 @@
+package main
+
+import (
+ "fmt"
+ "net/http"
+ "net/http/httptest"
+ "testing"
+ "time"
+
+ "github.com/golang-jwt/jwt/v5"
+ "github.com/google/uuid"
+ "github.com/haiwen/seafile-server/fileserver/option"
+)
+
+func TestCFEditDisabledRejectsWithoutDatabase(t *testing.T) {
+ prior:=option.V2EditEnabled
+ option.V2EditEnabled=false
+ defer func(){option.V2EditEnabled=prior}()
+ req:=httptest.NewRequest("POST","/cf-edit/v1/checkout",nil)
+ rec:=httptest.NewRecorder()
+ cfEditAPI(rec,req)
+ if rec.Code!=http.StatusServiceUnavailable {t.Fatalf("disabled edit route returned %d",rec.Code)}
+}
+func TestCFEditScopedTicketValidation(t *testing.T) {
+ prev:=option.JWTPrivateKey;option.JWTPrivateKey="unit-test-secret"
+ defer func(){option.JWTPrivateKey=prev}()
+ now:=time.Now()
+ user:=uuid.New().String()
+ sign:=func(mode,path string,expiry time.Duration)string {
+  c:=cfEditClaims{RepoID:user,FilePath:path,Mode:mode,BaseID:"a"+"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   RegisteredClaims:jwt.RegisteredClaims{Issuer:"cloudfile-v2-edit",
+    Audience:jwt.ClaimStrings{"cloudfile-edit-agent"},Subject:"user@auth.local",
+    IssuedAt:jwt.NewNumericDate(now),ExpiresAt:jwt.NewNumericDate(now.Add(expiry))}}
+  v,_:=jwt.NewWithClaims(jwt.SigningMethodHS256,c).SignedString([]byte(option.JWTPrivateKey))
+  return v
+ }
+ for _,tc:=range []struct{mode,path string;expect bool}{
+  {"optimistic-edit","/design.step",true},
+  {"exclusive-edit","/design.step",true},
+  {"ordinary","/design.step",false},
+  {"optimistic-edit","/a/../b",false},
+ }{
+  req:=httptest.NewRequest("GET","/cf-edit/v1/read",nil)
+  req.Header.Set("Authorization","Bearer "+sign(tc.mode,tc.path,time.Minute))
+  _,err:=cfEditClaimsFor(req)
+  if (err==nil)!=tc.expect {t.Fatalf("mode %s path %s: %v",tc.mode,tc.path,err)}
+ }
+ req:=httptest.NewRequest("GET","/cf-edit/v1/read",nil)
+ req.Header.Set("Authorization","Bearer "+sign("exclusive-edit","/design.step",-time.Minute))
+ if _,err:=cfEditClaimsFor(req);err==nil{t.Fatal("expired ticket accepted")}
+}
+func TestCFEditCredentialDigestDoesNotTrustUnrelatedActor(t *testing.T){
+ c:=&cfEditClaims{RegisteredClaims:jwt.RegisteredClaims{Subject:"user@auth.local"}}
+ p:=cfEditProof{GuardID:uuid.NewString(),Generation:3,Proof:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ g:=cfEditGuard{ID:p.GuardID,Generation:3,Owner:"user@auth.local",
+  ProofDigest:fmt.Sprintf("%x",cfEditHash(p.Proof)),Expires:time.Now().Add(time.Minute)}
+ if !cfEditVerified(c,g,p,false){t.Fatal("matching guard rejected")}
+ p.Proof="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ if cfEditVerified(c,g,p,false){t.Fatal("invalid guard proof accepted")}
+}
