@@ -45,6 +45,10 @@ remove objects from the correct location. Failed creation may leave a reserved
 binding or directory for inspection; it must not be automatically reused or
 deleted. Existing data, shares and repo IDs are not rewritten.
 
+FSCK and explicit-library export use the same route. When automatic storage is
+configured, export requires the configured database, including its native
+binding and key reservation; it cannot infer a missing route from disk names.
+
 `go test -race ./objstore` covers native/routed byte separation and route
 failures. The Docker V2 runtime suite additionally exercises mixed libraries,
 cross-language bytes, mapping failure, trash restore and cold GC. Their success

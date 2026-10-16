@@ -76,7 +76,7 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
     char *root = NULL, *key_dir = NULL, *obj_type = NULL, *result = NULL;
     if (!cf_v2_storage_enabled ())
         return g_build_filename (native_obj_dir, repo_id, NULL);
-    if (!repo_id || !is_uuid_valid (repo_id) || !(root = storage_root ()))
+    if (!seaf->db || !repo_id || !is_uuid_valid (repo_id) || !(root = storage_root ()))
         return NULL;
     /* One query distinguishes unmapped native libraries from corrupt routes.
      * No cache: separate C/Go processes must see the same committed binding. */
