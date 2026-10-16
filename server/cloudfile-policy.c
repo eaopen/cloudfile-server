@@ -688,7 +688,8 @@ static gboolean rule_row (SeafDBRow *row, void *data)
         (rule.subject_type == CF_USER && (strcmp (namespace, "user") || !valid_id (external, 225)))) goto invalid;
     if (g_strcmp0 (share_mode, "0") && g_strcmp0 (share_mode, "1")) goto invalid;
     if (!strcmp (share_mode, "1")) {
-        if (rule.kind != CF_DIRECTORY || !strcmp (path, "/") || !valid_id (birth, 512)) goto invalid;
+        if (rule.kind != CF_DIRECTORY || rule.permission < CF_READ ||
+            !strcmp (path, "/") || !valid_id (birth, 512)) goto invalid;
     } else if (!birth || *birth) goto invalid;
     id = subject_id (type, provider, namespace, external);
     if (!id) goto invalid;
@@ -792,11 +793,13 @@ static gboolean directory_share_row (SeafDBRow *row, void *data)
     const char *namespace = seaf_db_row_get_column_text (row, 5);
     const char *external = seaf_db_row_get_column_text (row, 6);
     const char *subject_hash = seaf_db_row_get_column_text (row, 7);
+    const char *permission = seaf_db_row_get_column_text (row, 8);
     char *id = NULL, *hash = NULL;
     struct cf_directory_share share = {0};
     if (!path || !strcmp (path, "/") || !g_hash_table_contains (rows->paths, path) ||
         !valid_id (provider, 32) || !valid_id (namespace, 255) ||
-        !valid_id (external, 255) || !valid_id (birth, 512)) goto invalid;
+        !valid_id (external, 255) || !valid_id (birth, 512) ||
+        (g_strcmp0 (permission, "r") && g_strcmp0 (permission, "rw"))) goto invalid;
     hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     if (g_strcmp0 (hash, path_hash)) goto invalid;
     g_free (hash); hash = NULL;
@@ -890,7 +893,9 @@ static int policy_check (SeafDBTrans *trans, const char *repo, const char *path,
     for (guint i = 0; i < groups->len; ++i) g_hash_table_add (shared.subjects, groups->pdata[i]);
     /* Sharing is a projection of the same ACL row, never an independent grant.
      * The first query already pinned and verified the ACL index contract. */
-    query = g_string_new ("SELECT path,path_hash,lifecycle_ref,subject_type,provider,namespace,external_id,subject_hash "
+    /* Shared-root qualification must reject corrupt or denied grants at the native
+     * read boundary, independently of the Hub API's validation. */
+    query = g_string_new ("SELECT path,path_hash,lifecycle_ref,subject_type,provider,namespace,external_id,subject_hash,permission "
         "FROM cf_dir_acl FORCE INDEX (acl_ancestors) WHERE share_mode=1 AND kind='dir' AND repo_id=? AND path_hash IN (");
     first = TRUE;
     g_hash_table_iter_init (&iter, rows.paths);
