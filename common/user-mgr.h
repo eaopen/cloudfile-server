@@ -171,6 +171,12 @@ int
 ccnet_user_manager_lock_live_session (CcnetUserManager *manager,
                                      struct SeafDBTrans *trans,
                                      const char *session_key);
+/* Read-ticket v1 token proof: lock its exact owner's current native token.
+ * Only a digest crosses the trusted Hub RPC, never the reusable credential. */
+int
+ccnet_user_manager_lock_read_token (CcnetUserManager *manager,
+                                   struct SeafDBTrans *trans,
+                                   const char *username, const char *digest);
 /* Active native system_admin content qualification, with optional final SQL
  * transaction. This supplies a library baseline, never bypasses directory ACL. */
 gboolean ccnet_user_manager_is_global_library_admin (CcnetUserManager *manager,
