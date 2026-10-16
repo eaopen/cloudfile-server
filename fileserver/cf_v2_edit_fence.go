@@ -37,7 +37,7 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 	if !option.V2EditEnabled {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE", repoID)
+	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE", repoID)
 	if err != nil {
 		return errCFEditGuard
 	}
@@ -51,6 +51,10 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 		if path == "" || !strings.HasPrefix(path, "/") {
 			rows.Close()
 			return errCFEditGuard
+		}
+		if len(paths) >= 8192 {
+			rows.Close()
+			return errCFEditGuard // bounded scope; large cases require a targeted policy
 		}
 		paths = append(paths, path)
 	}
