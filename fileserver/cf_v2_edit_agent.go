@@ -35,6 +35,7 @@ import (
 const cfEditMaxSize int64 = 128 << 20
 
 type cfEditClaims struct {
+	UID      string `json:"uid"`
 	RepoID   string `json:"repo_id"`
 	FilePath string `json:"path"`
 	BaseID   string `json:"file_id"`
@@ -91,7 +92,7 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 	if err != nil || t == nil || !t.Valid || c.ExpiresAt == nil || c.IssuedAt == nil ||
 		c.ExpiresAt.Time.Sub(c.IssuedAt.Time) > 4*time.Hour ||
 		c.IssuedAt.Time.After(time.Now().Add(30*time.Second)) ||
-		c.Subject == "" || len(c.Subject) > 255 || !cfEditID(c.RepoID) ||
+		c.Subject == "" || len(c.Subject) > 255 || c.UID == "" || len(c.UID) > 225 || !cfEditID(c.RepoID) ||
 		!cfACLCanonical(c.FilePath) || c.FilePath == "/" || !cfEditHex(c.BaseID, 40) ||
 		(c.Mode != "optimistic-edit" && c.Mode != "exclusive-edit") {
 		return nil, errors.New("invalid scoped edit ticket")
@@ -290,7 +291,7 @@ func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, rep
 			"terminal_type=?,terminal_name=?,checkout_ip=?,proof_digest=?,base_file_id=?,"+
 			"lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)),created_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) "+
 			"WHERE repo_id=? AND path_hash=?",
-		guardID, g.Generation+1, c.Subject, c.Subject, p.TerminalType, p.TerminalName, ip,
+		guardID, g.Generation+1, c.UID, c.Subject, p.TerminalType, p.TerminalName, ip,
 		hex.EncodeToString(cfEditHash(proof)), current, repo.ID, cfEditHash(c.FilePath))
 	if err != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
