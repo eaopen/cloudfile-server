@@ -37,7 +37,7 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 	if !option.V2EditEnabled {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE", repoID)
+	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repoID)
 	if err != nil {
 		return errCFEditGuard
 	}

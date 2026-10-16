@@ -59,7 +59,6 @@ class MariaDBFeatureTests(TestCase):
     def tearDownClass(cls):
         try:
             with cls.db.cursor() as c:
-                c.execute("DROP TABLE cf_commit_intent")
                 c.execute("DROP TABLE cf_edit_guard")
                 c.execute("DROP TABLE Branch")
             cls.db.commit()
@@ -68,59 +67,66 @@ class MariaDBFeatureTests(TestCase):
 
     def tearDown(self):
         with self.db.cursor() as c:
-            c.execute("DELETE FROM cf_commit_intent")
             c.execute("DELETE FROM cf_edit_guard")
             c.execute("UPDATE Branch SET commit_id=%s", ("a" * 40,))
         self.db.commit()
 
-    def test_two_tables_and_monotonic_guard_slot(self):
+    def test_one_table_guard_slot_owner_and_terminal(self):
         with self.db.cursor() as c:
-            c.execute("INSERT INTO cf_edit_guard(repo_id,path_hash,path) VALUES(%s,%s,%s)", (REPO, HASH, PATH))
-            c.execute("UPDATE cf_edit_guard SET guard_id=%s,generation=1,credential_epoch=1,"
-                      "mode='checkout',owner_uid='user1',proof_digest=%s,"
-                      "checkout_policy='persistent',base_file_id=%s "
-                      "WHERE repo_id=%s AND path_hash=%s",
-                      (REPO, "f" * 64, "a" * 40, REPO, HASH))
-            c.execute("SELECT generation,guard_id,checkout_policy FROM cf_edit_guard "
-                      "WHERE repo_id=%s AND path_hash=%s", (REPO, HASH))
-            self.assertEqual(c.fetchone(), (1, REPO, "persistent"))
-            c.execute("UPDATE cf_edit_guard SET guard_id=NULL,mode=NULL,owner_uid=NULL,"
-                      "proof_digest=NULL,checkout_policy=NULL,base_file_id=NULL,"
-                      "credential_epoch=0 WHERE repo_id=%s AND path_hash=%s", (REPO, HASH))
-            c.execute("SELECT generation,guard_id FROM cf_edit_guard WHERE repo_id=%s", (REPO,))
-            self.assertEqual(c.fetchone(), (1, None))
+            c.execute("INSERT INTO cf_edit_guard(repo_id,path_hash,path) VALUES(%s,%s,%s)", (REPO,HASH,PATH))
+            c.execute("UPDATE cf_edit_guard SET guard_id=%s,generation=1,"
+                      "owner_uid='user1',owner_native_user='user@auth.local',"
+                      "terminal_type='windows',terminal_name='design-laptop',"
+                      "checkout_ip='10.9.8.58',proof_digest=%s,base_file_id=%s,"
+                      "lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)),"
+                      "created_at=UTC_TIMESTAMP(6) WHERE repo_id=%s AND path_hash=%s",
+                      (REPO,"f"*64,"a"*40,REPO,HASH))
+            c.execute("SELECT generation,guard_id,terminal_type,checkout_ip FROM cf_edit_guard "
+                      "WHERE repo_id=%s AND path_hash=%s", (REPO,HASH))
+            self.assertEqual(c.fetchone(),(1,REPO,"windows","10.9.8.58"))
+            c.execute("UPDATE cf_edit_guard SET guard_id=NULL,owner_uid=NULL,"
+                      "owner_native_user=NULL,terminal_type=NULL,terminal_name=NULL,"
+                      "checkout_ip=NULL,proof_digest=NULL,base_file_id=NULL,lease_expires_at=NULL "
+                      "WHERE repo_id=%s AND path_hash=%s",(REPO,HASH))
+            c.execute("SELECT generation,guard_id FROM cf_edit_guard WHERE repo_id=%s",(REPO,))
+            self.assertEqual(c.fetchone(),(1,None))
         self.db.commit()
 
-    def test_intent_receipt_rolls_back_with_native_branch(self):
+    def test_native_branch_and_checkout_release_commit_or_rollback_together(self):
         with self.db.cursor() as c:
-            c.execute("INSERT INTO cf_commit_intent(intent_id,repo_id,path_hash,path,actor_uid,"
-                      "action,expected_file_id,staged_file_id,content_digest,request_digest,"
-                      "state) VALUES(%s,%s,%s,%s,'user1','optimistic',%s,%s,%s,%s,'prepared')",
-                      (REPO, REPO, HASH, PATH, "a" * 40, "b" * 40, "0" * 64, "1" * 64))
+            c.execute("INSERT INTO cf_edit_guard(repo_id,path_hash,path) VALUES(%s,%s,%s)",(REPO,HASH,PATH))
+            c.execute("UPDATE cf_edit_guard SET guard_id=%s,generation=1,"
+                      "owner_uid='user1',owner_native_user='user@auth.local',"
+                      "proof_digest=%s,base_file_id=%s,"
+                      "lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)) "
+                      "WHERE repo_id=%s AND path_hash=%s",
+                      (REPO,"f"*64,"a"*40,REPO,HASH))
         self.db.commit()
         with self.db.cursor() as c:
-            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s AND name='master' FOR UPDATE", (REPO,))
-            c.execute("UPDATE cf_commit_intent SET state='published',"
-                      "result_file_id=%s,result_commit_id=%s WHERE intent_id=%s",
-                      ("b" * 40, "c" * 40, REPO))
-            c.execute("UPDATE Branch SET commit_id=%s WHERE repo_id=%s", ("c" * 40, REPO))
+            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s FOR UPDATE",(REPO,))
+            c.execute("UPDATE cf_edit_guard SET guard_id=NULL,owner_uid=NULL,"
+                      "owner_native_user=NULL,proof_digest=NULL,base_file_id=NULL,"
+                      "lease_expires_at=NULL WHERE repo_id=%s AND path_hash=%s",(REPO,HASH))
+            c.execute("UPDATE Branch SET commit_id=%s WHERE repo_id=%s",("c"*40,REPO))
         self.db.rollback()
         with self.db.cursor() as c:
-            c.execute("SELECT state,result_commit_id FROM cf_commit_intent WHERE intent_id=%s", (REPO,))
-            self.assertEqual(c.fetchone(), ("prepared", None))
-            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s", (REPO,))
-            self.assertEqual(c.fetchone(), ("a" * 40,))
-            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s FOR UPDATE", (REPO,))
-            c.execute("UPDATE cf_commit_intent SET state='published',result_file_id=%s,"
-                      "result_commit_id=%s WHERE intent_id=%s AND state='prepared'",
-                      ("b" * 40, "c" * 40, REPO))
+            c.execute("SELECT guard_id FROM cf_edit_guard WHERE repo_id=%s",(REPO,))
+            self.assertEqual(c.fetchone()[0],REPO)
+            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s",(REPO,))
+            self.assertEqual(c.fetchone()[0],"a"*40)
+            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s FOR UPDATE",(REPO,))
+            c.execute("UPDATE cf_edit_guard SET guard_id=NULL,owner_uid=NULL,"
+                      "owner_native_user=NULL,proof_digest=NULL,base_file_id=NULL,"
+                      "lease_expires_at=NULL WHERE repo_id=%s AND path_hash=%s",(REPO,HASH))
             c.execute("UPDATE Branch SET commit_id=%s WHERE repo_id=%s AND commit_id=%s",
-                      ("c" * 40, REPO, "a" * 40))
-            self.assertEqual(c.rowcount, 1)
+                      ("c"*40,REPO,"a"*40))
+            self.assertEqual(c.rowcount,1)
         self.db.commit()
         with self.db.cursor() as c:
-            c.execute("SELECT state,result_commit_id FROM cf_commit_intent WHERE intent_id=%s", (REPO,))
-            self.assertEqual(c.fetchone(), ("published", "c" * 40))
+            c.execute("SELECT guard_id FROM cf_edit_guard WHERE repo_id=%s",(REPO,))
+            self.assertIsNone(c.fetchone()[0])
+            c.execute("SELECT commit_id FROM Branch WHERE repo_id=%s",(REPO,))
+            self.assertEqual(c.fetchone()[0],"c"*40)
 
     def test_guard_lookup_scales_with_active_locks_not_history(self):
         """A large dormant Guard history must not be scanned per native write.
@@ -138,14 +144,15 @@ class MariaDBFeatureTests(TestCase):
                 history)
             c.execute(
                 "UPDATE cf_edit_guard SET guard_id=%s,generation=1,"
-                "credential_epoch=1,mode='checkout',owner_uid='owner',"
-                "proof_digest=%s,checkout_policy='persistent',base_file_id=%s "
+                "owner_uid='owner',owner_native_user='owner@auth.local',"
+                "proof_digest=%s,base_file_id=%s,"
+                "lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)) "
                 "WHERE repo_id=%s AND path_hash=%s",
                 (REPO, "f"*64, "a"*40, REPO, history[5000][1]))
         self.db.commit()
 
         query = ("SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
-                 "WHERE repo_id=%s AND guard_id IS NOT NULL FOR UPDATE")
+                 "WHERE repo_id=%s AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE")
         with self.db.cursor() as c:
             c.execute("EXPLAIN " + query, (REPO,))
             plan = c.fetchone()
@@ -163,9 +170,8 @@ class MariaDBFeatureTests(TestCase):
             # Once the only active reservation is released, 12,000 dormant
             # historical rows still must yield an empty indexed range.
             c.execute(
-                "UPDATE cf_edit_guard SET guard_id=NULL,mode=NULL,"
-                "owner_uid=NULL,proof_digest=NULL,checkout_policy=NULL,"
-                "base_file_id=NULL,credential_epoch=0 "
+                "UPDATE cf_edit_guard SET guard_id=NULL,owner_uid=NULL,owner_native_user=NULL,"
+                "proof_digest=NULL,base_file_id=NULL,lease_expires_at=NULL "
                 "WHERE repo_id=%s AND path_hash=%s",
                 (REPO, history[5000][1]))
             c.execute(query, (REPO,))
