@@ -209,7 +209,7 @@ v2_acl_enabled=true
                 assert not seafile_api.get_file_id_by_path(repo,'/shared/c-denied.txt')
                 assert seafile_api.get_repo(repo).head_cmmt_id==head
                 checks.append('C current r denies byte publication')
-                change('none')
+                change('invisible')
                 assert requests.get(url,headers=dict(headers,Range='bytes=3-27'),timeout=15).status_code==403
                 checks.append('Current deny revokes path/Range read')
                 change('rw')
