@@ -5,81 +5,81 @@ package main
 // controlled publication; that requires the reviewed Guard+Intent native seam.
 // This file intentionally does not duplicate CF-ACL or Checkout authorization.
 import (
-    "context"
-    "database/sql"
-    "errors"
-    "strings"
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
 
-    "github.com/haiwen/seafile-server/fileserver/commitmgr"
-    "github.com/haiwen/seafile-server/fileserver/diff"
-    "github.com/haiwen/seafile-server/fileserver/option"
+	"github.com/haiwen/seafile-server/fileserver/commitmgr"
+	"github.com/haiwen/seafile-server/fileserver/diff"
+	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 var errCFEditGuard = errors.New("CF-EDIT: native write touches a checked-out file or edit state is unavailable")
 
 func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
-    for _, value := range []string{entry.Name, entry.NewName} {
-        if value == "" {
-            continue
-        }
-        changed := "/" + strings.TrimPrefix(value, "/")
-        if changed == guardPath || strings.HasPrefix(guardPath, changed+"/") {
-            // Covers file edits and directory moves/deletes over checked-out files.
-            return true
-        }
-    }
-    return false
+	for _, value := range []string{entry.Name, entry.NewName} {
+		if value == "" {
+			continue
+		}
+		changed := "/" + strings.TrimPrefix(value, "/")
+		if changed == guardPath || strings.HasPrefix(guardPath, changed+"/") {
+			// Covers file edits and directory moves/deletes over checked-out files.
+			return true
+		}
+	}
+	return false
 }
 
 // Caller must already hold Branch(master) FOR UPDATE in this same transaction.
 // SQL errors and native diff failures deny, never silently fall back to CE.
 func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-    if !option.V2EditEnabled {
-        return nil
-    }
-    rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE", repoID)
-    if err != nil {
-        return errCFEditGuard
-    }
-    var paths []string
-    for rows.Next() {
-        var path string
-        if err := rows.Scan(&path); err != nil {
-            rows.Close()
-            return errCFEditGuard
-        }
-        if path == "" || !strings.HasPrefix(path, "/") {
-            rows.Close()
-            return errCFEditGuard
-        }
-        paths = append(paths, path)
-    }
-    err = rows.Err()
-    rows.Close()
-    if err != nil {
-        return errCFEditGuard
-    }
-    if len(paths) == 0 || oldCommitID == newCommitID {
-        return nil
-    }
-    oldCommit, err := commitmgr.Load(repoID, oldCommitID)
-    if err != nil {
-        return errCFEditGuard
-    }
-    newCommit, err := commitmgr.Load(repoID, newCommitID)
-    if err != nil {
-        return errCFEditGuard
-    }
-    var changes []*diff.DiffEntry
-    if err := diff.DiffCommits(oldCommit, newCommit, &changes, false); err != nil {
-        return errCFEditGuard
-    }
-    for _, change := range changes {
-        for _, protected := range paths {
-            if cfV2EditTouchesPath(change, protected) {
-                return errCFEditGuard
-            }
-        }
-    }
-    return nil
+	if !option.V2EditEnabled {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE", repoID)
+	if err != nil {
+		return errCFEditGuard
+	}
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			rows.Close()
+			return errCFEditGuard
+		}
+		if path == "" || !strings.HasPrefix(path, "/") {
+			rows.Close()
+			return errCFEditGuard
+		}
+		paths = append(paths, path)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return errCFEditGuard
+	}
+	if len(paths) == 0 || oldCommitID == newCommitID {
+		return nil
+	}
+	oldCommit, err := commitmgr.Load(repoID, oldCommitID)
+	if err != nil {
+		return errCFEditGuard
+	}
+	newCommit, err := commitmgr.Load(repoID, newCommitID)
+	if err != nil {
+		return errCFEditGuard
+	}
+	var changes []*diff.DiffEntry
+	if err := diff.DiffCommits(oldCommit, newCommit, &changes, false); err != nil {
+		return errCFEditGuard
+	}
+	for _, change := range changes {
+		for _, protected := range paths {
+			if cfV2EditTouchesPath(change, protected) {
+				return errCFEditGuard
+			}
+		}
+	}
+	return nil
 }
