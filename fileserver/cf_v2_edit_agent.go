@@ -169,6 +169,7 @@ func cfEditVerified(c *cfEditClaims, g cfEditGuard, p cfEditProof, expiredAllowe
 	sum := sha256.Sum256([]byte(p.Proof))
 	return subtle.ConstantTimeCompare(sum[:], digest) == 1
 }
+
 // cfEditResumable lets the owner renew a lapsed lease with a fresh browser
 // ticket. Checkout always rotates guard_id, so a still-verified Guard means no
 // one else checked out; an unchanged file means no optimistic save intervened.
