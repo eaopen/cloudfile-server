@@ -51,7 +51,7 @@ func TestCFEditScopedTicketValidation(t *testing.T) {
 }
 func TestCFEditCredentialDigestDoesNotTrustUnrelatedActor(t *testing.T){
  c:=&cfEditClaims{RegisteredClaims:jwt.RegisteredClaims{Subject:"user@auth.local"}}
- p:=cfEditProof{GuardID:uuid.NewString(),Generation:3,Proof:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+ p:=cfEditProof{GuardID:uuid.New().String(),Generation:3,Proof:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
  g:=cfEditGuard{ID:p.GuardID,Generation:3,Owner:"user@auth.local",
   ProofDigest:fmt.Sprintf("%x",cfEditHash(p.Proof)),Expires:time.Now().Add(time.Minute)}
  if !cfEditVerified(c,g,p,false){t.Fatal("matching guard rejected")}
