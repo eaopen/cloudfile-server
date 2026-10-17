@@ -31,11 +31,11 @@ func TestCFV2EditTouchesPath(t *testing.T) {
 	}
 }
 
-func TestCFV2EditDisabledNeedsNoDatabase(t *testing.T) {
-	old := option.V2EditEnabled
-	option.V2EditEnabled = false
-	defer func() { option.V2EditEnabled = old }()
+func TestCFV2NoGuardNeedsNoDatabase(t *testing.T) {
+	old := option.V2GuardAvailable
+	option.V2GuardAvailable = false
+	defer func() { option.V2GuardAvailable = old }()
 	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "", "", ""); err != nil {
-		t.Fatalf("disabled feature must make no database call: %v", err)
+		t.Fatalf("absent Guard must make no database call: %v", err)
 	}
 }
