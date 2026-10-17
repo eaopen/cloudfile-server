@@ -109,3 +109,27 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 		t.Fatal("lapsed Guard without a base resumed")
 	}
 }
+
+
+func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
+	cases := []struct {
+		mode, route, action string
+		allowed             bool
+	}{
+		{"optimistic-edit", "read", "", true},
+		{"optimistic-edit", "status", "", true},
+		{"optimistic-edit", "publish", "optimistic", true},
+		{"optimistic-edit", "publish", "checkin", false},
+		{"optimistic-edit", "checkout", "", false},
+		{"optimistic-edit", "renew", "", false},
+		{"exclusive-edit", "read", "", false},
+		{"exclusive-edit", "publish", "commit", false},
+		{"exclusive-edit", "checkout", "", false},
+	}
+	for _, c := range cases {
+		if got := cfEditAllowedWithoutCheckout(c.mode, c.route, c.action); got != c.allowed {
+			t.Fatalf("mode=%s route=%s action=%s allowed=%v, wanted %v",
+				c.mode, c.route, c.action, got, c.allowed)
+		}
+	}
+}
