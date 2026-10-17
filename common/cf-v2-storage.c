@@ -88,7 +88,14 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
             "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id",
             read_route, &route, 1, "string", repo_id) != 1)
         goto out;
-    if (!route.storage_id && !route.key) {
+    /* Registered pre-V2 native libraries retain their original object tree.
+     * "native-<UUID>" is a reserved metadata marker, never a new storage
+     * destination. Do not silently interpret a broken V2 route as native. */
+    if (!route.storage_id && (!route.key ||
+        ((g_strcmp0 (route.state, "active") == 0 ||
+          g_strcmp0 (route.state, "retired") == 0) &&
+         g_str_has_prefix (route.key, "native-") &&
+         strcmp (route.key + strlen ("native-"), repo_id) == 0))) {
         result = g_build_filename (native_obj_dir, repo_id, NULL);
         goto out;
     }
