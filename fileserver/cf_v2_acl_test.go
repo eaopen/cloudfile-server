@@ -86,4 +86,3 @@ func TestCFACLNativeProtocolRechecksAndFailsClosed(t *testing.T) {
 		t.Fatal("accepted missing actor")
 	}
 }
-
