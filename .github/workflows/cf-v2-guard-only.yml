@@ -1,0 +1,28 @@
+name: CF-EDIT Guard-only native Go
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/v2-rust-guard-only, feature/v2-checkout-default-on]
+  pull_request:
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: fileserver/go.sum
+      - name: Build, run Guard auth tests and vet
+        working-directory: fileserver
+        run: |
+          go test . -run 'TestCFEdit' -count=1 -v
+          go vet ./...
+      - name: Validate Go formatting
+        working-directory: fileserver
+        run: |
+          gofmt -l cf_v2_edit_agent.go cf_v2_edit_agent_test.go | tee /tmp/cfedit-unformatted
+          test ! -s /tmp/cfedit-unformatted

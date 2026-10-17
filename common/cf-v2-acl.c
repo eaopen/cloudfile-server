@@ -2,23 +2,6 @@
 #include "cf-v2-acl.h"
 #include "seafile-session.h"
 
-static int enabled(struct _SeafileSession *session)
-{
-    if (!session || !session->config) return -1;
-    GError *error = NULL;
-    gboolean active = g_key_file_get_boolean(session->config, "cloudfile", "v2_acl_enabled", &error);
-    if (!error) return active ? 1 : 0;
-    gboolean missing = g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_KEY_NOT_FOUND) ||
-                       g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
-    g_error_free(error);
-    return missing ? 0 : -1;
-}
-
-int cf_v2_acl_transfer(struct _SeafileSession *session)
-{
-    return enabled(session) == 0 ? 0 : -1;
-}
-
 static const char *query =
     "SELECT 1 FROM cf_dir_acl WHERE repo_id=? OR repo_id IN "
     "(SELECT origin_repo FROM VirtualRepo WHERE repo_id=?) LIMIT 1";
@@ -31,15 +14,84 @@ static gboolean found(SeafDBRow *row, void *data)
 
 static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char *repo_id)
 {
-    int active = enabled(session);
-    if (active <= 0) return active;
-    if (!repo_id || seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
+    if (!session || !session->db || !repo_id ||
+        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
     gboolean protected = FALSE;
     int count = trans ? seaf_db_trans_foreach_selected_row(trans, query, found, &protected,
                             2, "string", repo_id, "string", repo_id) :
                        seaf_db_statement_foreach_row(session->db, query, found, &protected,
                             2, "string", repo_id, "string", repo_id);
     return count < 0 ? -1 : protected ? -2 : 0;
+}
+
+/* Native transfer and Hub ACL mutations share per-library advisory locks.
+ * Keep the dedicated connection until synchronous publication completes: an
+ * empty ACL snapshot alone would race a newly installed source restriction. */
+struct CfV2ACLTransfer {
+    SeafDBTrans *trans;
+    char *repos[2];
+};
+
+static gboolean lock_result(SeafDBRow *row, void *data)
+{
+    *(int *)data = seaf_db_row_get_column_int(row, 0);
+    return FALSE;
+}
+
+static int transfer_lock(SeafDBTrans *trans, const char *repo, gboolean release)
+{
+    int result = -1;
+    const char *sql = release ?
+        "SELECT RELEASE_LOCK(CONCAT('cfv2:t:',LEFT(SHA2(CONCAT(DATABASE(),':',?),256),56)))" :
+        "SELECT GET_LOCK(CONCAT('cfv2:t:',LEFT(SHA2(CONCAT(DATABASE(),':',?),256),56)),5)";
+    int count = seaf_db_trans_foreach_selected_row(trans, sql, lock_result, &result, 1, "string", repo);
+    return count < 0 || result != 1 ? -1 : 0;
+}
+
+void cf_v2_acl_transfer_free(CfV2ACLTransfer *guard)
+{
+    if (!guard) return;
+    if (guard->trans) {
+        /* GET_LOCK is connection-scoped, so rollback alone would leak it into
+         * the native pool. Always release before returning the connection. */
+        for (int i=1; i>=0; --i)
+            if (guard->repos[i]) transfer_lock(guard->trans, guard->repos[i], TRUE);
+        seaf_db_rollback(guard->trans);
+        seaf_db_trans_close(guard->trans);
+    }
+    g_free(guard->repos[0]);g_free(guard->repos[1]);g_free(guard);
+}
+
+CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
+                                         const char *source, const char *destination)
+{
+    if (!session || !session->db || !source || !destination ||
+        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return NULL;
+    CfV2ACLTransfer *guard = g_new0(CfV2ACLTransfer, 1);
+    guard->trans = seaf_db_begin_transaction(session->db);
+    if (!guard->trans) goto failed;
+    const char *first = strcmp(source,destination)<=0 ? source : destination;
+    const char *second = strcmp(source,destination)<=0 ? destination : source;
+    if (transfer_lock(guard->trans,first,FALSE)<0) goto failed;
+    guard->repos[0]=g_strdup(first);
+    if (strcmp(first,second)) {
+        if (transfer_lock(guard->trans,second,FALSE)<0) goto failed;
+        guard->repos[1]=g_strdup(second);
+    }
+    for (int i=0;i<2;++i) {
+        const char *repo=guard->repos[i];
+        if (!repo) continue;
+        /* Virtual repositories need an origin/path proof; do not infer it from
+         * an unprotected child. SQL failure is distinct from an empty result. */
+        gboolean db_error=FALSE;
+        gboolean virtual=seaf_db_trans_check_for_existence(guard->trans,
+            "SELECT 1 FROM VirtualRepo WHERE repo_id=?", &db_error, 1, "string", repo);
+        if (db_error || virtual || check(guard->trans,session,repo)!=0) goto failed;
+    }
+    return guard;
+failed:
+    cf_v2_acl_transfer_free(guard);
+    return NULL;
 }
 
 int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id)
@@ -140,7 +192,7 @@ int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
     if (state!=-2) return -1;
     /* Distinguish protected scope from a SQL/config failure: neither grants.
      * The HTTP authority independently reads the same facts and denies failures. */
-    if (enabled(session)!=1 || !actor || !*actor || !old_id || !new_id) return -1;
+    if (!actor || !*actor || !old_id || !new_id) return -1;
     SeafRepo *repo=seaf_repo_manager_get_repo(session->repo_mgr,repo_id);
     if (!repo || repo->virtual_info) { if (repo) seaf_repo_unref(repo); return -1; }
     SeafCommit *old=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,old_id);

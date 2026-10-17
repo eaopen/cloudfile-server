@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -161,6 +162,20 @@ func loadSeafileDB() {
 	seafileDB.SetMaxIdleConns(8)
 }
 
+// A controlled Guard schema migration requires restarting native services.
+// An unhealthy database is fatal: it must never be interpreted as no Checkout.
+func detectV2Guard() {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+	var count int
+	err := seafileDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard'").Scan(&count)
+	if err != nil || count < 0 || count > 1 {
+		log.Fatalf("Failed to determine installed CloudFile Checkout Guard: %v (count=%d)", err, count)
+	}
+	option.V2GuardAvailable = count == 1
+}
+
 func writePidFile(pid_file_path string) error {
 	file, err := os.OpenFile(pid_file_path, os.O_CREATE|os.O_WRONLY, 0664)
 	if err != nil {
@@ -250,6 +265,7 @@ func main() {
 	option.LoadFileServerOptions(centralDir)
 	loadCcnetDB()
 	loadSeafileDB()
+	detectV2Guard()
 	objstore.InitV2Storage(seafileDB)
 
 	level, err := log.ParseLevel(option.LogLevel)
@@ -356,6 +372,8 @@ func newHTTPRouter() *mux.Router {
 	r.Handle("/files/{.*}/{.*}", appHandler(accessCB))
 	r.Handle("/blks/{.*}/{.*}", appHandler(accessBlksCB))
 	r.Handle("/zip/{.*}", appHandler(accessZipCB))
+	// Optional scoped Rust edit transport; GET and writes are rejected when off.
+	r.HandleFunc("/cf-edit/v1/{operation:read|checkout|renew|release|status|publish}", cfEditAPI)
 	r.Handle("/upload-api/{.*}", appHandler(uploadAPICB))
 	r.Handle("/upload-aj/{.*}", appHandler(uploadAjaxCB))
 	r.Handle("/update-api/{.*}", appHandler(updateAPICB))

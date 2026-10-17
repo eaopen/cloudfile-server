@@ -269,7 +269,7 @@ func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
 		msg := "No file path\n"
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
-	if option.V2ACLEnabled && !cfACLCanonical("/"+strings.TrimPrefix(filePath, "/")) {
+	if !cfACLCanonical("/" + strings.TrimPrefix(filePath, "/")) {
 		return &appError{nil, "Invalid path", http.StatusBadRequest}
 	}
 	rpath := getCanonPath(filePath)

@@ -86,12 +86,3 @@ func TestCFACLNativeProtocolRechecksAndFailsClosed(t *testing.T) {
 		t.Fatal("accepted missing actor")
 	}
 }
-
-func TestCFACLDisabledNeedsNoDB(t *testing.T) {
-	old := option.V2ACLEnabled
-	defer func() { option.V2ACLEnabled = old }()
-	option.V2ACLEnabled = false
-	if protected, err := cfACLProtected(context.Background(), nil, "repo"); err != nil || protected {
-		t.Fatal("disabled changed native behavior")
-	}
-}

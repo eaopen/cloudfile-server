@@ -27,7 +27,7 @@ def run():
     hub = Path(os.environ['CF_ACL_HUB_SOURCE'])
     binary = Path(os.environ['CF_ACL_C_BINARY'])
     go_binary = Path(os.environ['CF_ACL_GO_BINARY'])
-    options = dict(host=os.environ.get('CF_ACL_DB_HOST','db'),user='root',password='acl-test-only',autocommit=True,charset='utf8mb4')
+    options = dict(host=os.environ.get('CF_ACL_DB_HOST','db'),user='root',password=os.environ.get('CF_ACL_DB_PASSWORD','acl-test-only'),autocommit=True,charset='utf8mb4')
     admin = pymysql.connect(**options)
     schemas = {kind:'acl_native_'+uuid4().hex for kind in ('account','files')}
     processes=[]
@@ -54,18 +54,16 @@ def run():
 type=mysql
 host={options['host']}
 user=root
-password=acl-test-only
+password={options['password']}
 db_name={schemas['files']}
 ccnet_db_name={schemas['account']}
 connection_charset=utf8mb4
 [fileserver]
 use_go_fileserver=true
 port=8082
-[cloudfile]
-v2_acl_enabled=true
 ''')
             os.environ.update(SEAFILE_DATA_DIR=str(data),SEAFILE_CENTRAL_CONF_DIR=str(conf),SEAHUB_LOG_DIR=str(root),
-                SEAFILE_MYSQL_DB_HOST=options['host'],SEAFILE_MYSQL_DB_USER='root',SEAFILE_MYSQL_DB_PASSWORD='acl-test-only',
+                SEAFILE_MYSQL_DB_HOST=options['host'],SEAFILE_MYSQL_DB_USER='root',SEAFILE_MYSQL_DB_PASSWORD=options['password'],
                 SEAFILE_MYSQL_DB_CCNET_DB_NAME=schemas['account'],SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=schemas['files'],
                 JWT_PRIVATE_KEY=key,ENABLE_GO_FILESERVER='true',DJANGO_SETTINGS_MODULE='seahub.settings')
             for label,cmd in (
@@ -103,6 +101,48 @@ v2_acl_enabled=true
                 try:yield;conn.commit()
                 finally:conn.rollback()
             store=ACLStore(conn,schemas['files'],atomic)
+            # Real native transfers must work without rules, then reject a
+            # source ACL installed while the transfer waits for its fence.
+            from concurrent.futures import ThreadPoolExecutor
+            from hashlib import sha256
+            plain=seafile_api.create_repo('Native ordinary transfer','',owner)
+            target=seafile_api.create_repo('Native transfer destination','',owner)
+            local=root/'plain.txt';local.write_bytes(b'native ACL transfer proof')
+            assert seafile_api.post_file(plain,str(local),'/', 'plain.txt',owner)==0
+            seafile_api.copy_file(plain,'/',json.dumps(['plain.txt']),target,'/',json.dumps(['copy.txt']),owner,0,synchronous=0)
+            assert seafile_api.get_file_id_by_path(target,'/copy.txt')
+            seafile_api.move_file(target,'/',json.dumps(['copy.txt']),plain,'/',json.dumps(['moved.txt']),0,owner,0,synchronous=0)
+            assert seafile_api.get_file_id_by_path(plain,'/moved.txt')
+            assert not seafile_api.get_file_id_by_path(target,'/copy.txt')
+            checks.append('Ordinary copy/move works synchronously without ACL rules')
+            fence='cfv2:t:'+sha256((schemas['files']+':'+plain).encode()).hexdigest()[:56]
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT GET_LOCK(%s,5)',[fence]);assert cursor.fetchone()==(1,)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    def waiting_copy():
+                        try:
+                            seafile_api.copy_file(plain,'/',json.dumps(['plain.txt']),target,'/',json.dumps(['escape.txt']),owner,0,synchronous=1)
+                            return True
+                        except Exception:
+                            return False
+                    pending=pool.submit(waiting_copy)
+                    try:
+                        time.sleep(.2)
+                        assert not pending.done(), 'native transfer bypassed the ACL mutation fence'
+                        restriction=Rule(plain,'/','etech','user','user','owner-uid','invisible',True,False)
+                        restriction_revision=str(uuid4())
+                        store.mutate(restriction,expected=None,revision=restriction_revision)
+                    finally:
+                        with conn.cursor() as cursor:
+                            cursor.execute('SELECT RELEASE_LOCK(%s)',[fence]);assert cursor.fetchone()==(1,)
+                    assert pending.result(timeout=10) is False
+                assert not seafile_api.get_file_id_by_path(target,'/escape.txt')
+                store.mutate(restriction,expected=restriction_revision,revision=str(uuid4()),delete=True)
+                checks.append('Concurrent source ACL publication prevents native byte export')
+            finally:
+                seafile_api.remove_repo(plain)
+                seafile_api.remove_repo(target)
             revision=str(uuid4())
             rule=Rule(repo,'/shared','etech','user','user','member-uid','rw',True,True)
             store.mutate(rule,expected=None,revision=revision)
@@ -209,7 +249,7 @@ v2_acl_enabled=true
                 assert not seafile_api.get_file_id_by_path(repo,'/shared/c-denied.txt')
                 assert seafile_api.get_repo(repo).head_cmmt_id==head
                 checks.append('C current r denies byte publication')
-                change('none')
+                change('invisible')
                 assert requests.get(url,headers=dict(headers,Range='bytes=3-27'),timeout=15).status_code==403
                 checks.append('Current deny revokes path/Range read')
                 change('rw')
@@ -222,20 +262,19 @@ v2_acl_enabled=true
                 checks.append('Unscoped structural C operation remains closed')
                 from django.test import override_settings
                 from django.core.cache import cache
-                # This store has no commit hook, like a direct SQL edit: the
-                # cached library rules stay valid until their bounded expiry.
+                # LocMem cannot invalidate other workers. Production authority
+                # disables cross-request grants for this backend, even with TTL.
                 with override_settings(CF_ACL_CACHE_TTL=2,CACHES={'default':{'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'native-acl-proof'}}):
                     cache.clear()
                     assert upload('cache-warm.txt').status_code==200
                     change('r')
-                    assert upload('cache-window.txt').status_code==200
-                    assert seafile_api.post_file(repo,str(local),'/shared','c-cache-window.txt',member)==0
-                    checks.append('C and Go share bounded cached grants after revocation')
-                    time.sleep(2.1)
                     cached_head=seafile_api.get_repo(repo).head_cmmt_id
-                    assert upload('cache-expired.txt').status_code!=200
+                    assert upload('cache-revoked.txt').status_code!=200
+                    try:seafile_api.post_file(repo,str(local),'/shared','c-cache-revoked.txt',member)
+                    except Exception:pass
+                    assert not seafile_api.get_file_id_by_path(repo,'/shared/c-cache-revoked.txt')
                     assert seafile_api.get_repo(repo).head_cmmt_id==cached_head
-                    checks.append('Expired cache naturally enforces revocation')
+                    checks.append('Local cache cannot retain C/Go grants after revocation')
                 with conn.cursor() as cursor:cursor.execute('RENAME TABLE cf_dir_acl TO acl_temporarily_unavailable')
                 try:
                     unavailable_head=seafile_api.get_repo(repo).head_cmmt_id

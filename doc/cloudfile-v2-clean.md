@@ -8,15 +8,17 @@ Source of approved SQL: archived V2 M1 snapshot. No existing deployment, data, o
 
 ## Automatic Local Library Storage
 
-This optional native integration uses only `cf_library_storage` and CE's
+This built-in native integration uses only `cf_library_storage` and CE's
 `RepoStorageId`. It does not load the historical multi-storage, S3, task, or
 extension-registration framework. Key validation follows the previously tested
 `auto-local:` convention; routing and lifecycle code are independent V2 code.
 
-With no setting, native filesystem paths remain in use and these code paths do
-not query the extension schema. To allocate new libraries under an existing,
-deployment-owned absolute directory, configure the same file in Server,
-Fileserver and GC:
+Fresh V2 Docker sets a default library root automatically. For manually
+assembled native deployments, `auto_local_root` selects an existing,
+deployment-owned storage root; it is a **storage location**, not a product
+feature flag. When upgrading a CE14 deployment with no configured root, keep
+its native layout unchanged (no automatic data movement). Server, Fileserver
+and GC must agree on the selected storage location:
 
 ```ini
 [cloudfile_v2]
@@ -56,3 +58,20 @@ failures. The Docker V2 runtime suite additionally exercises mixed libraries,
 cross-language bytes, mapping failure, trash restore and cold GC. Their success
 must be recorded for the exact source pins. These storage checks do not prove
 directory ACL, shared-root access, browser OIDC, or Etech MVP acceptance.
+
+## Default-on native features (2026-10-17)
+
+Checkout is installed with fresh V2 using the separate `cf_edit_guard` schema.
+Both native C and Go implementations inspect the installed schema instead of
+honoring the retired `[cloudfile] v2_edit_enabled` key. The Hub checks the
+same schema. A reused CE14 instance without Guard can still perform native
+file operations and optimistic edits; Guard installation requires explicit
+migration and restarting all three processes. Once Guard exists, native write
+fences cannot be disabled by configuration. Errors querying Guard fail closed.
+
+Directory ACL always applies where the V2 ACL table contains protected rules;
+no `v2_acl_enabled` option exists. CE Tag remains native. Meilisearch is an
+optional external Search backend selected by configured endpoint and credential,
+not a second feature-enable toggle. Keep external connections, storage paths,
+security-sensitive identity settings, and bounded performance tuning separate
+from feature flags. These source changes do not migrate running production data.

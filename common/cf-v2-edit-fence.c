@@ -46,20 +46,34 @@ path_touches(const char *changed, const char *guarded)
     return touches;
 }
 
-static int
-enabled(GKeyFile *config)
+/* Schema is the sole Checkout capability source. Cache only for this native
+ * process; installing/removing Guard requires a controlled restart. An SQL
+ * failure is permanently fail-closed until restart, never an absent Guard. */
+static gsize guard_schema_state = 0; /* 0=unread, 1=absent, 2=installed, 3=error */
+
+static gboolean
+guard_table_found(SeafDBRow *row, void *data)
 {
-    if (!config)
+    (void)row;
+    *(gboolean *)data = TRUE;
+    return FALSE;
+}
+
+static int
+guard_available(struct _SeafileSession *session)
+{
+    if (!session || !session->db ||
+        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
-    GError *error = NULL;
-    gboolean value = g_key_file_get_boolean(config, "cloudfile", "v2_edit_enabled", &error);
-    if (error) {
-        int missing = g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_KEY_NOT_FOUND) ||
-                      g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
-        g_error_free(error);
-        return missing ? 0 : -1;
+    if (g_once_init_enter(&guard_schema_state)) {
+        gboolean found = FALSE;
+        int count = seaf_db_statement_foreach_row(session->db,
+            "SELECT 1 FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard' LIMIT 1",
+            guard_table_found, &found, 0);
+        g_once_init_leave(&guard_schema_state, count < 0 ? 3 : found ? 2 : 1);
     }
-    return value ? 1 : 0;
+    return guard_schema_state == 3 ? -1 : guard_schema_state == 2 ? 1 : 0;
 }
 
 int
@@ -71,7 +85,7 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
 {
     if (!trans || !session || !repo_id || !old_commit_id || !new_commit_id)
         return -1;
-    int active = enabled(session->config);
+    int active = guard_available(session);
     if (active <= 0)
         return active == 0 ? 0 : -1;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
@@ -80,7 +94,8 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
     GuardPaths guards = {g_ptr_array_new_with_free_func(g_free), FALSE};
     int count = seaf_db_trans_foreach_selected_row(trans,
         "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
-        "WHERE repo_id=? AND guard_id IS NOT NULL FOR UPDATE",
+        "WHERE repo_id=? AND guard_id IS NOT NULL "
+        "AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
         read_guard_path, &guards, 1, "string", repo_id);
     int rc = -1;
     if (count < 0 || guards.invalid)

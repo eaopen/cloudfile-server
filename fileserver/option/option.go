@@ -44,9 +44,8 @@ var (
 
 	// general options
 	CloudMode bool
-	// V2 optional CF-EDIT native fence; disabled in the three-table MVP.
-	V2EditEnabled bool
-	V2ACLEnabled  bool
+	// Derived from the installed Guard table at startup, never from an ENABLE flag.
+	V2GuardAvailable bool
 
 	// notification server
 	EnableNotification bool
@@ -158,25 +157,6 @@ func LoadFileServerOptions(centralDir string) {
 		if key, err := section.GetKey("default"); err == nil {
 			quotaStr := key.String()
 			DefaultQuota = parseQuota(quotaStr)
-		}
-	}
-
-	// Both C and Go read the same seafile.conf key. Invalid explicit
-	// configuration must stop the process rather than silently bypass Guard.
-	if section, err := config.GetSection("cloudfile"); err == nil {
-		if key, err := section.GetKey("v2_acl_enabled"); err == nil {
-			value, err := key.Bool()
-			if err != nil {
-				log.Fatalf("Invalid cloudfile.v2_acl_enabled: %v", err)
-			}
-			V2ACLEnabled = value
-		}
-		if key, err := section.GetKey("v2_edit_enabled"); err == nil {
-			value, err := key.Bool()
-			if err != nil {
-				log.Fatalf("Invalid cloudfile.v2_edit_enabled: %v", err)
-			}
-			V2EditEnabled = value
 		}
 	}
 
