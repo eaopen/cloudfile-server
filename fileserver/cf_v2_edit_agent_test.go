@@ -13,15 +13,15 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
-func TestCFEditDisabledRejectsWithoutDatabase(t *testing.T) {
+func TestCFEditWithoutGuardStillChecksUserAuthorization(t *testing.T) {
 	prior := option.V2EditEnabled
 	option.V2EditEnabled = false
 	defer func() { option.V2EditEnabled = prior }()
 	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
 	rec := httptest.NewRecorder()
 	cfEditAPI(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("disabled edit route returned %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ordinary edit without Guard must still authenticate: HTTP %d", rec.Code)
 	}
 }
 func TestCFEditScopedTicketValidation(t *testing.T) {
