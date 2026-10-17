@@ -41,7 +41,7 @@ authenticated native repository management rights and revision CAS.
   implemented. Otherwise a copy into an unprotected destination could export
   protected source data, including when rules appear during a copy. Other
   structural operations in protected repos remain blocked.
-- CF-EDIT hooks are independent and retain their separate configuration/behavior.
+- CF-EDIT native Checkout Guard is independent of ACL but is no longer controlled by an ENABLE option: native processes detect the installed `cf_edit_guard` schema. If present, it must be enforced on every relevant final write; schema/SQL failure denies, not bypasses. Installing Guard in an existing deployment requires a controlled schema migration and restart.
 
 The source-set integrator must explicitly add the new `common/cf-v2-acl.[ch]` and
 `fileserver/cf_v2_acl*.go` overlay files, plus changed native patches:
