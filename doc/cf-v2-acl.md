@@ -37,10 +37,14 @@ authenticated native repository management rights and revision CAS.
   rule writes through Hub invalidate them on commit). A failed check rolls back the native publication.
 - C post/put of fresh bytes have explicit actor context. C unscoped commits, native
   sync, public links and object-ID-only tickets cannot access protected repos.
-- Copy/move is disabled globally in ACL mode until source/destination proof is
-  implemented. Otherwise a copy into an unprotected destination could export
-  protected source data, including when rules appear during a copy. Other
-  structural operations in protected repos remain blocked.
+- Copy/move works only between two non-virtual libraries confirmed to have no
+  ACL rules. Both library transfer fences are acquired in repository-ID order
+  on a dedicated connection and held through synchronous publication. Hub ACL
+  writes take the same fence before Branch(master), so a new source deny cannot
+  race an ordinary copy into an unprotected destination. Fence/schema failure
+  and protected/virtual scopes still deny. Requested background transfers run
+  synchronously until the background worker can carry the same proof safely.
+  Other structural operations in protected repos remain blocked.
 - CF-EDIT native Checkout Guard is independent of ACL but is no longer controlled by an ENABLE option: native processes detect the installed `cf_edit_guard` schema. If present, it must be enforced on every relevant final write; schema/SQL failure denies, not bypasses. Installing Guard in an existing deployment requires a controlled schema migration and restart.
 
 The source-set integrator must explicitly add the new `common/cf-v2-acl.[ch]` and

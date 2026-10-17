@@ -2829,11 +2829,15 @@ seaf_repo_manager_copy_file (SeafRepoManager *mgr,
                              int synchronous,
                              GError **error)
 {
-    if (cf_v2_acl_transfer(seaf) < 0) {
+    /* Scope cleanup covers every error/return. Do not dispatch a background
+     * copy after releasing the source ACL proof held by this connection. */
+    g_autoptr(CfV2ACLTransfer) acl_transfer = cf_v2_acl_transfer_begin(seaf, src_repo_id, dst_repo_id);
+    if (!acl_transfer) {
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                     "Source/destination ACL transaction proof unavailable");
         return NULL;
     }
+    synchronous = 1;
 
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent *src_dent = NULL, *dst_dent = NULL;
@@ -2990,11 +2994,15 @@ seaf_repo_manager_copy_multiple_files (SeafRepoManager *mgr,
                                        int synchronous,
                                        GError **error)
 {
-    if (cf_v2_acl_transfer(seaf) < 0) {
+    /* Scope cleanup covers every error/return. Do not dispatch a background
+     * copy after releasing the source ACL proof held by this connection. */
+    g_autoptr(CfV2ACLTransfer) acl_transfer = cf_v2_acl_transfer_begin(seaf, src_repo_id, dst_repo_id);
+    if (!acl_transfer) {
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                     "Source/destination ACL transaction proof unavailable");
         return NULL;
     }
+    synchronous = 1;
 
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent **src_dents = NULL, **dst_dents = NULL;
@@ -3534,11 +3542,15 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
                                        int synchronous,
                                        GError **error)
 {
-    if (cf_v2_acl_transfer(seaf) < 0) {
+    /* Scope cleanup covers every error/return. Do not dispatch a background
+     * copy after releasing the source ACL proof held by this connection. */
+    g_autoptr(CfV2ACLTransfer) acl_transfer = cf_v2_acl_transfer_begin(seaf, src_repo_id, dst_repo_id);
+    if (!acl_transfer) {
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                     "Source/destination ACL transaction proof unavailable");
         return NULL;
     }
+    synchronous = 1;
 
     SeafRepo *src_repo = NULL, *dst_repo = NULL;
     SeafDirent **src_dents = NULL, **dst_dents = NULL;
