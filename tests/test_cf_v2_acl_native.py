@@ -61,8 +61,6 @@ connection_charset=utf8mb4
 [fileserver]
 use_go_fileserver=true
 port=8082
-[cloudfile]
-v2_acl_enabled=true
 ''')
             os.environ.update(SEAFILE_DATA_DIR=str(data),SEAFILE_CENTRAL_CONF_DIR=str(conf),SEAHUB_LOG_DIR=str(root),
                 SEAFILE_MYSQL_DB_HOST=options['host'],SEAFILE_MYSQL_DB_USER='root',SEAFILE_MYSQL_DB_PASSWORD='acl-test-only',
