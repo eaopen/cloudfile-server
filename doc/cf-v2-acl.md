@@ -4,6 +4,14 @@ Baseline: CE14 `b6179eb3d73b04c67a00412ebaf964153c4ad2c0`, with the frozen nativ
 CloudFile overlay `89f645f1e46a8b2d3d05e813a3a18aa980bc2735` as this branch's parent.
 Hub baseline: `64ed374bc8ceeb7d610baf9f3a99c6a60cffa93f`.
 
+Directory ACL configuration supports exactly `r`, `rw`, and `invisible`.
+`none` is not a stored V2 rule. The existing CE repo/share permissions are
+unchanged; native repository `admin` shares already carry `rw` content
+permission plus a management marker. This DDL contract applies to **fresh**
+V2 tables; do not auto-upgrade existing populated ACL tables or silently convert
+an existing deny rule on service restart. DEV-era obsolete `none` rows require
+explicit reviewed cleanup before enabling protected publication.
+
 See the matching Hub `cloudfile_ext/v2/ACL_CONTRACT.md` for the shared policy and
 wire contract. The authoritative algorithm and bounded library rule cache remain in Hub. Existing v0.9 design
 discussions are not implementation or acceptance evidence.

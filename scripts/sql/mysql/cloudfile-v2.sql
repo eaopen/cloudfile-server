@@ -37,7 +37,7 @@ CREATE TABLE cf_dir_acl (
     PRIMARY KEY (repo_id,path_hash,subject_type,provider,namespace,external_id),
     KEY acl_shared_subject (provider,subject_type,namespace,external_id,share_mode,repo_id),
     CONSTRAINT acl_subject_type CHECK (subject_type IN ('user','org','role')),
-    CONSTRAINT acl_permission CHECK (permission IN ('r','rw','none','invisible')),
+    CONSTRAINT acl_permission CHECK (permission IN ('r','rw','invisible')),
     CONSTRAINT acl_inherit CHECK (inherit IN (0,1)),
     CONSTRAINT acl_share CHECK (share_mode IN (0,1) AND
         (share_mode=0 OR (permission IN ('r','rw') AND path <> '/')))
