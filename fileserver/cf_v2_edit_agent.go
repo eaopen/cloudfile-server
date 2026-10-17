@@ -407,21 +407,25 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		}
 	}
 	out["sha256"] = hex.EncodeToString(hasher.Sum(nil))
-	var gID, owner sql.NullString
-	var generation uint64
-	var expires sql.NullTime
-	err = seafileDB.QueryRowContext(r.Context(),
-		"SELECT guard_id,generation,owner_native_user,lease_expires_at FROM cf_edit_guard WHERE repo_id=? AND path_hash=?",
-		repo.ID, cfEditHash(c.FilePath)).Scan(&gID, &generation, &owner, &expires)
-	if err != nil && err != sql.ErrNoRows {
-		cfEditFail(w, 503, "SQL_UNAVAILABLE")
-		return
-	}
-	if err == nil && gID.Valid && expires.Valid && expires.Time.After(time.Now().UTC()) {
-		out["checked_out"] = true
-		if owner.String == c.Subject {
-			out["guard_id"] = gID.String
-			out["generation"] = generation
+	if option.V2EditEnabled {
+		// Checkout is optional, but ordinary optimistic editing is not.
+		// A V2 deployment without the Guard table never queries it.
+		var gID, owner sql.NullString
+		var generation uint64
+		var expires sql.NullTime
+		err = seafileDB.QueryRowContext(r.Context(),
+			"SELECT guard_id,generation,owner_native_user,lease_expires_at FROM cf_edit_guard WHERE repo_id=? AND path_hash=?",
+			repo.ID, cfEditHash(c.FilePath)).Scan(&gID, &generation, &owner, &expires)
+		if err != nil && err != sql.ErrNoRows {
+			cfEditFail(w, 503, "SQL_UNAVAILABLE")
+			return
+		}
+		if err == nil && gID.Valid && expires.Valid && expires.Time.After(time.Now().UTC()) {
+			out["checked_out"] = true
+			if owner.String == c.Subject {
+				out["guard_id"] = gID.String
+				out["generation"] = generation
+			}
 		}
 	}
 	cfEditJSON(w, 200, out)
@@ -499,11 +503,15 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 		return
 	}
 	if action == "optimistic" {
-		var held int
-		err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cf_edit_guard WHERE repo_id=? AND path_hash=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repo.ID, cfEditHash(c.FilePath)).Scan(&held)
-		if err != nil || held != 0 {
-			cfEditFail(w, 409, "CHECKED_OUT")
-			return
+		// No persistent lock or Intent is allocated for an ordinary save.
+		// The Guard query is needed only on deployments that support Checkout.
+		if option.V2EditEnabled {
+			var held int
+			err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cf_edit_guard WHERE repo_id=? AND path_hash=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repo.ID, cfEditHash(c.FilePath)).Scan(&held)
+			if err != nil || held != 0 {
+				cfEditFail(w, 409, "CHECKED_OUT")
+				return
+			}
 		}
 	} else {
 		g, e := cfEditRow(ctx, tx, c)
@@ -560,17 +568,28 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 	cfEditJSON(w, 200, map[string]interface{}{"state": "published", "file_id": fileID,
 		"result_commit_id": newCommitID, "checked_in": action == "checkin"})
 }
-func cfEditAPI(w http.ResponseWriter, r *http.Request) {
-	if !option.V2EditEnabled {
-		cfEditFail(w, 503, "EDIT_DISABLED")
-		return
+
+// Without Guard storage, the ordinary Agent path (read, status, optimistic
+// CAS publish) remains usable. Only exclusive operations require Checkout.
+func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
+	if mode != "optimistic-edit" {
+		return false
 	}
+	return route == "read" || route == "status" ||
+		(route == "publish" && action == "optimistic")
+}
+
+func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 	c, err := cfEditClaimsFor(r)
 	if err != nil {
 		cfEditFail(w, 401, "AUTH_REQUIRED")
 		return
 	}
 	route := strings.TrimPrefix(r.URL.Path, "/cf-edit/v1/")
+	if !option.V2EditEnabled && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
+		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
+		return
+	}
 	write := route != "read" && route != "status"
 	repo, err := cfEditAuthorize(c, write)
 	if err != nil {

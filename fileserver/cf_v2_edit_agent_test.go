@@ -13,15 +13,15 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
-func TestCFEditDisabledRejectsWithoutDatabase(t *testing.T) {
+func TestCFEditWithoutGuardStillChecksUserAuthorization(t *testing.T) {
 	prior := option.V2EditEnabled
 	option.V2EditEnabled = false
 	defer func() { option.V2EditEnabled = prior }()
 	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
 	rec := httptest.NewRecorder()
 	cfEditAPI(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("disabled edit route returned %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ordinary edit without Guard must still authenticate: HTTP %d", rec.Code)
 	}
 }
 func TestCFEditScopedTicketValidation(t *testing.T) {
@@ -107,5 +107,61 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 	}
 	if cfEditResumable(cfEditGuard{Expires: now.Add(-time.Minute)}, "", now) {
 		t.Fatal("lapsed Guard without a base resumed")
+	}
+}
+
+func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
+	oldFlag, oldSecret := option.V2EditEnabled, option.JWTPrivateKey
+	option.V2EditEnabled = false
+	option.JWTPrivateKey = "unit-test-secret"
+	defer func() { option.V2EditEnabled = oldFlag; option.JWTPrivateKey = oldSecret }()
+	now := time.Now()
+	ticket := cfEditClaims{
+		UID:      "uid-test",
+		RepoID:   uuid.New().String(),
+		FilePath: "/design.step",
+		BaseID:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Mode:     "exclusive-edit",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "user@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket).SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
+	req.Header.Set("Authorization", "Bearer "+signed)
+	rec := httptest.NewRecorder()
+	cfEditAPI(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CHECKOUT_UNSUPPORTED") {
+		t.Fatalf("unexpected disabled checkout response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
+	cases := []struct {
+		mode, route, action string
+		allowed             bool
+	}{
+		{"optimistic-edit", "read", "", true},
+		{"optimistic-edit", "status", "", true},
+		{"optimistic-edit", "publish", "optimistic", true},
+		{"optimistic-edit", "publish", "checkin", false},
+		{"optimistic-edit", "checkout", "", false},
+		{"optimistic-edit", "renew", "", false},
+		{"exclusive-edit", "read", "", false},
+		{"exclusive-edit", "publish", "commit", false},
+		{"exclusive-edit", "checkout", "", false},
+	}
+	for _, c := range cases {
+		if got := cfEditAllowedWithoutCheckout(c.mode, c.route, c.action); got != c.allowed {
+			t.Fatalf("mode=%s route=%s action=%s allowed=%v, wanted %v",
+				c.mode, c.route, c.action, got, c.allowed)
+		}
 	}
 }

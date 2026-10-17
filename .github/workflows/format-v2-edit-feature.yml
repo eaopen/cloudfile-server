@@ -1,7 +1,7 @@
 name: Format CF-EDIT feature Go
 on:
   push:
-    branches: [feature/v2-rust-guard-only]
+    branches: [feature/v2-rust-guard-only, feature/v2-checkout-default-on]
 permissions:
   contents: write
 jobs:
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feature/v2-rust-guard-only
+          ref: ${{ github.ref_name }}
       - name: gofmt feature code
         run: gofmt -w fileserver/cf_v2_edit_agent.go fileserver/cf_v2_edit_agent_test.go
       - name: Commit formatting only
@@ -21,5 +21,5 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add fileserver/cf_v2_edit_agent.go fileserver/cf_v2_edit_agent_test.go
             git commit -m "style(cf-edit): gofmt guarded native agent transport"
-            git push origin HEAD:feature/v2-rust-guard-only
+            git push origin HEAD:${{ github.ref_name }}
           fi
