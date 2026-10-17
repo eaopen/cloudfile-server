@@ -14,9 +14,9 @@ import (
 )
 
 func TestCFEditWithoutGuardStillChecksUserAuthorization(t *testing.T) {
-	prior := option.V2EditEnabled
-	option.V2EditEnabled = false
-	defer func() { option.V2EditEnabled = prior }()
+	prior := option.V2GuardAvailable
+	option.V2GuardAvailable = false
+	defer func() { option.V2GuardAvailable = prior }()
 	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
 	rec := httptest.NewRecorder()
 	cfEditAPI(rec, req)
@@ -111,10 +111,10 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 }
 
 func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
-	oldFlag, oldSecret := option.V2EditEnabled, option.JWTPrivateKey
-	option.V2EditEnabled = false
+	oldFlag, oldSecret := option.V2GuardAvailable, option.JWTPrivateKey
+	option.V2GuardAvailable = false
 	option.JWTPrivateKey = "unit-test-secret"
-	defer func() { option.V2EditEnabled = oldFlag; option.JWTPrivateKey = oldSecret }()
+	defer func() { option.V2GuardAvailable = oldFlag; option.JWTPrivateKey = oldSecret }()
 	now := time.Now()
 	ticket := cfEditClaims{
 		UID:      "uid-test",
