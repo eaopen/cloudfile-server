@@ -7,6 +7,7 @@
  * remain denied until source/destination ACLs can be proven atomically. */
 int cf_v2_acl_transfer(struct _SeafileSession *session)
 {
+    (void)session;
     return -1;
 }
 
