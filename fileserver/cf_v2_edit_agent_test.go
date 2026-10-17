@@ -117,21 +117,23 @@ func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
 	defer func() { option.V2EditEnabled = oldFlag; option.JWTPrivateKey = oldSecret }()
 	now := time.Now()
 	ticket := cfEditClaims{
-		UID: "uid-test",
-		RepoID: uuid.New().String(),
+		UID:      "uid-test",
+		RepoID:   uuid.New().String(),
 		FilePath: "/design.step",
-		BaseID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Mode: "exclusive-edit",
+		BaseID:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Mode:     "exclusive-edit",
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: "cloudfile-v2-edit",
-			Audience: jwt.ClaimStrings{"cloudfile-edit-agent"},
-			Subject: "user@auth.local",
-			IssuedAt: jwt.NewNumericDate(now),
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "user@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
 		},
 	}
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket).SignedString([]byte(option.JWTPrivateKey))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)
 	rec := httptest.NewRecorder()
