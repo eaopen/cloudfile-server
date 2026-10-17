@@ -411,22 +411,22 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		// Checkout is optional, but ordinary optimistic editing is not.
 		// A V2 deployment without the Guard table never queries it.
 		var gID, owner sql.NullString
-			var generation uint64
-			var expires sql.NullTime
-			err = seafileDB.QueryRowContext(r.Context(),
-				"SELECT guard_id,generation,owner_native_user,lease_expires_at FROM cf_edit_guard WHERE repo_id=? AND path_hash=?",
-				repo.ID, cfEditHash(c.FilePath)).Scan(&gID, &generation, &owner, &expires)
-			if err != nil && err != sql.ErrNoRows {
-				cfEditFail(w, 503, "SQL_UNAVAILABLE")
-				return
+		var generation uint64
+		var expires sql.NullTime
+		err = seafileDB.QueryRowContext(r.Context(),
+			"SELECT guard_id,generation,owner_native_user,lease_expires_at FROM cf_edit_guard WHERE repo_id=? AND path_hash=?",
+			repo.ID, cfEditHash(c.FilePath)).Scan(&gID, &generation, &owner, &expires)
+		if err != nil && err != sql.ErrNoRows {
+			cfEditFail(w, 503, "SQL_UNAVAILABLE")
+			return
+		}
+		if err == nil && gID.Valid && expires.Valid && expires.Time.After(time.Now().UTC()) {
+			out["checked_out"] = true
+			if owner.String == c.Subject {
+				out["guard_id"] = gID.String
+				out["generation"] = generation
 			}
-			if err == nil && gID.Valid && expires.Valid && expires.Time.After(time.Now().UTC()) {
-				out["checked_out"] = true
-				if owner.String == c.Subject {
-					out["guard_id"] = gID.String
-					out["generation"] = generation
-				}
-			}
+		}
 	}
 	cfEditJSON(w, 200, out)
 }
