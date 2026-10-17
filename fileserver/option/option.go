@@ -44,8 +44,8 @@ var (
 
 	// general options
 	CloudMode bool
-	// V2 optional CF-EDIT native fence; disabled in the three-table MVP.
-	V2EditEnabled bool
+	// Derived from the installed Guard table at startup, never from an ENABLE flag.
+	V2GuardAvailable bool
 
 	// notification server
 	EnableNotification bool
@@ -157,17 +157,6 @@ func LoadFileServerOptions(centralDir string) {
 		if key, err := section.GetKey("default"); err == nil {
 			quotaStr := key.String()
 			DefaultQuota = parseQuota(quotaStr)
-		}
-	}
-
-	// CF-EDIT remains independently optional; V2 directory ACL is always enabled.
-	if section, err := config.GetSection("cloudfile"); err == nil {
-		if key, err := section.GetKey("v2_edit_enabled"); err == nil {
-			value, err := key.Bool()
-			if err != nil {
-				log.Fatalf("Invalid cloudfile.v2_edit_enabled: %v", err)
-			}
-			V2EditEnabled = value
 		}
 	}
 
