@@ -34,7 +34,7 @@ func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
 // Caller must already hold Branch(master) FOR UPDATE in this same transaction.
 // SQL errors and native diff failures deny, never silently fall back to CE.
 func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-	if !option.V2EditEnabled {
+	if !option.V2GuardAvailable {
 		return nil
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repoID)
