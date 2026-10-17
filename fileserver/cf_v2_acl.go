@@ -29,9 +29,6 @@ type cfACLQuery interface {
 
 // Virtual repositories cannot hide origin rules. No cache: SQL errors deny.
 func cfACLProtected(ctx context.Context, db cfACLQuery, repoID string) (bool, error) {
-	if !option.V2ACLEnabled {
-		return false, nil
-	}
 	var protected bool
 	err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM cf_dir_acl WHERE repo_id=? OR repo_id IN (SELECT origin_repo FROM VirtualRepo WHERE repo_id=?))`, repoID, repoID).Scan(&protected)
 	return protected, err
