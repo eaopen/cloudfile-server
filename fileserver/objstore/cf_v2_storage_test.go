@@ -130,3 +130,41 @@ func TestV2StorageConfigOffAndBadRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestV2RegisteredNativeLibraryUsesOriginalObjects(t *testing.T) {
+	b, _ := v2Fixture(t, "blocks")
+	b.lookup = func(string) (string, string, string, error) {
+		return "", "native-" + repoID, "active", nil
+	}
+	payload := []byte("existing Seafile object, original UUID")
+	if err := b.write(repoID, objID, bytes.NewReader(payload), true); err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := b.read(repoID, objID, &got); err != nil || !bytes.Equal(got.Bytes(), payload) {
+		t.Fatalf("native roundtrip failed: %v", err)
+	}
+	for _, broken := range [][3]string{
+		{"", "native-other", "active"},
+		{"", "native-" + repoID, "reserved"},
+		{"auto-local:" + repoID, "native-" + repoID, "active"},
+		{"", repoID, "active"},
+	} {
+		b.lookup = func(string) (string, string, string, error) {
+			return broken[0], broken[1], broken[2], nil
+		}
+		if _, err := b.resolve(repoID); err == nil {
+			t.Fatalf("accepted inconsistent historical binding: %v", broken)
+		}
+	}
+}
+
+func TestV2RetiredNativeRemainsAddressableForColdGC(t *testing.T) {
+	b, _ := v2Fixture(t, "blocks")
+	b.lookup = func(string) (string, string, string, error) {
+		return "", "native-" + repoID, "retired", nil
+	}
+	if resolved, err := b.resolve(repoID); err != nil || resolved != b.native {
+		t.Fatalf("retired native object path must remain for GC: %v", err)
+	}
+}
