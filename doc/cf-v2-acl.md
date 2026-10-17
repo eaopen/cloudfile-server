@@ -16,9 +16,16 @@ See the matching Hub `cloudfile_ext/v2/ACL_CONTRACT.md` for the shared policy an
 wire contract. The authoritative algorithm and bounded library rule cache remain in Hub. Existing v0.9 design
 discussions are not implementation or acceptance evidence.
 
-`[cloudfile] v2_acl_enabled=true` enables the minimal native integration in both C
-and Go. Invalid values fail closed. The default preserves native behavior. Public
-rule publication in Hub remains blocked independently of this option.
+CloudFile V2 directory ACL is an always-on built-in feature in both the C
+server and Go Fileserver. There is no `v2_acl_enabled` configuration key.
+Native checks look up whether a library has V2 directory ACL rows (including
+origin scope where applicable); SQL/subject/authority failures deny access,
+and libraries without directory ACL rules continue to use native CE grants.
+Protected repositories still require current Hub file-path authorization
+and scoped final-commit checks. Legacy unscoped structural transfers remain
+restricted until their source/destination proof is implemented.
+Hub's ACL publication has no independent enable toggle, but still requires
+authenticated native repository management rights and revision CAS.
 
 - Current-path file reads are authorized by Hub `check-access`, which applies the
   same authority before bytes/Range/304. Go does not repeat that round trip, so
