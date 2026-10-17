@@ -110,7 +110,6 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 	}
 }
 
-
 func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
 	cases := []struct {
 		mode, route, action string

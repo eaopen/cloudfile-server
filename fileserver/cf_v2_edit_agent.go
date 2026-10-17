@@ -568,6 +568,7 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 	cfEditJSON(w, 200, map[string]interface{}{"state": "published", "file_id": fileID,
 		"result_commit_id": newCommitID, "checked_in": action == "checkin"})
 }
+
 // Without Guard storage, the ordinary Agent path (read, status, optimistic
 // CAS publish) remains usable. Only exclusive operations require Checkout.
 func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
