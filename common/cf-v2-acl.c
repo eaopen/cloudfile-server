@@ -2,21 +2,12 @@
 #include "cf-v2-acl.h"
 #include "seafile-session.h"
 
-static int enabled(struct _SeafileSession *session)
-{
-    if (!session || !session->config) return -1;
-    GError *error = NULL;
-    gboolean active = g_key_file_get_boolean(session->config, "cloudfile", "v2_acl_enabled", &error);
-    if (!error) return active ? 1 : 0;
-    gboolean missing = g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_KEY_NOT_FOUND) ||
-                       g_error_matches(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
-    g_error_free(error);
-    return missing ? 0 : -1;
-}
-
+/* CloudFile V2 directory ACL is always active. No configuration switch may
+ * silently bypass an ACL rule. Unsupported cross-repo structural transfers
+ * remain denied until source/destination ACLs can be proven atomically. */
 int cf_v2_acl_transfer(struct _SeafileSession *session)
 {
-    return enabled(session) == 0 ? 0 : -1;
+    return -1;
 }
 
 static const char *query =
@@ -31,9 +22,8 @@ static gboolean found(SeafDBRow *row, void *data)
 
 static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char *repo_id)
 {
-    int active = enabled(session);
-    if (active <= 0) return active;
-    if (!repo_id || seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
+    if (!session || !session->db || !repo_id ||
+        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
     gboolean protected = FALSE;
     int count = trans ? seaf_db_trans_foreach_selected_row(trans, query, found, &protected,
                             2, "string", repo_id, "string", repo_id) :
@@ -140,7 +130,7 @@ int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
     if (state!=-2) return -1;
     /* Distinguish protected scope from a SQL/config failure: neither grants.
      * The HTTP authority independently reads the same facts and denies failures. */
-    if (enabled(session)!=1 || !actor || !*actor || !old_id || !new_id) return -1;
+    if (!actor || !*actor || !old_id || !new_id) return -1;
     SeafRepo *repo=seaf_repo_manager_get_repo(session->repo_mgr,repo_id);
     if (!repo || repo->virtual_info) { if (repo) seaf_repo_unref(repo); return -1; }
     SeafCommit *old=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,old_id);
