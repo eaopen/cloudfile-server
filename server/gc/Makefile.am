@@ -26,6 +26,8 @@ noinst_HEADERS = \
 	../../common/cf-s3-client.h \
 	../../common/storage-backend-multi.h
 
+# Offline tools use the same V2 object routing as the server; link its real
+# implementation so GC/fsck/migration cannot miss automatic storage roots.
 common_sources = \
 	seafile-session.c \
 	repo-mgr.c \
@@ -35,6 +37,7 @@ common_sources = \
 	../../common/block-mgr.c \
 	../../common/block-backend.c \
 	../../common/block-backend-fs.c \
+	../../common/cf-v2-storage.c \
 	../../common/block-backend-s3.c \
 	../../common/commit-mgr.c \
 	../../common/log.c \
