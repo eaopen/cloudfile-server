@@ -1675,12 +1675,14 @@ cf_download_path_valid (const char *path)
     return ok && strcmp (path, "/") != 0;
 }
 
+/* Keep the clean CE14 mint contract; callers authorize before this private RPC. */
 char *
-seafile_cloudfile_get_scoped_download_token (const char *repo_id,
+seafile_web_get_scoped_download_token (const char *repo_id,
     const char *path, const char *username, int use_onetime, GError **error)
 {
     if (!repo_id || !is_uuid_valid (repo_id) ||
-        !cf_download_path_valid (path) || !username || !*username) {
+        !cf_download_path_valid (path) || !username || !*username ||
+        (use_onetime != 0 && use_onetime != 1)) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                      "Invalid scoped download request");
         return NULL;

@@ -908,11 +908,13 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
 
     # token for web access to repo
-    # Privileged CloudFile calls: conditions are current-context expectations,
-    # not caller-selected permission snapshots. Never fall back to legacy RPC.
+    # Match the clean CE14 RPC contract so either build accepts the same Hub.
     @searpc_func("string", ["string", "string", "string", "int"])
-    def seafile_cloudfile_get_scoped_download_token(repo_id, path, username, use_onetime=0):
+    def seafile_web_get_scoped_download_token(repo_id, path, username, use_onetime=0):
         pass
+    web_get_scoped_download_token = seafile_web_get_scoped_download_token
+
+    # Privileged legacy calls retain their separate protocol.
 
     @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])
     def seafile_cloudfile_issue_read_ticket(repo_id, path, head_id, object_id, op, username, conditions):
