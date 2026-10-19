@@ -137,13 +137,14 @@ gen_new_token (GHashTable *token_hash)
     }
 }
 
-char *
-seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
+static char *
+issue_access_token (SeafWebAccessTokenManager *mgr,
                                       const char *repo_id,
                                       const char *obj_id,
                                       const char *op,
                                       const char *username,
                                       int use_onetime,
+                                      const char *bound_path,
                                       GError **error)
 {
 #ifdef FULL_FEATURE
@@ -151,7 +152,7 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
         !strcmp(op, "downloadblks") || !strcmp(op, "download-dir") ||
         !strcmp(op, "download-multi") || !strcmp(op, "download-link") ||
         !strcmp(op, "download-dir-link") || !strcmp(op, "download-multi-link"));
-    if (!(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
+    if (!bound_path && !(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
         cf_policy_check_legacy_access (seaf->db, seaf->config, repo_id) < 0) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "Legacy library access unavailable");
         return NULL;
@@ -186,13 +187,16 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     pthread_mutex_lock (&mgr->priv->lock);
 
     t = gen_new_token (mgr->priv->access_token_hash);
-    expire = now + seaf->web_token_expire_time;
+    /* Keep the Seafile native TTL; scoped file grants never exceed one hour. */
+    expire = now + (bound_path ? MIN(3600, seaf->web_token_expire_time)
+                               : seaf->web_token_expire_time);
 
     info = g_new0 (AccessInfo, 1);
     info->repo_id = g_strdup (repo_id);
     info->obj_id = g_strdup (obj_id);
     info->op = g_strdup (op);
     info->username = g_strdup (username);
+    info->path = g_strdup (bound_path);
     info->expire_time = expire;
     if (use_onetime) {
         info->use_onetime = TRUE;
@@ -245,6 +249,28 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     return t;
 }
 
+char *
+seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *obj_id, const char *op,
+    const char *username, int use_onetime, GError **error)
+{
+    return issue_access_token (mgr, repo_id, obj_id, op, username,
+                               use_onetime, NULL, error);
+}
+
+#ifdef FULL_FEATURE
+/* Same native Seafile token store and TTL. Path marks a ticket whose
+ * file/object binding was resolved by Server after Hub authorized the actor. */
+char *
+seaf_web_at_manager_get_scoped_download_token (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *path, const char *obj_id,
+    const char *username, int use_onetime, GError **error)
+{
+    return issue_access_token (mgr, repo_id, obj_id, "download", username,
+                               use_onetime, path, error);
+}
+#endif
+
 SeafileWebAccess *
 seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                         const char *token)
@@ -261,7 +287,7 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
             !strcmp(info->op, "downloadblks") || !strcmp(info->op, "download-dir") ||
             !strcmp(info->op, "download-multi") || !strcmp(info->op, "download-link") ||
             !strcmp(info->op, "download-dir-link") || !strcmp(info->op, "download-multi-link");
-        if (!(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
+        if (!info->path && !(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
             cf_policy_check_legacy_access (seaf->db, seaf->config, info->repo_id) < 0) {
             pthread_mutex_unlock (&mgr->priv->lock);
             return NULL;
@@ -280,6 +306,7 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                       "obj_id", info->obj_id,
                                       "op", info->op,
                                       "username", info->username,
+                                      "scope-path", info->path,
                                       NULL);
 
             if (info->use_onetime) {
