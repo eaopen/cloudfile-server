@@ -17,6 +17,7 @@ bin_PROGRAMS = seaf-fuse
 
 noinst_HEADERS = seaf-fuse.h seafile-session.h repo-mgr.h
 
+# FUSE shares the V2-aware filesystem backend and needs its route resolver.
 seaf_fuse_SOURCES = seaf-fuse.c \
                     seafile-session.c \
 		    file.c \
@@ -29,6 +30,7 @@ seaf_fuse_SOURCES = seaf-fuse.c \
                     ../common/org-mgr.c \
                     ../common/block-backend.c \
                     ../common/block-backend-fs.c \
+                    ../common/cf-v2-storage.c \
                     ../common/block-backend-s3.c \
                     ../common/branch-mgr.c \
                     ../common/commit-mgr.c \
