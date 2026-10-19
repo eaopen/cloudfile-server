@@ -17,12 +17,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from uuid import uuid4
 
-import jwt
-import pymysql
-import requests
 
 
 def run():
+    # This executable acceptance harness needs its own DB/JWT dependencies;
+    # ordinary upstream pytest collection must not require or start them.
+    import jwt
+    import pymysql
+    import requests
     source = Path(os.environ['CF_ACL_NATIVE_SOURCE'])
     hub = Path(os.environ['CF_ACL_HUB_SOURCE'])
     binary = Path(os.environ['CF_ACL_C_BINARY'])
