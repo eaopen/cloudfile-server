@@ -24,6 +24,10 @@ var CloudFileManagedLibraryGuard bool
 var CloudFileAllowLegacyManagedReads bool
 var CloudFileTrustedTLSProxies []*net.IPNet
 
+// Startup schema detection sets this once before serving requests. Keeping the
+// default false preserves ordinary edits when Checkout Guard is not installed.
+var V2GuardAvailable bool
+
 // Storage unit.
 const (
 	KB = 1000

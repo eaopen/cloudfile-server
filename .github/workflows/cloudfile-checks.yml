@@ -91,4 +91,6 @@ jobs:
         working-directory: seafile-server
         run: |
           ./ci/install-deps.sh
-          ./ci/run.py
+          # The full fork needs its shipped V2 DDL before native HTTP tests;
+          # this wrapper preserves upstream build and test orchestration.
+          python3 ./ci/cloudfile-run.py

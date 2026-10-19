@@ -63,6 +63,8 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	change-set.h \
 	metric-mgr.h
 
+# Native HTTP guards and local storage backends call these V2 implementations;
+# the full fork must link them just like the clean CE14 build does.
 seaf_server_SOURCES = \
 	seaf-server.c \
 	web-accesstoken-mgr.c  seafile-session.c \
@@ -106,6 +108,8 @@ seaf_server_SOURCES = \
 	../common/user-mgr.c \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
+	../common/cf-v2-acl.c \
+	../common/cf-v2-storage.c \
 	../common/cf-ext.c \
 	../common/cf-dir-page.c \
 	../common/cf-permission-many.c \
