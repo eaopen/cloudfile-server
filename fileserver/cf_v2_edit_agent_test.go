@@ -199,16 +199,16 @@ func TestCFEditReadOnlyDeniedBeforeAnyRepoOrCheckoutAction(t *testing.T) {
 	option.V2GuardAvailable = true
 	now := time.Now()
 	c := cfEditClaims{
-		UID: "uid-test",
-		RepoID: uuid.New().String(),
+		UID:      "uid-test",
+		RepoID:   uuid.New().String(),
 		FilePath: "/design.step",
-		Mode: "local-view",
-		BaseID: strings.Repeat("a", 40),
+		Mode:     "local-view",
+		BaseID:   strings.Repeat("a", 40),
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: "cloudfile-v2-edit",
-			Audience: jwt.ClaimStrings{"cloudfile-edit-agent"},
-			Subject: "reader@auth.local",
-			IssuedAt: jwt.NewNumericDate(now),
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "reader@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
 		},
 	}
