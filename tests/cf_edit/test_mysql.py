@@ -8,7 +8,7 @@ import time
 import os
 from pathlib import Path
 from threading import Event, Thread
-from unittest import TestCase
+from unittest import TestCase, skipUnless
 
 try:
     import pymysql
@@ -35,6 +35,9 @@ PATH = "/Engineering/part.step"
 HASH = hashlib.sha256(PATH.encode()).digest()
 
 
+# This suite creates/drops Branch and Guard tables, so it must use its own
+# explicitly selected disposable DB, never the upstream native test database.
+@skipUnless(os.environ.get('CF_EDIT_MYSQL_DB'), 'requires dedicated CF_EDIT_MYSQL_DB fixture')
 class MariaDBFeatureTests(TestCase):
     @classmethod
     def setUpClass(cls):
