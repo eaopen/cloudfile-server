@@ -16,6 +16,7 @@
 
 #include "block-backend.h"
 #include "obj-store.h"
+#include "cf-v2-storage.h"
 
 
 struct _BHandle {
@@ -44,6 +45,7 @@ get_block_path (BlockBackend *bend,
 static int
 open_tmp_file (BlockBackend *bend,
                const char *basename,
+               const char *store_id,
                char **path);
 
 static BHandle *
@@ -63,7 +65,8 @@ block_backend_fs_open_block (BlockBackend *bend,
 
     if (rw_type == BLOCK_READ) {
         char path[SEAF_PATH_MAX];
-        get_block_path (bend, block_id, path, store_id, version);
+        if (!get_block_path (bend, block_id, path, store_id, version))
+            return NULL;
         fd = g_open (path, O_RDONLY | O_BINARY, 0);
         if (fd < 0) {
             ccnet_warning ("[block bend] failed to open block %s for read: %s\n",
@@ -71,7 +74,7 @@ block_backend_fs_open_block (BlockBackend *bend,
             return NULL;
         }
     } else {
-        fd = open_tmp_file (bend, block_id, &tmp_file);
+        fd = open_tmp_file (bend, block_id, store_id, &tmp_file);
         if (fd < 0) {
             ccnet_warning ("[block bend] failed to open block %s for write: %s\n",
                            block_id, strerror(errno));
@@ -176,7 +179,8 @@ block_backend_fs_commit_block (BlockBackend *bend,
 
     g_return_val_if_fail (handle->rw_type == BLOCK_WRITE, -1);
 
-    get_block_path (bend, handle->block_id, path, handle->store_id, handle->version);
+    if (!get_block_path (bend, handle->block_id, path, handle->store_id, handle->version))
+        return -1;
 
     if (create_parent_path (path) < 0) {
         seaf_warning ("Failed to create path for block %s:%s.\n",
@@ -201,7 +205,8 @@ block_backend_fs_block_exists (BlockBackend *bend,
 {
     char block_path[SEAF_PATH_MAX];
 
-    get_block_path (bend, block_sha1, block_path, store_id, version);
+    if (!get_block_path (bend, block_sha1, block_path, store_id, version))
+        return FALSE;
     if (g_access (block_path, F_OK) == 0)
         return 1;
 
@@ -216,7 +221,8 @@ block_backend_fs_remove_block (BlockBackend *bend,
 {
     char path[SEAF_PATH_MAX];
 
-    get_block_path (bend, block_id, path, store_id, version);
+    if (!get_block_path (bend, block_id, path, store_id, version))
+        return -1;
 
     return g_unlink (path);
 }
@@ -231,7 +237,8 @@ block_backend_fs_stat_block (BlockBackend *bend,
     SeafStat st;
     BMetadata *block_md;
 
-    get_block_path (bend, block_id, path, store_id, version);
+    if (!get_block_path (bend, block_id, path, store_id, version))
+        return NULL;
     if (seaf_stat (path, &st) < 0) {
         seaf_warning ("[block bend] Failed to stat block %s:%s at %s: %s.\n",
                       store_id, block_id, path, strerror(errno));
@@ -279,12 +286,11 @@ block_backend_fs_foreach_block (BlockBackend *bend,
     char path[SEAF_PATH_MAX], *pos;
     int ret = 0;
 
-#if defined MIGRATION
-    if (version > 0)
-        block_dir = g_build_filename (priv->block_dir, store_id, NULL);
-#else
-    block_dir = g_build_filename (priv->block_dir, store_id, NULL);
-#endif
+    block_dir = cf_v2_store_dir (priv->block_dir, store_id);
+    if (!block_dir || strlen (block_dir) + 130 >= SEAF_PATH_MAX) {
+        g_free (block_dir);
+        return -1;
+    }
     dir_len = strlen (block_dir);
 
     dir1 = g_dir_open (block_dir, 0, NULL);
@@ -333,8 +339,9 @@ block_backend_fs_copy (BlockBackend *bend,
     char src_path[SEAF_PATH_MAX];
     char dst_path[SEAF_PATH_MAX];
 
-    get_block_path (bend, block_id, src_path, src_store_id, src_version);
-    get_block_path (bend, block_id, dst_path, dst_store_id, dst_version);
+    if (!get_block_path (bend, block_id, src_path, src_store_id, src_version) ||
+        !get_block_path (bend, block_id, dst_path, dst_store_id, dst_version))
+        return -1;
 
     if (g_file_test (dst_path, G_FILE_TEST_EXISTS))
         return 0;
@@ -353,7 +360,7 @@ block_backend_fs_copy (BlockBackend *bend,
     }
     return 0;
 #else
-    int ret = link (src_path, dst_path);
+    int ret = cf_v2_storage_copy (src_path, dst_path);
     if (ret < 0 && errno != EEXIST) {
         seaf_warning ("Failed to link %s to %s: %s.\n",
                       src_path, dst_path, strerror(errno));
@@ -375,46 +382,80 @@ block_backend_fs_remove_store (BlockBackend *bend,
     const char *dname1, *dname2;
     char *path1, *path2;
     guint64 removed_count = 0;
+    GError *error = NULL;
+    int ret = 0;
 
-    block_dir = g_build_filename (priv->block_dir, store_id, NULL);
+    block_dir = cf_v2_store_dir (priv->block_dir, store_id);
+    if (!block_dir)
+        return -1;
 
-    dir1 = g_dir_open (block_dir, 0, NULL);
+    dir1 = g_dir_open (block_dir, 0, &error);
     if (!dir1) {
         g_free (block_dir);
-        return 0;
+        if (error->code == G_FILE_ERROR_NOENT) {
+            g_clear_error (&error);
+            return 0;
+        }
+        seaf_warning ("Failed to open block dir: %s.\n", error->message);
+        g_clear_error (&error);
+        return -1;
     }
 
+    GList *dir_list = NULL;
+    GList *ptr1;
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
-        path1 = g_build_filename (block_dir, dname1, NULL);
+        dir_list = g_list_prepend(dir_list, g_strdup(dname1));
+    }
+    g_dir_close (dir1);
+
+    for (ptr1 = dir_list; ptr1; ptr1 = ptr1->next) {
+        path1 = g_build_filename (block_dir, (char *)(ptr1->data), NULL);
 
         dir2 = g_dir_open (path1, 0, NULL);
         if (!dir2) {
             seaf_warning ("Failed to open block dir %s.\n", path1);
-            g_dir_close (dir1);
             g_free (path1);
-            g_free (block_dir);
-            return -1;
+            ret = -1;
+            continue;
         }
 
+        GList *file_list = NULL;
+        GList  *ptr2;
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
-            path2 = g_build_filename (path1, dname2, NULL);
-            g_unlink (path2);
+            file_list = g_list_prepend(file_list, g_strdup(dname2));
+        }
+        g_dir_close (dir2);
+
+        for (ptr2 = file_list; ptr2; ptr2 = ptr2->next) {
+            path2 = g_build_filename (path1, (char *)(ptr2->data), NULL);
+            if (g_unlink (path2) < 0) {
+                seaf_warning ("Failed to delete file %s.\n", path2);
+                ret = -1;
+            }
             ++removed_count;
             if (progress_cb)
                 progress_cb (store_id, removed_count, user_data);
             g_free (path2);
         }
-        g_dir_close (dir2);
 
-        g_rmdir (path1);
+        if (g_rmdir (path1) < 0) {
+            seaf_warning ("Failed to delete dir %s.\n", path1);
+            ret = -1;
+        }
         g_free (path1);
+
+        string_list_free (file_list);
     }
 
-    g_dir_close (dir1);
-    g_rmdir (block_dir);
+    if (g_rmdir (block_dir) < 0) {
+        seaf_warning ("Failed to delete dir %s.\n", block_dir);
+        ret = -1;
+    }
     g_free (block_dir);
 
-    return 0;
+    string_list_free (dir_list);
+
+    return ret;
 }
 
 static char *
@@ -425,37 +466,34 @@ get_block_path (BlockBackend *bend,
                 int version)
 {
     FsPriv *priv = bend->be_priv;
-    char *pos = path;
+    char *dir = cf_v2_store_dir (priv->block_dir, store_id);
     int n;
-
-#if defined MIGRATION
-    if (version > 0) {
-        n = snprintf (path, SEAF_PATH_MAX, "%s/%s/", priv->block_dir, store_id);
-        pos += n;
-    } else
-#else
-    n = snprintf (path, SEAF_PATH_MAX, "%s/%s/", priv->block_dir, store_id);
-    pos += n;
-#endif
-
-    memcpy (pos, block_sha1, 2);
-    pos[2] = '/';
-    pos += 3;
-
-    memcpy (pos, block_sha1 + 2, 41 - 2);
-
-    return path;
+    if (!dir)
+        return NULL;
+    n = g_snprintf (path, SEAF_PATH_MAX, "%s/%.2s/%s", dir, block_sha1, block_sha1 + 2);
+    g_free (dir);
+    return n >= SEAF_PATH_MAX ? NULL : path;
 }
 
 static int
 open_tmp_file (BlockBackend *bend,
                const char *basename,
+               const char *store_id,
                char **path)
 {
     FsPriv *priv = bend->be_priv;
     int fd;
 
-    *path = g_strdup_printf ("%s/%s.XXXXXX", priv->tmp_dir, basename);
+    char *dir = NULL;
+    if (cf_v2_storage_enabled ()) {
+        dir = cf_v2_store_dir (priv->block_dir, store_id);
+        if (!dir || g_mkdir_with_parents (dir, 0700) < 0) {
+            g_free (dir);
+            return -1;
+        }
+    }
+    *path = g_strdup_printf ("%s/%s.XXXXXX", dir ? dir : priv->tmp_dir, basename);
+    g_free (dir);
     fd = g_mkstemp (*path);
     if (fd < 0)
         g_free (*path);

@@ -269,6 +269,9 @@ func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
 		msg := "No file path\n"
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
+	if !cfACLCanonical("/" + strings.TrimPrefix(filePath, "/")) {
+		return &appError{nil, "Invalid path", http.StatusBadRequest}
+	}
 	rpath := getCanonPath(filePath)
 	fileName := filepath.Base(rpath)
 
@@ -299,6 +302,8 @@ func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 
+	// Hub check-access above already applied the same ACL authority to this
+	// exact path for protected repos; a second round trip would only repeat it.
 	fileID, _, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, rpath)
 	if err != nil {
 		msg := "Invalid file_path\n"
@@ -1301,6 +1306,9 @@ func doUpload(rsp http.ResponseWriter, r *http.Request, fsm *recvData, isAjax bo
 	}
 
 	newParentDir := filepath.Join("/", parentDir, relativePath)
+	if denied := cfACLPath(repoID, user, newParentDir, "dir", "write"); denied != nil {
+		return denied
+	}
 	defer clearTmpFile(fsm, newParentDir)
 
 	if fsm.rstart >= 0 {
@@ -2253,8 +2261,11 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 		mergedCommit = commit
 	}
 
-	gcConflict, err := updateBranch(repoID, repo.StoreID, mergedCommit.CommitID, currentHead.CommitID, secondParentID, checkGC, lastGCID)
+	gcConflict, err := updateBranch(repoID, repo.StoreID, mergedCommit.CommitID, currentHead.CommitID, secondParentID, checkGC, lastGCID, user)
 	if gcConflict {
+		return false, err
+	}
+	if err == errCFACL {
 		return false, err
 	}
 	if err != nil {
@@ -2279,7 +2290,7 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 	return desc
 }
 
-func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID string, checkGC bool, lastGCID string, actor ...string) (gcConflict bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	trans, err := seafileDB.BeginTx(ctx, nil)
@@ -2331,6 +2342,21 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	if oldCommitID != commitID {
 		trans.Rollback()
 		err := fmt.Errorf("head commit id has changed")
+		return false, err
+	}
+
+	// Final and transactional: an upload preflight cannot protect against a
+	// Checkout acquired during indexing. Never publish through an old token.
+	var aclActor string
+	if len(actor) == 1 {
+		aclActor = actor[0]
+	}
+	if err := cfACLFinal(ctx, trans, repoID, oldCommitID, newCommitID, aclActor); err != nil {
+		trans.Rollback()
+		return false, err
+	}
+	if err := cfV2EditCheckUnscopedBranch(ctx, trans, repoID, oldCommitID, newCommitID); err != nil {
+		trans.Rollback()
 		return false, err
 	}
 
@@ -3045,6 +3071,12 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	}
 	accessInfo.user = user
 
+	// Old object-ID tickets, ZIP, links and raw blocks have no exact path proof.
+	if accessInfo.op != "upload" && accessInfo.op != "update" {
+		if denied := cfACLUnscoped(repoID); denied != nil {
+			return nil, denied
+		}
+	}
 	return accessInfo, nil
 }
 
@@ -3297,6 +3329,9 @@ func doUpdate(rsp http.ResponseWriter, r *http.Request, fsm *recvData, isAjax bo
 		}
 	}
 
+	if denied := cfACLPath(repoID, user, targetFile, "file", "write"); denied != nil {
+		return denied
+	}
 	parentDir := filepath.Dir(targetFile)
 	fileName := filepath.Base(targetFile)
 
@@ -3627,6 +3662,9 @@ func uploadBlksAPICB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func doUploadBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appError {
+	if denied := cfACLUnscoped(fsm.repoID); denied != nil {
+		return denied
+	}
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		return &appError{nil, "", http.StatusBadRequest}
 	}
@@ -3890,6 +3928,9 @@ func uploadRawBlksAPICB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func doUploadRawBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appError {
+	if denied := cfACLUnscoped(fsm.repoID); denied != nil {
+		return denied
+	}
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		return &appError{nil, "", http.StatusBadRequest}
 	}
@@ -4132,6 +4173,9 @@ func queryShareLinkInfo(token, cookie, opType, ipAddr, userAgent string) (*Share
 		return nil, &appError{err, "", http.StatusInternalServerError}
 	}
 
+	if denied := cfACLUnscoped(info.RepoID); denied != nil {
+		return nil, denied
+	}
 	return info, nil
 }
 

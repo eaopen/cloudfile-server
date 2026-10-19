@@ -1,4 +1,5 @@
 #include "common.h"
+#include "cf-v2-acl.h"
 
 #include <pthread.h>
 #include <curl/curl.h>
@@ -662,6 +663,12 @@ http_tx_manager_query_share_link_info (const char *token, const char *cookie, co
     }
 
     info = parse_share_link_info (rsp_content, rsp_size);
+    if (info && cf_v2_acl_unscoped(seaf, seafile_share_link_info_get_repo_id(info)) < 0) {
+        g_object_unref(info);
+        info = NULL;
+        *status = 403;
+        *err_msg = g_strdup("Current path authorization required");
+    }
 
 out:
     if (content)

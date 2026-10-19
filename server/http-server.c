@@ -1,4 +1,5 @@
 #include "common.h"
+#include "cf-v2-acl.h"
 
 #ifdef HAVE_EVHTP
 #include <pthread.h>
@@ -246,6 +247,10 @@ validate_token (HttpServer *htp_server, evhtp_request_t *req,
                 const char *repo_id, char **username,
                 gboolean skip_cache)
 {
+    if (cf_v2_acl_unscoped(seaf, repo_id) < 0) {
+        evhtp_send_reply(req, EVHTP_RES_FORBIDDEN);
+        return EVHTP_RES_FORBIDDEN;
+    }
     char *email = NULL;
     TokenInfo *token_info;
     char *tmp_token = NULL;

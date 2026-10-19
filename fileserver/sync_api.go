@@ -1132,7 +1132,7 @@ func checkBlocks(ctx context.Context, repo *repomgr.Repo, base, remote *commitmg
 	opt.Data = aux
 
 	trees := []string{base.RootID, remote.RootID}
-	if err := diff.DiffTrees(trees, opt); err != nil {
+	if err := diff.DiffTrees(len(trees), trees, opt); err != nil {
 		return "", err
 	}
 
@@ -1361,6 +1361,9 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 }
 
 func validateToken(r *http.Request, repoID string, skipCache bool) (string, *appError) {
+	if denied := cfACLUnscoped(repoID); denied != nil {
+		return "", denied
+	}
 	token := r.Header.Get("Seafile-Repo-Token")
 	if token == "" {
 		token = utils.GetAuthorizationToken(r.Header)
@@ -1585,7 +1588,7 @@ func calculateSendObjectList(ctx context.Context, repo *repomgr.Repo, serverHead
 	}
 	trees := []string{masterHead.RootID, remoteHeadRoot}
 
-	if err := diff.DiffTrees(trees, opt); err != nil {
+	if err := diff.DiffTrees(len(trees), trees, opt); err != nil {
 		if info.isTimeout {
 			return nil, ErrTimeout
 		}
