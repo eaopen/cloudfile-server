@@ -187,7 +187,9 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     pthread_mutex_lock (&mgr->priv->lock);
 
     t = gen_new_token (mgr->priv->access_token_hash);
-    expire = now + seaf->web_token_expire_time;
+    /* Keep the Seafile native TTL; scoped file grants never exceed one hour. */
+    expire = now + (bound_path ? MIN(3600, seaf->web_token_expire_time)
+                               : seaf->web_token_expire_time);
 
     info = g_new0 (AccessInfo, 1);
     info->repo_id = g_strdup (repo_id);
@@ -304,6 +306,7 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                       "obj_id", info->obj_id,
                                       "op", info->op,
                                       "username", info->username,
+                                      "scope-path", info->path,
                                       NULL);
 
             if (info->use_onetime) {

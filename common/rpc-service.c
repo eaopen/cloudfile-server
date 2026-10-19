@@ -1689,8 +1689,24 @@ seafile_cloudfile_get_scoped_download_token (const char *repo_id,
     if (!obj_id) return NULL;
     char *token = seaf_web_at_manager_get_scoped_download_token (
         seaf->web_at_mgr, repo_id, path, obj_id, username, use_onetime, error);
+    char *result = NULL;
+    if (token) {
+        /* Return the already-resolved object and native lifetime to the
+         * caller. The file service still consumes only the native token. */
+        int ttl = MIN(3600, seaf->web_token_expire_time);
+        json_t *grant = json_pack ("{s:s,s:s,s:i}",
+                                  "token", token, "file_id", obj_id,
+                                  "expires_in", ttl);
+        if (grant) {
+            char *serialized = json_dumps (grant, JSON_COMPACT);
+            result = serialized ? g_strdup (serialized) : NULL;
+            free (serialized);
+            json_decref (grant);
+        }
+    }
+    g_free (token);
     g_free (obj_id);
-    return token;
+    return result;
 }
 
 char *

@@ -38,8 +38,9 @@ class SeafileAPI(object):
 
     def get_scoped_file_download_token(self, repo_id, path, username, use_onetime=False):
         """File/path-bound native ticket. Hub must authorize this user first."""
-        return seafserv_threaded_rpc.seafile_cloudfile_get_scoped_download_token(
+        grant = seafserv_threaded_rpc.seafile_cloudfile_get_scoped_download_token(
             repo_id, path, username, 1 if use_onetime else 0)
+        return json.loads(grant) if grant else None
 
     def query_fileserver_access_token(self, token):
         """Get the WebAccess object

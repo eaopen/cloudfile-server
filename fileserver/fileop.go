@@ -3030,6 +3030,14 @@ type webaccessInfo struct {
 	user   string
 }
 
+// Only an authenticated single-file grant minted through native Server RPC
+// may bypass the old object-only ACL guard. Do not extend to ZIP, blocks,
+// uploads, download-link or other legacy read operations.
+func hasAuthorizedFileReadScope(op string, tokenInfo map[string]interface{}) bool {
+	path, ok := tokenInfo["scope-path"].(string)
+	return op == "download" && ok && path != ""
+}
+
 func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	webaccess, err := rpcclient.Call("seafile_web_query_access_token", token)
 	if err != nil {
@@ -3071,8 +3079,10 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	}
 	accessInfo.user = user
 
-	// Old object-ID tickets, ZIP, links and raw blocks have no exact path proof.
-	if accessInfo.op != "upload" && accessInfo.op != "update" {
+	// Scoped native tickets were path-authorized at issue time. A repeated
+	// GET/HEAD/Range only needs the native token and its expiry, not ACL SQL.
+	if !hasAuthorizedFileReadScope(accessInfo.op, webaccessMap) &&
+		accessInfo.op != "upload" && accessInfo.op != "update" {
 		if denied := cfACLUnscoped(repoID); denied != nil {
 			return nil, denied
 		}
