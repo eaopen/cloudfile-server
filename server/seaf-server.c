@@ -587,6 +587,12 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_web_get_access_token,
                                      "seafile_web_get_access_token",
                                      searpc_signature_string__string_string_string_string_int());
+    /* Separate mint seam prevents legacy object-only tickets from bypassing
+     * the protected-library guard; only Hub's checked path reaches this RPC. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     seafile_web_get_scoped_download_token,
+                                     "seafile_web_get_scoped_download_token",
+                                     searpc_signature_string__string_string_string_int());
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_web_query_access_token,
                                      "seafile_web_query_access_token",

@@ -36,6 +36,16 @@ class SeafileAPI(object):
         return seafserv_threaded_rpc.web_get_access_token(repo_id, obj_id, op, username,
                                                           onetime)
 
+    def get_scoped_download_token(self, repo_id, path, username, use_onetime=False):
+        """Mint only after Hub Authority grants read access to this exact path.
+
+        The private native RPC binds the current object and reports its lifetime;
+        do not expose this method as an unauthenticated HTTP mint endpoint.
+        """
+        raw = seafserv_threaded_rpc.web_get_scoped_download_token(
+            repo_id, path, username, 1 if use_onetime else 0)
+        return json.loads(raw) if raw else None
+
     def query_fileserver_access_token(self, token):
         """Get the WebAccess object
 

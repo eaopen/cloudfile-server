@@ -34,6 +34,7 @@ def run():
     server=None
     key='isolated-native-acl-proof-not-a-deployment-secret-123'
     checks=[]
+    download_ttl = int(os.environ.get('CF_DOWNLOAD_TICKET_TEST_SECONDS', '3600'))
     try:
         with admin.cursor() as c:
             for kind,name in schemas.items():
@@ -61,6 +62,7 @@ connection_charset=utf8mb4
 [fileserver]
 use_go_fileserver=true
 port=8082
+web_token_expire_time={download_ttl}
 ''')
             os.environ.update(SEAFILE_DATA_DIR=str(data),SEAFILE_CENTRAL_CONF_DIR=str(conf),SEAHUB_LOG_DIR=str(root),
                 SEAFILE_MYSQL_DB_HOST=options['host'],SEAFILE_MYSQL_DB_USER='root',SEAFILE_MYSQL_DB_PASSWORD=options['password'],
@@ -220,6 +222,52 @@ port=8082
                 token=seafile_api.get_fileserver_access_token(repo,file_id,'download',member,False)
                 assert requests.get('http://127.0.0.1:8082/files/'+token+'/proof.txt',timeout=10).status_code!=200
                 checks.append('Legacy object-only ticket blocked')
+                # Scoped tickets preserve the signing-time grant until expiry;
+                # repeated reads never ask Hub/SQL to re-evaluate directory ACL.
+                from types import SimpleNamespace
+                from cloudfile_ext.v2.downloads import file_download_response
+                request = SimpleNamespace(user=SimpleNamespace(username=member))
+                current_connections.values = []
+                with patch('cloudfile_ext.v2.downloads.Authority', side_effect=authority):
+                    signed = file_download_response(request, repo, '/shared/proof.txt', False)
+                    assert signed.status_code == 200, signed.data if hasattr(signed, 'data') else signed.content
+                    assert signed['X-CloudFile-Download-TTL'] == str(min(3600, download_ttl))
+                    scoped = json.loads(signed.content).split('/files/', 1)[1].split('/', 1)[0]
+                    scoped_url = 'http://127.0.0.1:8082/files/' + scoped + '/proof.txt'
+                    probe = requests.head(scoped_url, timeout=10)
+                    assert probe.status_code == 200, (probe.status_code, requests.get(scoped_url, timeout=10).text[:200], (root/'go.log').read_text()[-1800:])
+                    for _ in range(2):
+                        reply = requests.get(scoped_url, timeout=10)
+                        assert reply.status_code == 200 and reply.content == content
+                    reply = requests.get(scoped_url, headers={'Range': 'bytes=3-27'}, timeout=10)
+                    assert reply.status_code == 206 and reply.content == content[3:28]
+                    assert file_download_response(request, repo, '/sibling/secret.txt', False).status_code == 403
+                    change('invisible')
+                    assert file_download_response(request, repo, '/shared/proof.txt', False).status_code == 403
+                    reply = requests.get(scoped_url, timeout=10)
+                    assert reply.status_code == 200 and reply.content == content
+                    change('rw')
+                    once = file_download_response(request, repo, '/shared/proof.txt', True)
+                    once_token = json.loads(once.content).split('/files/', 1)[1].split('/', 1)[0]
+                    once_url = 'http://127.0.0.1:8082/files/' + once_token + '/proof.txt'
+                    assert requests.get(once_url, timeout=10).status_code == 200
+                    assert requests.get(once_url, timeout=10).status_code == 403
+                    checks.append('Scoped single-file download: real bytes, HEAD, Range, reuse, denied signing, grant retained after revoke')
+                for connection in current_connections.values: connection.close()
+                if download_ttl <= 3:
+                    time.sleep(download_ttl + .1)
+                    assert requests.get(scoped_url, timeout=10).status_code == 403
+                    checks.append('Scoped native ticket expires naturally')
+                # Multiple native workers must reuse one immutable grant safely.
+                if download_ttl > 3:
+                    with ThreadPoolExecutor(max_workers=8) as pool:
+                        replies = list(pool.map(lambda _: requests.get(scoped_url, timeout=10), range(32)))
+                    assert all(reply.status_code == 200 and reply.content == content for reply in replies)
+                    checks.append('32 parallel reads reuse one scoped ticket')
+                # Hub contract tests run with this isolated Django/native setup.
+                import unittest
+                suite = unittest.defaultTestLoader.loadTestsFromName('cloudfile_ext.v2.tests.test_downloads')
+                assert unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful()
                 local=root/'c-file';local.write_bytes(content)
                 assert seafile_api.post_file(repo,str(local),'/shared','c-proof.txt',member)==0
                 assert seafile_api.get_file_id_by_path(repo,'/shared/c-proof.txt')
@@ -277,6 +325,12 @@ port=8082
                     checks.append('Local cache cannot retain C/Go grants after revocation')
                 with conn.cursor() as cursor:cursor.execute('RENAME TABLE cf_dir_acl TO acl_temporarily_unavailable')
                 try:
+                    # A previously signed read grant must not call ACL SQL on
+                    # consumption. Writes/minting still need their authority.
+                    if download_ttl > 3:
+                        reply = requests.get(scoped_url, timeout=10)
+                        assert reply.status_code == 200 and reply.content == content
+                        checks.append('Signed read continues without ACL SQL during its lifetime')
                     unavailable_head=seafile_api.get_repo(repo).head_cmmt_id
                     assert upload('sql-unavailable.txt').status_code!=200
                     try:seafile_api.post_file(repo,str(local),'/shared','c-sql-unavailable.txt',member)

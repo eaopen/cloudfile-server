@@ -2962,8 +2962,12 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	}
 	accessInfo.user = user
 
-	// Old object-ID tickets, ZIP, links and raw blocks have no exact path proof.
-	if accessInfo.op != "upload" && accessInfo.op != "update" {
+	// The private native mint RPC supplies this path only after Hub authorizes
+	// the current user. Reuse that fixed single-file grant until native expiry;
+	// legacy tickets, ZIP, links and raw blocks still require the old ACL guard.
+	scopePath, _ := webaccessMap["scope-path"].(string)
+	scopedDownload := accessInfo.op == "download" && scopePath != ""
+	if !scopedDownload && accessInfo.op != "upload" && accessInfo.op != "update" {
 		if denied := cfACLUnscoped(repoID); denied != nil {
 			return nil, denied
 		}

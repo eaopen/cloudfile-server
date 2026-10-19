@@ -31,9 +31,15 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
                                       int use_onetime,
                                       GError **error);
 
-/*
- * Returns access info for the given token.
- */
+/* Trusted Hub has authorized this exact path. Only a single-file read grant
+ * may use this seam; legacy object-only callers retain the ACL guard. */
+char *
+seaf_web_at_manager_get_scoped_download_token (SeafWebAccessTokenManager *mgr,
+                                               const char *repo_id, const char *obj_id,
+                                               const char *path, const char *username,
+                                               int use_onetime, GError **error);
+
+/* Returns access info for the given token. */
 SeafileWebAccess *
 seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                         const char *token);

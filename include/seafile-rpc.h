@@ -505,6 +505,12 @@ seafile_web_get_access_token (const char *repo_id,
                               int use_onetime,
                               GError **error);
 
+/* Path-scoped read ticket, for an already-authorized trusted Hub request. */
+char *
+seafile_web_get_scoped_download_token (const char *repo_id, const char *path,
+                                      const char *username, int use_onetime,
+                                      GError **error);
+
 GObject *
 seafile_web_query_access_token (const char *token, GError **error);
 

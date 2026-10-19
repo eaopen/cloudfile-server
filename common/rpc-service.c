@@ -1622,6 +1622,48 @@ seafile_web_get_access_token (const char *repo_id,
     return token;
 }
 
+/* Private socket RPC, called only after Hub Authority authorizes the user's
+ * canonical path. Resolve the object here so no caller-supplied object ID can
+ * enlarge the authorized scope. Consumption keeps this snapshot until expiry. */
+char *
+seafile_web_get_scoped_download_token (const char *repo_id, const char *path,
+                                      const char *username, int use_onetime,
+                                      GError **error)
+{
+    if (!repo_id || !is_uuid_valid(repo_id) || !path || path[0] != '/' ||
+        !path[1] || strlen(path) > 4096 || !g_utf8_validate(path, -1, NULL) ||
+        strchr(path, '\\') || strstr(path, "//") || path[strlen(path)-1] == '/' ||
+        !username || !*username || (use_onetime != 0 && use_onetime != 1)) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid download scope");
+        return NULL;
+    }
+    gchar **parts = g_strsplit(path, "/", -1);
+    gboolean valid = TRUE;
+    for (int i = 0; parts[i]; ++i)
+        if (!strcmp(parts[i], ".") || !strcmp(parts[i], "..")) valid = FALSE;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        if (*p < 32 || *p == 127) valid = FALSE;
+    g_strfreev(parts);
+    if (!valid) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "Invalid download path");
+        return NULL;
+    }
+    char *obj_id = seafile_get_file_id_by_path(repo_id, path, error);
+    if (!obj_id) return NULL;
+    char *token = seaf_web_at_manager_get_scoped_download_token(seaf->web_at_mgr,
+        repo_id, obj_id, path, username, use_onetime, error);
+    char *result = NULL;
+    if (token) {
+        json_t *grant = json_pack("{s:s,s:s,s:i}", "token", token, "file_id", obj_id,
+                                 "expires_in", MIN(3600, seaf->web_token_expire_time));
+        result = json_dumps(grant, JSON_COMPACT);
+        json_decref(grant);
+    }
+    g_free(token);
+    g_free(obj_id);
+    return result;
+}
+
 GObject *
 seafile_web_query_access_token (const char *token, GError **error)
 {

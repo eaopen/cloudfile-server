@@ -777,6 +777,12 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     web_get_access_token = seafile_web_get_access_token
 
+    # Trusted Hub passes its checked path; native resolves the bound object.
+    @searpc_func("string", ["string", "string", "string", "int"])
+    def seafile_web_get_scoped_download_token(repo_id, path, username, use_onetime=0):
+        pass
+    web_get_scoped_download_token = seafile_web_get_scoped_download_token
+
     @searpc_func("object", ["string"])
     def seafile_web_query_access_token(token):
         pass

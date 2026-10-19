@@ -35,6 +35,9 @@ typedef struct {
     char *obj_id;
     char *op;
     char *username;
+    /* Only the trusted path-authorized mint RPC sets this scope. Keeping the
+     * snapshot avoids per-read ACL/SQL calls and allows reuse until expiry. */
+    char *path;
     long expire_time;
     gboolean use_onetime;
 } AccessInfo;
@@ -49,6 +52,7 @@ free_access_info (AccessInfo *info)
     g_free (info->obj_id);
     g_free (info->op);
     g_free (info->username);
+    g_free (info->path);
     g_free (info);
 }
 
@@ -123,13 +127,14 @@ gen_new_token (GHashTable *token_hash)
     }
 }
 
-char *
-seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
+static char *
+get_access_token (SeafWebAccessTokenManager *mgr,
                                       const char *repo_id,
                                       const char *obj_id,
                                       const char *op,
                                       const char *username,
                                       int use_onetime,
+                                      const char *path,
                                       GError **error)
 {
     AccessInfo *info;
@@ -161,13 +166,17 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     pthread_mutex_lock (&mgr->priv->lock);
 
     t = gen_new_token (mgr->priv->access_token_hash);
-    expire = now + seaf->web_token_expire_time;
+    /* Scoped downloads use at most the native lifetime, capped at one hour.
+     * Existing callers keep their configured lifetime and one-time behavior. */
+    expire = now + (path ? MIN(3600, mgr->seaf->web_token_expire_time)
+                        : mgr->seaf->web_token_expire_time);
 
     info = g_new0 (AccessInfo, 1);
     info->repo_id = g_strdup (repo_id);
     info->obj_id = g_strdup (obj_id);
     info->op = g_strdup (op);
     info->username = g_strdup (username);
+    info->path = g_strdup (path);
     info->expire_time = expire;
     if (use_onetime) {
         info->use_onetime = TRUE;
@@ -209,6 +218,28 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     return t;
 }
 
+char *
+seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
+                                      const char *repo_id, const char *obj_id,
+                                      const char *op, const char *username,
+                                      int use_onetime, GError **error)
+{
+    return get_access_token(mgr, repo_id, obj_id, op, username, use_onetime,
+                            NULL, error);
+}
+
+char *
+seaf_web_at_manager_get_scoped_download_token (SeafWebAccessTokenManager *mgr,
+                                               const char *repo_id, const char *obj_id,
+                                               const char *path, const char *username,
+                                               int use_onetime, GError **error)
+{
+    /* Deliberately fixed to download: a read grant must never authorize writes
+     * or an unbounded directory/block download. Hub checks this exact path. */
+    return get_access_token(mgr, repo_id, obj_id, "download", username,
+                            use_onetime, path, error);
+}
+
 SeafileWebAccess *
 seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
                                         const char *token)
@@ -218,29 +249,33 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 
     pthread_mutex_lock (&mgr->priv->lock);
     info = g_hash_table_lookup (mgr->priv->access_token_hash, token);
-    pthread_mutex_unlock (&mgr->priv->lock);
-
     if (info != NULL) {
         long expire_time = info->expire_time;
         long now = (long)time(NULL);        
 
         if (now - expire_time >= 0) {
+            pthread_mutex_unlock (&mgr->priv->lock);
             return NULL;
         } else {
+            gboolean scoped_download = info->path != NULL &&
+                g_strcmp0(info->op, "download") == 0;
             webaccess = g_object_new (SEAFILE_TYPE_WEB_ACCESS,
                                       "repo_id", info->repo_id,
                                       "obj_id", info->obj_id,
                                       "op", info->op,
                                       "username", info->username,
+                                      "scope-path", info->path,
                                       NULL);
 
             if (info->use_onetime) {
-                pthread_mutex_lock (&mgr->priv->lock);
                 g_hash_table_remove (mgr->priv->access_token_hash, token);
-                pthread_mutex_unlock (&mgr->priv->lock);
             }
+            /* Copy under the lock before cleanup/another consumer can free
+             * AccessInfo; perform the legacy SQL check after releasing it. */
+            pthread_mutex_unlock (&mgr->priv->lock);
 
-            if (g_strcmp0(seafile_web_access_get_op(webaccess), "upload") != 0 &&
+            if (!scoped_download &&
+                g_strcmp0(seafile_web_access_get_op(webaccess), "upload") != 0 &&
                 g_strcmp0(seafile_web_access_get_op(webaccess), "update") != 0 &&
                 cf_v2_acl_unscoped(seaf, seafile_web_access_get_repo_id(webaccess)) < 0) {
                 g_object_unref(webaccess);
@@ -250,5 +285,6 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
         }
     }
 
+    pthread_mutex_unlock (&mgr->priv->lock);
     return NULL;
 }
