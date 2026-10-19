@@ -1,6 +1,7 @@
 package main
 
-// Optional CF-EDIT: one Guard row per checked-out file, no server Intent.
+// Optional CF-EDIT: read-only local view + two edit modes, one Guard row
+// per checked-out file, no server Intent.
 // Native File/Block/Commit/Branch remain authoritative. This endpoint is
 // available when the installed Guard table is detected on BOTH native paths.
 import (
@@ -94,7 +95,7 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 		c.IssuedAt.Time.After(time.Now().Add(30*time.Second)) ||
 		c.Subject == "" || len(c.Subject) > 255 || c.UID == "" || len(c.UID) > 225 || !cfEditID(c.RepoID) ||
 		!cfACLCanonical(c.FilePath) || c.FilePath == "/" || !cfEditHex(c.BaseID, 40) ||
-		(c.Mode != "optimistic-edit" && c.Mode != "exclusive-edit") {
+		(c.Mode != "local-view" && c.Mode != "optimistic-edit" && c.Mode != "exclusive-edit") {
 		return nil, errors.New("invalid scoped edit ticket")
 	}
 	return c, nil
@@ -571,7 +572,19 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 
 // Without Guard storage, the ordinary Agent path (read, status, optimistic
 // CAS publish) remains usable. Only exclusive operations require Checkout.
+// A local-view JWT is a read grant only, regardless of whether the account
+// ALSO happens to have write permission. Do not let it reach native Guard or
+// publish code even on installations that have a Checkout table.
+func cfEditReadOnlyRoute(mode, route string) bool {
+	return mode != "local-view" || route == "read"
+}
+
+// Without Guard storage, local-view only reads and optimistic-edit can
+// operate normally; neither creates a Checkout row.
 func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
+	if mode == "local-view" {
+		return route == "read"
+	}
 	if mode != "optimistic-edit" {
 		return false
 	}
@@ -586,6 +599,10 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route := strings.TrimPrefix(r.URL.Path, "/cf-edit/v1/")
+	if !cfEditReadOnlyRoute(c.Mode, route) {
+		cfEditFail(w, 403, "READ_ONLY_TICKET")
+		return
+	}
 	if !option.V2GuardAvailable && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
 		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
 		return

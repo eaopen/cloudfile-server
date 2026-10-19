@@ -1,0 +1,24 @@
+name: CF V2 local-view read ticket contract
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-authorization:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fileserver/go.mod
+          cache-dependency-path: fileserver/go.sum
+      - name: Go readonly ticket + existing edit tests
+        working-directory: fileserver
+        run: go test . -run '^TestCFEdit' -count=1 -v

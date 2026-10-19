@@ -42,6 +42,7 @@ func TestCFEditScopedTicketValidation(t *testing.T) {
 		mode, path string
 		expect     bool
 	}{
+		{"local-view", "/design.step", true},
 		{"optimistic-edit", "/design.step", true},
 		{"exclusive-edit", "/design.step", true},
 		{"ordinary", "/design.step", false},
@@ -148,6 +149,13 @@ func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
 		mode, route, action string
 		allowed             bool
 	}{
+		{"local-view", "read", "", true},
+		{"local-view", "status", "", false},
+		{"local-view", "checkout", "", false},
+		{"local-view", "publish", "optimistic", false},
+		{"local-view", "publish", "commit", false},
+		{"local-view", "renew", "", false},
+		{"local-view", "release", "", false},
 		{"optimistic-edit", "read", "", true},
 		{"optimistic-edit", "status", "", true},
 		{"optimistic-edit", "publish", "optimistic", true},
@@ -162,6 +170,60 @@ func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
 		if got := cfEditAllowedWithoutCheckout(c.mode, c.route, c.action); got != c.allowed {
 			t.Fatalf("mode=%s route=%s action=%s allowed=%v, wanted %v",
 				c.mode, c.route, c.action, got, c.allowed)
+		}
+	}
+}
+
+func TestCFEditReadOnlyNeverReachesWriteRoutesEvenWithGuard(t *testing.T) {
+	for _, route := range []string{"status", "checkout", "renew", "release", "publish", "unknown"} {
+		if cfEditReadOnlyRoute("local-view", route) {
+			t.Fatalf("view-only grant was accepted on %s", route)
+		}
+	}
+	if !cfEditReadOnlyRoute("local-view", "read") {
+		t.Fatal("read-only ticket unexpectedly rejected for read")
+	}
+	if !cfEditReadOnlyRoute("optimistic-edit", "publish") ||
+		!cfEditReadOnlyRoute("exclusive-edit", "checkout") {
+		t.Fatal("existing edit routes incorrectly disabled")
+	}
+}
+
+func TestCFEditReadOnlyDeniedBeforeAnyRepoOrCheckoutAction(t *testing.T) {
+	oldKey, oldGuard := option.JWTPrivateKey, option.V2GuardAvailable
+	defer func() {
+		option.JWTPrivateKey = oldKey
+		option.V2GuardAvailable = oldGuard
+	}()
+	option.JWTPrivateKey = "local-view-readonly-unit-test-key"
+	option.V2GuardAvailable = true
+	now := time.Now()
+	c := cfEditClaims{
+		UID:      "uid-test",
+		RepoID:   uuid.New().String(),
+		FilePath: "/design.step",
+		Mode:     "local-view",
+		BaseID:   strings.Repeat("a", 40),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "reader@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).
+		SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"checkout", "publish", "release", "renew", "status"} {
+		req := httptest.NewRequest(http.MethodPost, "/cf-edit/v1/"+route, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		cfEditAPI(rec, req)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "READ_ONLY_TICKET") {
+			t.Fatalf("local-view %s responded %d %s", route, rec.Code, rec.Body.String())
 		}
 	}
 }
