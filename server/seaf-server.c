@@ -624,6 +624,11 @@ static void start_rpc_service (const char *seafile_dir,
     /* -------- rpc services -------- */
     /* token for web access to repo */
 #ifdef FULL_FEATURE
+    /* Normal single-file download uses the same native token map and expiry. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+        seafile_cloudfile_get_scoped_download_token,
+        "seafile_cloudfile_get_scoped_download_token",
+        searpc_signature_string__string_string_string_int());
     /* Privileged named-pipe RPC only. No public HTTP download registration. */
     searpc_server_register_function ("seafserv-threaded-rpcserver",
         seafile_cloudfile_issue_read_ticket, "seafile_cloudfile_issue_read_ticket",

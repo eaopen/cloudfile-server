@@ -1654,6 +1654,45 @@ seafile_web_query_access_token (const char *token, GError **error)
 }
 
 #ifdef FULL_FEATURE
+/* Privileged local RPC. Hub checks the logged-in actor and file permission;
+ * Server resolves the file object from this exact path before issuing a
+ * reusable native transport token. Consumption is hash+expiry only. */
+static gboolean
+cf_download_path_valid (const char *path)
+{
+    if (!path || path[0] != '/' || strlen (path) > 4096 ||
+        !g_utf8_validate (path, -1, NULL) || strstr (path, "//") ||
+        strchr (path, '\\') || (strlen (path) > 1 && path[strlen (path)-1] == '/'))
+        return FALSE;
+    gchar **parts = g_strsplit (path, "/", -1);
+    gboolean ok = TRUE;
+    for (int i = 0; parts[i] && ok; ++i)
+        if (!strcmp (parts[i], ".") || !strcmp (parts[i], ".."))
+            ok = FALSE;
+    for (const unsigned char *c = (const unsigned char *)path; *c; ++c)
+        if (*c < 32 || *c == 127) ok = FALSE;
+    g_strfreev (parts);
+    return ok && strcmp (path, "/") != 0;
+}
+
+char *
+seafile_cloudfile_get_scoped_download_token (const char *repo_id,
+    const char *path, const char *username, int use_onetime, GError **error)
+{
+    if (!repo_id || !is_uuid_valid (repo_id) ||
+        !cf_download_path_valid (path) || !username || !*username) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid scoped download request");
+        return NULL;
+    }
+    char *obj_id = seafile_get_file_id_by_path (repo_id, path, error);
+    if (!obj_id) return NULL;
+    char *token = seaf_web_at_manager_get_scoped_download_token (
+        seaf->web_at_mgr, repo_id, path, obj_id, username, use_onetime, error);
+    g_free (obj_id);
+    return token;
+}
+
 char *
 seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
     const char *head_id, const char *object_id, const char *op,
