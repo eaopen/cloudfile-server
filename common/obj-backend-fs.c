@@ -496,6 +496,10 @@ obj_backend_fs_remove_store (ObjBackend *bend,
     GList *dir_list = NULL;
     GList *ptr1;
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
+        /* Unknown shard directories remain untouched and make removal fail. */
+        if (strlen (dname1) != 2 || !g_ascii_isxdigit (dname1[0]) ||
+            !g_ascii_isxdigit (dname1[1]))
+            continue;
         dir_list = g_list_prepend(dir_list, g_strdup(dname1));
     }
     g_dir_close (dir1);
@@ -514,10 +518,17 @@ obj_backend_fs_remove_store (ObjBackend *bend,
         GList *file_list = NULL;
         GList  *ptr2;
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
-            /* Never unlink a concurrent writer's staging file during removal. */
-            if (g_str_has_prefix (dname2, ".cf-tmp-"))
+            /* Remove published blocks/objects only. Preserve active staging,
+             * historical partial names and unknown files for maintenance;
+             * the nonempty directory then causes a visible removal failure. */
+            if (strlen (dname2) != 38)
                 continue;
-            file_list = g_list_prepend(file_list, g_strdup(dname2));
+            char published_id[41];
+            g_snprintf (published_id, sizeof(published_id), "%s%s",
+                        (const char *)(ptr1->data), dname2);
+            if (!is_object_id_valid (published_id))
+                continue;
+            file_list = g_list_prepend (file_list, g_strdup (dname2));
         }
         g_dir_close (dir2);
 
