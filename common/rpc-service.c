@@ -4646,8 +4646,36 @@ seafile_check_permission_by_path (const char *repo_id, const char *path,
      */
     char *perm = seafile_check_permission (repo_id, user, error);
 #ifdef SEAFILE_SERVER
-    if (!perm)
+    if (!perm) {
+        /*
+         * No native grant. That is not automatically the end: a CloudFile
+         * directory share is deliberately given to accounts that are not
+         * library members, so the only qualification that can exist here comes
+         * from a capability, not from repo-perm.c. Reads already worked because
+         * they are re-adjudicated above this gate; upload links, mkdir, rename,
+         * delete and seafdav had nowhere to go and were refused outright.
+         *
+         * Two things keep this from becoming a hole. An error means the gate
+         * failed, not that it denied, so it is propagated instead of being
+         * retried as a share question. And the answer is scoped: the capability
+         * returns a permission for this exact path only, inside a share root
+         * that policy already published, and can never answer "admin" -- the
+         * library root and every unshared path stay denied, and the C/Go final
+         * publication checks are untouched.
+         */
+        if (error && *error)
+            return NULL;
+
+        gboolean unavailable = FALSE;
+        char *grant = cf_ext_share_grant (repo_id, path, user, &unavailable);
+        if (grant)
+            return grant;
+
+        if (unavailable)
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "CloudFile permission runtime is unavailable");
         return NULL;
+    }
 
     gboolean unavailable = FALSE;
     char *narrowed = cf_ext_check_permission (repo_id, path, user, perm, &unavailable);

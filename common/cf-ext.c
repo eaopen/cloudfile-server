@@ -10,6 +10,7 @@
 #include "cf-acl.h"
 #include "cf-fileop-test.h"
 #include "cf-lock.h"
+#include "cf-v2-share.h"
 
 typedef struct CfProvider {
     char *name;
@@ -18,7 +19,15 @@ typedef struct CfProvider {
     CfRestrictedFunc restricted;
 } CfProvider;
 
+/* Independent qualifications, kept apart from the tightening chain on purpose;
+ * cf-ext.h explains why they cannot share it. */
+typedef struct CfShareProvider {
+    char *name;
+    CfShareGrantFunc grant;
+} CfShareProvider;
+
 static GList *providers = NULL;     /* CfProvider*, registration order */
+static GList *share_providers = NULL;  /* CfShareProvider*, registration order */
 
 gboolean
 cf_ext_config_bool (const char *key)
@@ -26,6 +35,26 @@ cf_ext_config_bool (const char *key)
     if (!seaf || !seaf->cfg_mgr)
         return FALSE;
     return seaf_cfg_manager_get_config_boolean (seaf->cfg_mgr, "cloudfile", key);
+}
+
+gboolean
+cf_ext_config_bool_default (const char *key, gboolean fallback)
+{
+    GKeyFile *config;
+
+    if (!seaf || !seaf->config)
+        return fallback;
+    config = seaf->config;
+    if (!g_key_file_has_key (config, "cloudfile", key, NULL))
+        return fallback;
+
+    GError *error = NULL;
+    gboolean value = g_key_file_get_boolean (config, "cloudfile", key, &error);
+    if (error) {
+        g_error_free (error);
+        return fallback;
+    }
+    return value;
 }
 
 char *
@@ -45,7 +74,7 @@ cf_ext_database (void)
 gboolean
 cf_ext_active (void)
 {
-    return providers != NULL;
+    return providers != NULL || share_providers != NULL;
 }
 
 void
@@ -65,6 +94,20 @@ cf_ext_register (const char *name,
 }
 
 void
+cf_ext_register_share_grant (const char *name, CfShareGrantFunc grant)
+{
+    if (!grant)
+        return;
+
+    CfShareProvider *p = g_new0 (CfShareProvider, 1);
+    p->name = g_strdup (name);
+    p->grant = grant;
+
+    share_providers = g_list_append (share_providers, p);
+    seaf_message ("CloudFile: share qualification '%s' enabled.\n", name);
+}
+
+void
 cf_ext_init (void)
 {
     /*
@@ -79,6 +122,33 @@ cf_ext_init (void)
     cf_acl_init ();
     cf_fileop_test_init ();
     cf_lock_init ();
+    cf_v2_share_init ();
+}
+
+char *
+cf_ext_share_grant (const char *repo_id,
+                    const char *path,
+                    const char *user,
+                    gboolean *unavailable)
+{
+    if (unavailable)
+        *unavailable = FALSE;
+    if (!share_providers || !repo_id || !path || !user || !*user)
+        return NULL;
+
+    GList *ptr;
+    for (ptr = share_providers; ptr; ptr = ptr->next) {
+        CfShareProvider *p = ptr->data;
+        char *grant = p->grant (repo_id, path, user, unavailable);
+        if (grant)
+            return grant;
+        /* Its own authoritative data was unreadable: no later capability can
+         * answer for it, and "denied" would misreport an outage. */
+        if (unavailable && *unavailable)
+            return NULL;
+    }
+
+    return NULL;
 }
 
 char *

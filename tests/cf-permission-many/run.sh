@@ -6,3 +6,6 @@ build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 python3 "$here/compile-fixture.py" "$build"
 CF_PERMISSION_MANY_LIBRARY="$build/many.so" python3 "$here/test-many.py" -v
+# Same compiled object: the share qualification is one more branch of the same
+# scalar decision, so it is proven against the same code rather than a copy.
+CF_PERMISSION_MANY_LIBRARY="$build/many.so" python3 "$here/test-share-grant.py" -v
