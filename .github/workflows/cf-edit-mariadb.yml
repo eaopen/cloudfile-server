@@ -1,14 +1,6 @@
 name: CF-EDIT single-Guard MariaDB (feature and dev)
 
 on:
-  push:
-    branches: [feature/v2-rust-guard-only, dev]
-    paths:
-      - "scripts/sql/mysql/cloudfile-v2-edit.sql"
-      - "tests/cf_edit/**"
-      - ".github/workflows/cf-edit-mariadb.yml"
-  pull_request:
-    branches: [dev]
   workflow_dispatch:
 
 permissions:
