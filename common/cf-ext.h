@@ -44,14 +44,6 @@ void cf_ext_init (void);
  */
 gboolean cf_ext_config_bool (const char *key);
 
-/* Same, with the value used when the key is absent. A capability that closes a
- * denial hole cannot be opt-in-only: shipping it off by default means every
- * deployment that never edits seafile.conf keeps the bug. An invalid explicit
- * value still answers @fallback, because guessing "on" from a typo would hide a
- * configuration mistake behind a permission decision.
- */
-gboolean cf_ext_config_bool_default (const char *key, gboolean fallback);
-
 /* A [cloudfile] string key, or NULL when unset. Newly allocated; caller
  * frees. Same reason as the boolean above: one place that knows where
  * capability configuration lives.
