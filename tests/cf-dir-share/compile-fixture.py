@@ -19,7 +19,7 @@ source = (root / 'common/cf-v2-share.c').read_text()
 
 
 def function(name):
-    start = re.search(r'(?m)^(?:static )?char \*\n' + re.escape(name) + r'\s*\(', source)
+    start = re.search(r'(?m)^(?:static )?(?:char \*|gboolean|void)\n' + re.escape(name) + r'\s*\(', source)
     if start is None:
         raise ValueError(name)
     body = source.index('{', start.start())
@@ -39,7 +39,8 @@ def function(name):
 # let the test pass while the shipped bound drifted.
 limits = '\n'.join(re.findall(r'(?m)^#define CF_SHARE_\w+ .*$', source))
 functions = '\n\n'.join(function(name) for name in
-                        ('request_path', 'qualified_permission', 'cf_v2_share_grant'))
+                        ('request_path', 'qualified_permission', 'cf_v2_share_grant',
+                          'v2_share_schema_present', 'cf_v2_share_init'))
 (build / 'production.c').write_text(limits + '\n\n' + functions)
 
 cflags = subprocess.check_output(['pkg-config', '--cflags', 'glib-2.0', 'jansson'], text=True).split()
