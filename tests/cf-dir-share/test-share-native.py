@@ -17,6 +17,10 @@ lib.cf_v2_share_grant.restype = ctypes.c_void_p
 lib.fixture_reply.argtypes = [ctypes.c_int, ctypes.c_char_p]
 lib.fixture_payload.restype = ctypes.c_char_p
 lib.fixture_free.argtypes = [ctypes.c_void_p]
+lib.fixture_registration_context.argtypes = [ctypes.c_int] * 4
+lib.fixture_registrations.restype = ctypes.c_int
+lib.cf_v2_share_init.argtypes = []
+lib.cf_v2_share_init.restype = None
 REPO = '11111111-1111-4111-8111-111111111111'
 ALLOW = json.dumps(dict(allowed=True, contract='cf-acl-v1', permissions=['rw']))
 
@@ -123,6 +127,29 @@ class DirectoryShareTests(unittest.TestCase):
                 self.assertEqual(grant(), (None, False))
         reply(200, 'not json')
         self.assertEqual(grant(), (None, False))
+
+
+class RegistrationTests(unittest.TestCase):
+    """The three-table V2 install must register without retired tables or flags."""
+
+    def setUp(self):
+        lib.fixture_reset()
+
+    def registration(self, *, schema, db_kind=1, channel=1, fault=0):
+        lib.fixture_registration_context(schema, db_kind, channel, fault)
+        lib.cf_v2_share_init()
+        return lib.fixture_registrations()
+
+    def test_standard_v2_three_tables_register_the_share_grant(self):
+        self.assertEqual(self.registration(schema=1), 1)
+
+    def test_missing_schema_or_non_mysql_keeps_ce_denial(self):
+        self.assertEqual(self.registration(schema=0), 0)
+        self.assertEqual(self.registration(schema=1, db_kind=2), 0)
+
+    def test_unreadable_schema_or_missing_internal_channel_never_registers(self):
+        self.assertEqual(self.registration(schema=1, fault=1), 0)
+        self.assertEqual(self.registration(schema=1, channel=0), 0)
 
 
 if __name__ == '__main__':
