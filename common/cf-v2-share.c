@@ -137,28 +137,35 @@ cf_v2_share_grant (const char *repo_id, const char *path, const char *user,
     return permission;
 }
 
+/* Standard V2 uses only the three reviewed extension tables, not the
+ * retired cf_managed_library/cf_schema_migration schema. This startup check
+ * detects the installed V2 contract; Hub remains authoritative for all
+ * per-user/path grants and rejects malformed schema or ACL data. */
+static gboolean
+v2_share_schema_present (void)
+{
+    if (!seaf || !seaf->db || seaf_db_type (seaf->db) != SEAF_DB_TYPE_MYSQL)
+        return FALSE;
+
+    gboolean error = FALSE;
+    gboolean installed = seaf_db_statement_exists (
+        seaf->db,
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema=DATABASE() AND table_name IN "
+        "('cf_library_storage','cf_dir_acl','cf_sso_group_map') "
+        "GROUP BY table_schema HAVING COUNT(DISTINCT table_name)=3",
+        &error, 0);
+    if (error)
+        seaf_warning ("CloudFile: V2 directory-share schema lookup failed.\n");
+    return installed && !error;
+}
+
 void
 cf_v2_share_init (void)
 {
-    if (!seaf)
-        return;
-
-    /*
-     * Only where the V2 authority exists.
-     *
-     * The qualification is answered by the Hub, so on a deployment without the
-     * managed schema the endpoint does not exist and every native denial would
-     * pay a network attempt to learn that. cf_acl_init() gates the tightening
-     * capability on the same fact, which keeps "V2 is installed" a single
-     * question with a single answer.
-     */
-    if (!cf_policy_managed_guard_required (seaf->db, seaf->config))
-        return;
-
-    /* Default on: this closes a denial hole. A deployment that never edits
-     * seafile.conf would otherwise keep the bug while believing it shipped the
-     * fix. An operator who wants the old behaviour can still say so. */
-    if (!cf_ext_config_bool_default ("dir_share_native_grant", TRUE))
+    /* Auto-detect standard V2 and reuse the authenticated internal Hub
+     * channel. Stock CE and incomplete V2 installs retain native denial. */
+    if (!v2_share_schema_present ())
         return;
 
     if (!seaf->seahub_url || !*seaf->seahub_url ||
