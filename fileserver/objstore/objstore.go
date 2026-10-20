@@ -47,11 +47,11 @@ func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectS
 // Route ordinary filesystem objects through the existing V2 resolver. A
 // single committed RepoStorageId remains authoritative for C and Go readers.
 func newRoutedFSBackend(confPath, seafileDataDir, objType string) (storageBackend, error) {
-    native, err := newFSBackend(seafileDataDir, objType)
-    if err != nil {
-        return nil, err
-    }
-    return newV2StorageBackend(confPath, native)
+	native, err := newFSBackend(seafileDataDir, objType)
+	if err != nil {
+		return nil, err
+	}
+	return newV2StorageBackend(confPath, native)
 }
 
 func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
