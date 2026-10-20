@@ -14,5 +14,9 @@ for name in block object; do
   "${glib_libs[@]}" -o "$fixture/$name"
  mkdir "$fixture/$name-data"
  "$fixture/$name" "$fixture/$name-data"
+ # Run the identical native code through the V2 managed-library route, too.
+ mkdir "$fixture/$name-managed-data" "$fixture/$name-managed-root"
+ CF_TEST_V2_STORAGE_ROOT="$fixture/$name-managed-root" \
+     "$fixture/$name" "$fixture/$name-managed-data"
 done
-printf 'Native atomic staging, abort cleanup and enumeration passed\n'
+printf 'Native and managed C object staging, cleanup and enumeration passed\n'
