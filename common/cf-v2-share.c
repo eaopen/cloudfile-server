@@ -150,7 +150,7 @@ v2_share_schema_present (void)
     gboolean error = FALSE;
     gboolean installed = seaf_db_statement_exists (
         seaf->db,
-        "SELECT table_name FROM information_schema.tables "
+        "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema=DATABASE() AND table_name IN "
         "('cf_library_storage','cf_dir_acl','cf_sso_group_map') "
         "GROUP BY table_schema HAVING COUNT(DISTINCT table_name)=3",
