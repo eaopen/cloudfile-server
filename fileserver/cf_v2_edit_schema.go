@@ -42,10 +42,10 @@ var cfV2GuardColumns = map[string]cfGuardColumn{
 	"updated_at":        {"datetime", 0, "NO", false},
 }
 var cfV2GuardIndexes = map[string][]cfGuardIndexPart{
-	"PRIMARY":             {{"repo_id", 0, false}, {"path_hash", 0, false}},
-	"cf_edit_guard_id":    {{"guard_id", 0, false}},
+	"PRIMARY":              {{"repo_id", 0, false}, {"path_hash", 0, false}},
+	"cf_edit_guard_id":     {{"guard_id", 0, false}},
 	"cf_edit_guard_active": {{"repo_id", 1, false}, {"guard_id", 1, false}},
-	"cf_edit_guard_owner": {{"owner_uid", 1, false}, {"guard_id", 1, false}},
+	"cf_edit_guard_owner":  {{"owner_uid", 1, false}, {"guard_id", 1, false}},
 }
 
 // Keep the actual column/index contract in one place and independent of SQL
