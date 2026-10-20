@@ -66,23 +66,19 @@ like_descendant_pattern (const char *path)
     return g_string_free (pattern, FALSE);
 }
 
-/* Lock and resource share the Hub migration's UID and seafile-db. The SQL
- * retains manual locks and suspended checkout reservations.
- * A failed query refuses the write rather than weakening the barrier. */
+/* V2 reservations are path-keyed. Unscoped writes, including the owner's,
+ * must not consume an exclusive Checkout without a verified publish proof. */
 static int
 load_exact (const char *repo_id, const char *path, const char *user)
 {
+    (void)user;
     char *hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
-    int n = 0;
-    if (n == 0)
-        n = seaf_db_statement_foreach_row (
-            cf_ext_database (),
-            "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-            "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-            "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL "
-            "AND (g.lifecycle_ref<>r.lifecycle_ref OR g.mode IS NULL OR g.mode<>'file-lock' OR g.owner_native_user IS NULL OR g.owner_native_user<>?) LIMIT 1",
-            barrier_row, NULL, 4, "string", repo_id, "string", hash,
-            "string", path, "string", user ? user : "");
+    int n = seaf_db_statement_foreach_row (
+        cf_ext_database (),
+        "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
+        "WHERE repo_id=? AND path_hash=UNHEX(?) AND path=? "
+        "AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) LIMIT 1",
+        barrier_row, NULL, 3, "string", repo_id, "string", hash, "string", path);
 
     g_free (hash);
     return n;
@@ -92,14 +88,12 @@ static int
 load_descendant (const char *repo_id, const char *path)
 {
     char *pattern = like_descendant_pattern (path);
-    int n = 0;
-    if (n == 0)
-        n = seaf_db_statement_foreach_row (
-            cf_ext_database (),
-            "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-            "WHERE r.repo_id=? AND r.path LIKE ? ESCAPE '\\\\' AND r.state='active' "
-            "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL LIMIT 1",
-            barrier_row, NULL, 2, "string", repo_id, "string", pattern);
+    int n = seaf_db_statement_foreach_row (
+        cf_ext_database (),
+        "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
+        "WHERE repo_id=? AND path LIKE ? ESCAPE '\\\\' "
+        "AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) LIMIT 1",
+        barrier_row, NULL, 2, "string", repo_id, "string", pattern);
 
     g_free (pattern);
     return n;
@@ -111,12 +105,6 @@ check_path (const char *repo_id, const char *path, const char *user,
 {
     int n;
     if (!cf_ext_database ())
-        goto unavailable;
-    int ready = seaf_db_statement_foreach_row (
-        cf_ext_database (),
-        "SELECT version FROM cf_schema_migration WHERE version='029_editing_core' "
-        "AND state='applied' AND step=2", barrier_row, NULL, 0);
-    if (ready != 1)
         goto unavailable;
     n = load_exact (repo_id, path, user);
     if (n < 0)
@@ -176,13 +164,15 @@ void
 cf_lock_init (void)
 {
     char *backend = cf_ext_config_string ("lock_backend");
-    lock_on = cf_ext_config_bool ("file_lock_enabled") &&
+    /* Checkout is unfinished and opt-in. A legacy file-lock switch alone
+     * must not make normal uploads depend on Guard or the retired ledger. */
+    lock_on = cf_ext_config_bool ("checkout_enabled") &&
               (!backend || strcmp (backend, "cloudfile") == 0);
     if (backend && strcmp (backend, "cloudfile") != 0)
         seaf_warning ("CloudFile: unsupported lock backend '%s'.\n", backend);
     g_free (backend);
     if (lock_on) {
         cf_fileop_register ("file-lock", cf_lock_prepare, NULL, NULL);
-        seaf_message ("CloudFile: UID lease write barrier enabled.\n");
+        seaf_message ("CloudFile: V2 Checkout write barrier enabled.\n");
     }
 }

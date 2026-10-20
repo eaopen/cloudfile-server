@@ -14,6 +14,7 @@
 ```bash
 ./tests/cf-acl/run.sh
 ./tests/cf-fileop/run.sh
+python3 tests/cf-lock/run.py
 ./tests/cf-permission-many/run.sh
 ./tests/cf-dir-share/run.sh
 # 目录分页另需 valac / libjansson 开发包

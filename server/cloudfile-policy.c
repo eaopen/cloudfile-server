@@ -218,46 +218,27 @@ lease_resource_location (SeafDBTrans *trans, const char *repo,
     return count >= 0 && count <= 1 && location.valid && (!uid || count == 1) ? 0 : -1;
 }
 
-/* Only the opt-in lock barrier requires the new checkout schema. The final
- * Branch transaction must re-read it after PREPARE, closing that race for
- * scoped file publication. A missing or malformed table fails closed. */
-static int
-editing_conflict (SeafDBTrans *trans, const char *repo, const char *path,
-                  const char *hash, const char *user)
-{
-    gboolean error = FALSE;
-    gboolean guarded = seaf_db_trans_check_for_existence (trans,
-        "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-        "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.state='active' "
-        "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL "
-        "AND (g.lifecycle_ref<>r.lifecycle_ref OR g.mode IS NULL OR g.mode<>'file-lock' OR g.owner_native_user IS NULL OR g.owner_native_user<>?) FOR UPDATE",
-        &error, 4, "string", repo, "string", hash, "string", path,
-        "string", user ? user : "");
-    return guarded || error ? -1 : 0;
-}
-
 int
 cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo,
                                 const char *path, const char *user)
 {
     if (!cf_lock_enabled ()) return 0;
+    (void)user;
     if (!repo || !path || path[0] != '/' || strlen (path) > 4096 ||
-        !g_utf8_validate (path, -1, NULL) || editing_schema (trans) < 0) return -1;
+        !g_utf8_validate (path, -1, NULL)) return -1;
     char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
     if (!digest) return -1;
-    if (lease_resource_location (trans, repo, path, digest, NULL) < 0) {
-        g_free (digest);
-        return -1;
-    }
-    /* Current locking read, not a preflight/RR snapshot. The actual sparse UID
-     * and lease rows stay locked until the caller's Branch transaction ends.
-     * SQL errors fail closed; orphan/lifecycle reconciliation remains a
-     * separate native integration prerequisite, not proven by this join.
-     * Exact stored path is compared after hashing to avoid digest-only identity.
-     */
-    int result = editing_conflict (trans, repo, path, digest, user);
+    /* V2 publishes against one path-keyed Guard, in the Branch transaction.
+     * The retired Resource/Intent ledger must not be a file-write dependency.
+     * Unscoped owner writes also refuse an active exclusive reservation. */
+    gboolean error = FALSE;
+    gboolean guarded = seaf_db_trans_check_for_existence (trans,
+        "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
+        "WHERE repo_id=? AND path_hash=UNHEX(?) AND path=? "
+        "AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
+        &error, 3, "string", repo, "string", digest, "string", path);
     g_free (digest);
-    return result;
+    return guarded || error ? -1 : 0;
 }
 
 int
