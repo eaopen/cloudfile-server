@@ -11,8 +11,17 @@ gboolean is_object_id_valid(const char *id) {
  for(int i=0;i<40;i++) if (!(g_ascii_isdigit(id[i]) || (id[i]>='a' && id[i]<='f'))) return FALSE;
  return TRUE;
 }
-char *cf_v2_store_dir(const char *root,const char *repo) { return g_build_filename(root,repo,NULL); }
-gboolean cf_v2_storage_enabled(void) { return FALSE; }
+char *cf_v2_store_dir(const char *root,const char *repo) {
+ const char *mounted=g_getenv("CF_TEST_V2_STORAGE_ROOT");
+ if (!mounted) return g_build_filename(root,repo,NULL);
+ /* Model the existing V2 path contract in a disposable fixture: the final
+  * object-type directory is resolved by the same native helper in production. */
+ char *type=g_path_get_basename(root);
+ char *r=g_build_filename(mounted,repo,"storage",type,repo,NULL);
+ g_free(type);
+ return r;
+}
+gboolean cf_v2_storage_enabled(void) { return g_getenv("CF_TEST_V2_STORAGE_ROOT") != NULL; }
 int cf_v2_storage_copy(const char *src,const char *dst) { return link(src,dst); }
 int seaf_stat(const char *path, SeafStat *st) { return stat(path,st); }
 int seaf_fstat(int fd, SeafStat *st) { return fstat(fd,st); }

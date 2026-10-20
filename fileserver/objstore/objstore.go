@@ -44,6 +44,16 @@ func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectS
 	return obj
 }
 
+// Route ordinary filesystem objects through the existing V2 resolver. A
+// single committed RepoStorageId remains authoritative for C and Go readers.
+func newRoutedFSBackend(confPath, seafileDataDir, objType string) (storageBackend, error) {
+	native, err := newFSBackend(seafileDataDir, objType)
+	if err != nil {
+		return nil, err
+	}
+	return newV2StorageBackend(confPath, native)
+}
+
 func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend, error) {
 	configPath := seafileConfPath
 	info, statErr := os.Stat(configPath)
@@ -54,7 +64,7 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 	config, err := ini.Load(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return newFSBackend(seafileDataDir, objType)
+			return newRoutedFSBackend(configPath, seafileDataDir, objType)
 		}
 		return nil, err
 	}
@@ -69,7 +79,12 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 	}
 	section, err := config.GetSection(sectionName)
 	if err != nil || section.Key("name").String() == "" || section.Key("name").String() == "filesystem" {
-		return newFSBackend(seafileDataDir, objType)
+		return newRoutedFSBackend(configPath, seafileDataDir, objType)
+	}
+	// Legacy multi/S3 storage cannot coexist with the V2 filesystem root:
+	// a mixed C/Go backend would otherwise publish objects in different places.
+	if config.Section("cloudfile_v2").HasKey("auto_local_root") {
+		return nil, fmt.Errorf("V2 auto_local_root requires filesystem object backend")
 	}
 	if section.Key("name").String() != "s3" {
 		if section.Key("name").String() == "multiple" {

@@ -72,8 +72,13 @@ func v2Lookup(repoID string) (string, string, string, error) {
 	return route.String, key.String, state.String, err
 }
 
-func newV2StorageBackend(confDir string, native *fsBackend) (storageBackend, error) {
-	name := filepath.Join(confDir, "seafile.conf")
+func newV2StorageBackend(confPath string, native *fsBackend) (storageBackend, error) {
+	// Fileserver callers may pass the config directory or seafile.conf itself.
+	// Resolve both exactly as the existing newBackend() does.
+	name := confPath
+	if info, err := os.Stat(name); err == nil && info.IsDir() {
+		name = filepath.Join(name, "seafile.conf")
+	}
 	cfg, err := ini.Load(name)
 	if os.IsNotExist(err) {
 		return native, nil
