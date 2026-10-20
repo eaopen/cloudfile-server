@@ -26,6 +26,7 @@
 #include "seaf-db.h"
 #include "seaf-utils.h"
 #include "cf-storage.h"
+#include "cf-v2-storage.h"
 
 #define REAP_TOKEN_INTERVAL 300 /* 5 mins */
 #define DECRYPTED_TOKEN_TTL 3600 /* 1 hour */
@@ -2893,6 +2894,12 @@ seaf_repo_manager_del_repo_from_trash (SeafRepoManager *mgr,
                                        const char *repo_id,
                                        GError **error)
 {
+    /* Preserve the storage key for cold GC and never reuse deleted keys. */
+    if (cf_v2_storage_retire (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to retire library storage.");
+        return -1;
+    }
     /* As long as the repo is successfully moved into GarbageRepo table,
      * we consider this operation successful.
      */
@@ -3898,9 +3905,16 @@ create_repo_common (SeafRepoManager *mgr,
         }
     }
 
-    /* Default local allocation belongs before the initial commit, including
-     * native/CLI callers that bypass the CloudFile HTTP creation endpoint. */
-    if (cf_pin_default_local_storage (repo_id) < 0) {
+    /* Allocate the default V2 key before the first commit, for native and
+     * API callers alike. Keep the historical class allocator only for
+     * deployments without a V2 root; never mix both allocation schemas. */
+    if (cf_v2_storage_enabled ()) {
+        if (cf_v2_storage_reserve (repo_id) < 0) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "Failed to reserve library storage.");
+            return -1;
+        }
+    } else if (cf_pin_default_local_storage (repo_id) < 0) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                      "Failed to allocate default library storage.");
         return -1;
@@ -3969,6 +3983,12 @@ create_repo_common (SeafRepoManager *mgr,
 
     seaf_repo_manager_update_repo_info (mgr, repo->id, repo->head->commit_id);
 
+    if (cf_v2_storage_activate (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to activate library storage.");
+        goto out;
+    }
+
     ret = 0;
 out:
     if (repo)
@@ -4000,10 +4020,16 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
 
     repo_id = gen_uuid ();
 
-    /* Pin the storage class before create_repo_common writes the initial
-     * commit: RepoStorageId must already point at the target backend or the
-     * root commit lands in the default store and the repo becomes unreadable
-     * (the multi-storage router looks the commit up in the pinned store). */
+    /* The V2 default root is automatic, with no per-library class selector.
+     * Do not persist an old cf_library_storage_key pin alongside the V2
+     * registry or overwrite the reserved RepoStorageId on creation. */
+    if (cf_v2_storage_enabled () && storage_id && storage_id[0]) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Explicit storage classes are unavailable with V2 local storage.");
+        g_free (repo_id);
+        return NULL;
+    }
+    /* Preserve the pre-existing storage-class API when no V2 root is used. */
     if (storage_id && storage_id[0]) {
         if (cf_set_repo_storage_id (repo_id, storage_id) < 0) {
             seaf_warning ("Failed to pin repo %s to storage %s.\n",
