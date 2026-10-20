@@ -27,6 +27,7 @@
 #include "seaf-db.h"
 #include "seaf-utils.h"
 #include "cf-ext.h"
+#include "cf-v2-storage.h"
 
 #include "log.h"
 
@@ -130,6 +131,11 @@ load_config (SeafileSession *session, const char *config_file_path)
         seaf_warning ("Failed to load config file.\n");
         ret = -1;
         goto out;
+    }
+
+    if (cf_v2_storage_validate_config (config) < 0) {
+        g_key_file_free (config);
+        return -1;
     }
 
     session->config = config;
@@ -401,6 +407,11 @@ seafile_repair_session_new(const char *central_config_dir,
     session->seaf_dir = abs_seafile_dir;
     session->ccnet_dir = abs_ccnet_dir;
     session->tmp_file_dir = tmp_file_dir;
+    if (cf_v2_storage_validate_config (config) < 0) {
+        g_key_file_free (config);
+        goto onerror;
+    }
+
     session->config = config;
     session->is_repair = TRUE;
 

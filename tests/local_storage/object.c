@@ -5,11 +5,12 @@ static const char *repo="11111111-1111-4111-8111-111111111111";
 static const char *oid="abcdef0123456789012345678901234567890123";
 static gboolean count(const char *r,int v,const char *id,void *p) {g_assert_cmpstr(id,==,oid);(*(int*)p)++;return TRUE;}
 int main(int argc,char **argv) {
+ umask(0022);
  g_assert_cmpint(argc,==,2);ObjBackend *b=obj_backend_fs_new(argv[1],"fs");g_assert_nonnull(b);
  g_assert_cmpint(b->write(b,repo,1,oid,"complete",8,TRUE),==,0);
  char final[SEAF_PATH_MAX];g_assert_cmpint(id_to_path(b->priv,oid,final,repo,1),==,0);
  fail_write=1;g_assert_cmpint(b->write(b,repo,1,oid,"partial",7,TRUE),==,-1);fail_write=0;
- char *parent=g_path_get_dirname(final);GDir *dir=g_dir_open(parent,0,NULL);const char *name;int n=0;
+ char *parent=g_path_get_dirname(final);struct stat shard_stat;g_assert_cmpint(stat(parent,&shard_stat),==,0);g_assert_cmpuint(shard_stat.st_mode & 0777,==,0755);GDir *dir=g_dir_open(parent,0,NULL);const char *name;int n=0;
  while ((name=g_dir_read_name(dir))) {g_assert_false(g_str_has_prefix(name,".cf-tmp-"));n++;}g_dir_close(dir);g_assert_cmpint(n,==,1);
  char *orphan=g_build_filename(parent,".cf-tmp-crashed",NULL),*old=g_strconcat(final,".XXXXXX",NULL);
  g_assert_true(g_file_set_contents(orphan,"partial",-1,NULL));g_assert_true(g_file_set_contents(old,"partial",-1,NULL));

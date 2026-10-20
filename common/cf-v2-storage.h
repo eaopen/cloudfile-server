@@ -8,6 +8,7 @@ int cf_v2_storage_reserve (const char *repo_id);
 int cf_v2_storage_activate (const char *repo_id);
 int cf_v2_storage_retire (const char *repo_id);
 gboolean cf_v2_storage_enabled (void);
+int cf_v2_storage_validate_config (GKeyFile *config);
 int cf_v2_storage_copy (const char *src, const char *dst);
 
 #endif

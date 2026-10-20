@@ -20,3 +20,12 @@ for name in block object; do
      "$fixture/$name" "$fixture/$name-managed-data"
 done
 printf 'Native and managed C object staging, cleanup and enumeration passed\n'
+# Unused routing/SQL functions are discarded; the production guard and copy
+# implementation remain linked and executed without a database fixture.
+link_flags=(-Wl,--gc-sections)
+if [[ $(uname -s) == Darwin ]]; then link_flags=(-Wl,-dead_strip); fi
+cc -D_GNU_SOURCE -ffunction-sections -fdata-sections \
+ -I"$repo_root/tests/local_storage/include" -I"$repo_root/common" -I"$repo_root/lib" "${glib_cflags[@]}" \
+ "$repo_root/tests/local_storage/storage.c" "${link_flags[@]}" "${glib_libs[@]}" -o "$fixture/storage"
+mkdir "$fixture/copy-data"
+"$fixture/storage" "$fixture/copy-data"
