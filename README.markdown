@@ -2,13 +2,17 @@
 
 # CloudFile Server
 
+> **当前开发：默认分支 `dev` = CloudFile V2**（以 Seafile CE14 为上游基础）。不是历史 V0.x，也不是已归档的 `dev2` / `dev2-clean`。新功能用 `feat/<功能>`，修复用 `fix/<问题>`，文档用 `docs/<主题>`。不需要额外的版本前缀。
+
 CloudFile's file core, based on Seafile Community Edition. It handles file data, storage and permission enforcement. For installation and product guidance, start at the [CloudFile product home](https://github.com/eaopen/cloudfile).
 
-CloudFile 基于 Seafile Community Edition 的文件核心，负责文件数据、存储与权限执行。安装和产品使用请从 [CloudFile 产品入口](https://github.com/eaopen/cloudfile)开始。
+CloudFile 基于 Seafile Community Edition 的文件核心，负责文件数据、存储与权限执行。与 [CloudFile Hub](https://github.com/eaopen/cloudfile-hub) 配合，由 [CloudFile Docker](https://github.com/eaopen/cloudfile-docker) 负责源码组装、镜像与部署。
 
-The upstream AGPLv3 license and OpenSSL linking permission remain unchanged; the `python/` directory uses Apache 2.0. See [LICENSE.txt](LICENSE.txt). The upstream introduction follows.
+**跨仓构建需固定 Server、Hub、Docker 的 Commit SHA；`dev` 表示开发线，不表示已发布或已部署。** 日常文档更新不编译、不跑测试；代码只按影响范围做必要验证，完整构建在明确的集成/发布阶段进行。参见 [AGENTS.md](AGENTS.md)、[Docker 分支规则](https://github.com/eaopen/cloudfile-docker/blob/dev/BRANCHING.md)、[Server 测试指南](README.testing.md)。
 
-保留上游 AGPLv3 和 OpenSSL 链接附加许可，`python/` 目录采用 Apache 2.0，见 [LICENSE.txt](LICENSE.txt)。以下保留上游项目介绍。
+The upstream AGPLv3 license and OpenSSL linking permission remain unchanged; the `python/` directory uses Apache 2.0. See [LICENSE.txt](LICENSE.txt).
+
+下文是保留的 **Seafile 上游介绍**，并非 CloudFile V2 的分支或构建指令。
 
 ---
 
