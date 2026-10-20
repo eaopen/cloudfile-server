@@ -66,24 +66,24 @@ like_descendant_pattern (const char *path)
     return g_string_free (pattern, FALSE);
 }
 
-/* Lock and resource share the Hub migration's UID and seafile-db. The SQL
- * retains manual locks and suspended checkout reservations.
- * A failed query refuses the write rather than weakening the barrier. */
+/* Use the current single V2 Guard table; the old cf_resource /
+ * lifecycle_ref/lease_until join is intentionally retired. Both C and Go
+ * deny ordinary writes to *any* active Checkout, including the owner's
+ * unscoped write. Controlled publication remains a separate proof path. */
 static int
 load_exact (const char *repo_id, const char *path, const char *user)
 {
+    (void)user;
     char *hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
-    int n = 0;
-    if (n == 0)
-        n = seaf_db_statement_foreach_row (
-            cf_ext_database (),
-            "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-            "WHERE r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-            "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL "
-            "AND (g.lifecycle_ref<>r.lifecycle_ref OR g.mode IS NULL OR g.mode<>'file-lock' OR g.owner_native_user IS NULL OR g.owner_native_user<>?) LIMIT 1",
-            barrier_row, NULL, 4, "string", repo_id, "string", hash,
-            "string", path, "string", user ? user : "");
-
+    if (!hash)
+        return -1;
+    int n = seaf_db_statement_foreach_row (
+        cf_ext_database (),
+        "SELECT path FROM cf_edit_guard WHERE repo_id=? AND path_hash=UNHEX(?) "
+        "AND path=? AND guard_id IS NOT NULL "
+        "AND lease_expires_at>UTC_TIMESTAMP(6) LIMIT 1",
+        barrier_row, NULL, 3, "string", repo_id, "string", hash,
+        "string", path);
     g_free (hash);
     return n;
 }
@@ -92,15 +92,14 @@ static int
 load_descendant (const char *repo_id, const char *path)
 {
     char *pattern = like_descendant_pattern (path);
-    int n = 0;
-    if (n == 0)
-        n = seaf_db_statement_foreach_row (
-            cf_ext_database (),
-            "SELECT r.uid FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-            "WHERE r.repo_id=? AND r.path LIKE ? ESCAPE '\\\\' AND r.state='active' "
-            "AND g.repo_id=r.repo_id AND g.guard_id IS NOT NULL LIMIT 1",
-            barrier_row, NULL, 2, "string", repo_id, "string", pattern);
-
+    if (!pattern)
+        return -1;
+    int n = seaf_db_statement_foreach_row (
+        cf_ext_database (),
+        "SELECT path FROM cf_edit_guard WHERE repo_id=? "
+        "AND path LIKE ? ESCAPE '\\\\' AND guard_id IS NOT NULL "
+        "AND lease_expires_at>UTC_TIMESTAMP(6) LIMIT 1",
+        barrier_row, NULL, 2, "string", repo_id, "string", pattern);
     g_free (pattern);
     return n;
 }
@@ -112,10 +111,15 @@ check_path (const char *repo_id, const char *path, const char *user,
     int n;
     if (!cf_ext_database ())
         goto unavailable;
+    /* A legacy Guard schema cannot silently behave as an empty lock set.
+     * Test the required native index at the entry; the locked queries below
+     * also require current path and expiry columns. */
     int ready = seaf_db_statement_foreach_row (
         cf_ext_database (),
-        "SELECT version FROM cf_schema_migration WHERE version='029_editing_core' "
-        "AND state='applied' AND step=2", barrier_row, NULL, 0);
+        "SELECT index_name FROM information_schema.statistics "
+        "WHERE table_schema=DATABASE() AND table_name='cf_edit_guard' "
+        "AND index_name='cf_edit_guard_active' LIMIT 1",
+        barrier_row, NULL, 0);
     if (ready != 1)
         goto unavailable;
     n = load_exact (repo_id, path, user);
