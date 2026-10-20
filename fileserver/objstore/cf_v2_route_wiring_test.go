@@ -58,15 +58,28 @@ func TestV2ObjectStoreSelectsManagedRoute(t *testing.T) {
 
 func TestV2RootRejectsMixedLegacyStorageBackends(t *testing.T) {
 	root := t.TempDir()
-	for _, backendName := range []string{"s3", "multiple"} {
-		confDir := t.TempDir()
-		value := "[cloudfile_v2]\nauto_local_root=" + root +
-			"\n[block_backend]\nname=" + backendName + "\n"
-		if err := os.WriteFile(filepath.Join(confDir, "seafile.conf"), []byte(value), 0600); err != nil {
-			t.Fatal(err)
+	configurations := []string{"[storage]\nenable_storage_classes=true\n"}
+	for _, section := range []string{"commit_object_backend", "fs_object_backend", "block_backend"} {
+		for _, backendName := range []string{"s3", "multiple", "multi", "unknown"} {
+			configurations = append(configurations, "["+section+"]\nname="+backendName+"\n")
 		}
-		if _, err := newBackend(confDir, t.TempDir(), "blocks"); err == nil {
-			t.Fatalf("mixed %s backend must fail rather than silently diverge", backendName)
+	}
+	for _, configuration := range configurations {
+		for _, kind := range []string{"commits", "fs", "blocks"} {
+			t.Run(kind+"/"+configuration, func(t *testing.T) {
+				confDir, dataDir := t.TempDir(), t.TempDir()
+				value := "[cloudfile_v2]\nauto_local_root=" + root + "\n" + configuration
+				if err := os.WriteFile(filepath.Join(confDir, "seafile.conf"), []byte(value), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := newBackend(confDir, dataDir, kind); err == nil {
+					t.Fatal("mixed backend must fail before creating any native backend")
+				}
+				entries, err := os.ReadDir(dataDir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("invalid configuration performed filesystem I/O: %v, %v", entries, err)
+				}
+			})
 		}
 	}
 }

@@ -215,3 +215,21 @@ observes actual SQL waits for both unbind/publication orderings, including no-op
 Barrier completion uses an explicitly test-only reconciliation proof;
 context/ACL/lifecycle/lock reconciliation is not claimed. Run without
 Python `-O`; disabling assertions is rejected before creating any test schemas.
+
+## Local Filesystem Publication
+
+```bash
+bash tests/local_storage/run.sh
+cd fileserver && go test ./objstore/... -count=1 -v
+```
+
+The C suite executes the native block/metadata backends for native and managed
+paths, checking 0777 shard creation under umask 0022, hidden staging, cleanup and
+unchanged object enumeration. It also executes the production V2 configuration
+guard (before backend construction in server, GC and repair) for storage-class
+and mixed-backend conflicts. These guard tests do not start full server/GC
+processes or access a database. On Linux, the copy test uses distinct filesystems
+(`/tmp` and `/dev/shm`), verifies the destination stays unpublished during copy,
+and injects copy/fsync errors to require staging cleanup. Non-Linux runs report
+that cross-filesystem part as SKIP. SQL routing and lifecycle are not covered by
+this suite. S3 tests still require the explicit endpoint described earlier.

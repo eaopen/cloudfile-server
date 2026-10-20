@@ -514,7 +514,7 @@ open_tmp_file (BlockBackend *bend,
     if (!get_block_path (bend, basename, final_path, store_id, version))
         return -1;
     dir = g_path_get_dirname (final_path);
-    if (g_mkdir_with_parents (dir, 0700) < 0) {
+    if (g_mkdir_with_parents (dir, 0777) < 0) {
         g_free (dir);
         return -1;
     }

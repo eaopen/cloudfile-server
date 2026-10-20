@@ -8,6 +8,7 @@
 
 #include "seafile-session.h"
 #include "seaf-utils.h"
+#include "cf-v2-storage.h"
 
 #include "log.h"
 
@@ -58,6 +59,11 @@ seafile_session_new(const char *central_config_dir,
     if (!g_key_file_load_from_file (config, config_file_path, 
                                     G_KEY_FILE_NONE, &error)) {
         seaf_warning ("Failed to load config file.\n");
+        g_key_file_free (config);
+        goto onerror;
+    }
+
+    if (cf_v2_storage_validate_config (config) < 0) {
         g_key_file_free (config);
         goto onerror;
     }

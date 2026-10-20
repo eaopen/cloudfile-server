@@ -19,6 +19,33 @@ cf_v2_storage_enabled (void)
         g_key_file_has_key (seaf->config, "cloudfile_v2", "auto_local_root", NULL);
 }
 
+/* Check before constructing any backend, including offline GC sessions. */
+int
+cf_v2_storage_validate_config (GKeyFile *config)
+{
+    const char *sections[] = {
+        "commit_object_backend", "fs_object_backend", "block_backend"
+    };
+    guint i;
+    if (!g_key_file_has_key (config, "cloudfile_v2", "auto_local_root", NULL))
+        return 0;
+    if (g_key_file_get_boolean (config, "storage", "enable_storage_classes", NULL)) {
+        seaf_warning ("V2 auto_local_root cannot coexist with [storage] enable_storage_classes.\n");
+        return -1;
+    }
+    for (i = 0; i < G_N_ELEMENTS (sections); ++i) {
+        char *name = g_key_file_get_string (config, sections[i], "name", NULL);
+        gboolean invalid = name && *name && strcmp (name, "filesystem") != 0;
+        if (invalid)
+            seaf_warning ("V2 auto_local_root requires filesystem backend: [%s] name=%s.\n",
+                          sections[i], name);
+        g_free (name);
+        if (invalid)
+            return -1;
+    }
+    return 0;
+}
+
 static gboolean
 real_directory (const char *path)
 {
@@ -201,19 +228,36 @@ int
 cf_v2_storage_copy (const char *src, const char *dst)
 {
     int ret = link (src, dst), input = -1, output = -1;
-    char *temporary;
+    char *temporary, *directory, *name;
     if (ret == 0 || errno == EEXIST)
         return 0;
     if (errno != EXDEV)
         return -1;
-    temporary = g_strconcat (dst, ".XXXXXX", NULL);
+    directory = g_path_get_dirname (dst);
+    name = g_path_get_basename (dst);
+    temporary = g_strdup_printf ("%s/.cf-tmp-%s-XXXXXX", directory, name);
+    g_free (directory);
+    g_free (name);
     input = g_open (src, O_RDONLY, 0);
     if (input < 0)
         goto out;
     output = g_mkstemp (temporary);
     if (output < 0)
         goto out;
-    ret = copy_fd (input, output);
+    /* copy_fd() closes its input (and sometimes its output) internally.
+     * Keep descriptor ownership here so error cleanup cannot close a reused FD. */
+    for (;;) {
+        char buffer[8192];
+        ssize_t len = readn (input, buffer, sizeof(buffer));
+        if (len < 0 || (len > 0 && writen (output, buffer, len) != len)) {
+            ret = -1;
+            break;
+        }
+        if (len == 0) {
+            ret = fsync (output);
+            break;
+        }
+    }
     if (close (output) < 0)
         ret = -1;
     output = -1;

@@ -4,6 +4,7 @@
 #ifndef CF_LOCAL_STORAGE_TEST_EVUTIL_H
 #define CF_LOCAL_STORAGE_TEST_EVUTIL_H
 
+#include <arpa/inet.h>
 typedef int evutil_socket_t;
 
 #endif

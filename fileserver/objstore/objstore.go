@@ -69,6 +69,18 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 		return nil, err
 	}
 
+	if config.Section("cloudfile_v2").HasKey("auto_local_root") {
+		if config.Section("storage").Key("enable_storage_classes").MustBool(false) {
+			return nil, fmt.Errorf("V2 auto_local_root cannot coexist with [storage] enable_storage_classes")
+		}
+		for _, name := range []string{"commit_object_backend", "fs_object_backend", "block_backend"} {
+			backendName := config.Section(name).Key("name").String()
+			if backendName != "" && backendName != "filesystem" {
+				return nil, fmt.Errorf("V2 auto_local_root requires filesystem backend: [%s] name=%s", name, backendName)
+			}
+		}
+	}
+
 	sectionName := map[string]string{
 		"commits": "commit_object_backend",
 		"fs":      "fs_object_backend",
@@ -80,11 +92,6 @@ func newBackend(seafileConfPath, seafileDataDir, objType string) (storageBackend
 	section, err := config.GetSection(sectionName)
 	if err != nil || section.Key("name").String() == "" || section.Key("name").String() == "filesystem" {
 		return newRoutedFSBackend(configPath, seafileDataDir, objType)
-	}
-	// Legacy multi/S3 storage cannot coexist with the V2 filesystem root:
-	// a mixed C/Go backend would otherwise publish objects in different places.
-	if config.Section("cloudfile_v2").HasKey("auto_local_root") {
-		return nil, fmt.Errorf("V2 auto_local_root requires filesystem object backend")
 	}
 	if section.Key("name").String() != "s3" {
 		if section.Key("name").String() == "multiple" {
