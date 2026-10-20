@@ -37,26 +37,6 @@ cf_ext_config_bool (const char *key)
     return seaf_cfg_manager_get_config_boolean (seaf->cfg_mgr, "cloudfile", key);
 }
 
-gboolean
-cf_ext_config_bool_default (const char *key, gboolean fallback)
-{
-    GKeyFile *config;
-
-    if (!seaf || !seaf->config)
-        return fallback;
-    config = seaf->config;
-    if (!g_key_file_has_key (config, "cloudfile", key, NULL))
-        return fallback;
-
-    GError *error = NULL;
-    gboolean value = g_key_file_get_boolean (config, "cloudfile", key, &error);
-    if (error) {
-        g_error_free (error);
-        return fallback;
-    }
-    return value;
-}
-
 char *
 cf_ext_config_string (const char *key)
 {
