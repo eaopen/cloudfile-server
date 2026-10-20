@@ -55,6 +55,7 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/cf-auto-storage.h \
 	../common/cf-acl.h \
 	../common/cf-acl-resolve.h \
+	../common/cf-v2-share.h \
 	../common/cf-s3-client.h \
 	../common/storage-backend-multi.h \
 	index-blocks-mgr.h \
@@ -109,6 +110,7 @@ seaf_server_SOURCES = \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
 	../common/cf-v2-acl.c \
+	../common/cf-v2-share.c \
 	../common/cf-v2-storage.c \
 	../common/cf-ext.c \
 	../common/cf-dir-page.c \

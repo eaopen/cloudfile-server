@@ -28,6 +28,7 @@ def function(relative, name):
     raise ValueError(name)
 
 names = [('common/cf-acl.c', 'cf_acl_apply'), ('common/cf-ext.c', 'cf_ext_check_permission'),
+         ('common/cf-ext.c', 'cf_ext_share_grant'),
          ('common/rpc-service.c', 'seafile_check_permission'),
          ('common/rpc-service.c', 'seafile_check_permission_by_path'),
          ('common/rpc-service.c', 'seafile_cf_check_permissions_many')]

@@ -106,6 +106,49 @@ void cf_ext_register (const char *name,
                       CfDirentFilterFunc dirent_filter,
                       CfRestrictedFunc restricted);
 
+/* ------------------------------------------- independent qualification */
+
+/*
+ * A permission that exists *without* a native library grant.
+ *
+ * The chain above cannot express one, and must not be bent into doing so: it
+ * starts from @native_perm, every provider may only reduce it, and a NULL
+ * native permission ends it. A directory share is the opposite case -- it is
+ * the normal state of an account that is deliberately not a library member --
+ * so a share root would have to start the chain from nothing and *widen*,
+ * which no provider in that chain is audited for.
+ *
+ * Hence this second, explicitly named seam. It is consulted only after
+ * seafile_check_permission() returned nothing for @user, and it answers with
+ * a permission of its own for that exact path. It may never return "admin" and
+ * may never reach a path the capability did not qualify; NULL means "no
+ * independent qualification", and callers keep failing closed.
+ *
+ * Not registered (a stock CE deployment, or every switch off) means the native
+ * denial stands, exactly as before this seam existed.
+ */
+typedef char * (*CfShareGrantFunc) (const char *repo_id,
+                                    const char *path,
+                                    const char *user,
+                                    gboolean *unavailable);
+
+/* Register an independent-qualification capability. */
+void cf_ext_register_share_grant (const char *name, CfShareGrantFunc grant);
+
+/*
+ * The first qualification any capability will vouch for, or NULL.
+ *
+ * @unavailable is optional and behaves as in cf_ext_check_permission: TRUE only
+ * when the capability that could have qualified the path could not read its own
+ * authoritative data, so the caller must answer "unavailable" rather than
+ * "denied". A capability that reports unavailable stops the search; a later
+ * one could not restore an answer the earlier one failed to compute.
+ */
+char *cf_ext_share_grant (const char *repo_id,
+                          const char *path,
+                          const char *user,
+                          gboolean *unavailable);
+
 /* ------------------------------------------------------------------ dispatch */
 
 /*

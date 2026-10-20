@@ -137,16 +137,29 @@ static size_t response_body(char *data, size_t size, size_t n, void *opaque)
     return length;
 }
 
-static int authorize(struct _SeafileSession *session, json_t *request)
+/*
+ * Transport only: one POST to the Hub's internal V2 check endpoint.
+ *
+ * Split out of authorize() so the directory-share qualification (cf-v2-share.c)
+ * reuses this channel instead of growing a second curl block with its own JWT
+ * lifetime rules -- two copies of an internal-auth handshake are one copy too
+ * many, and the one that drifts is always the less exercised one.
+ *
+ * Returns the HTTP status, or -1 when the channel itself is unusable: no key or
+ * url, JWT failure, transport error, oversized or truncated reply. @body is
+ * reset, and holds the reply on 200.
+ */
+long
+cf_v2_acl_check_json(struct _SeafileSession *session, const char *payload, GString *body)
 {
-    int result=-1;
+    long status=-1;
     jwt_t *jwt=NULL;
     CURL *curl=NULL;
     struct curl_slist *headers=NULL;
-    char *token=NULL, *auth=NULL, *url=NULL, *payload=NULL;
-    GString *body=g_string_new(NULL);
-    json_t *reply=NULL;
-    if (!session->seahub_pk || !*session->seahub_pk || !session->seahub_url) goto done;
+    char *token=NULL, *auth=NULL, *url=NULL;
+    if (!session || !payload || !body) return -1;
+    g_string_truncate(body,0);
+    if (!session->seahub_pk || !*session->seahub_pk || !session->seahub_url) return -1;
     if (jwt_new(&jwt) || jwt_add_grant_bool(jwt,"is_internal",TRUE) ||
         jwt_add_grant_int(jwt,"exp",time(NULL)+60) ||
         jwt_set_alg(jwt,JWT_ALG_HS256,(unsigned char *)session->seahub_pk,strlen(session->seahub_pk))) goto done;
@@ -158,8 +171,6 @@ static int authorize(struct _SeafileSession *session, json_t *request)
     auth=g_strdup_printf("Authorization: Token %s",token);
     headers=curl_slist_append(headers,auth);
     headers=curl_slist_append(headers,"Content-Type: application/json");
-    payload=json_dumps(request,JSON_COMPACT);
-    if (!payload) goto done;
     curl_easy_setopt(curl,CURLOPT_URL,url);
     curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(curl,CURLOPT_POSTFIELDS,payload);
@@ -169,17 +180,30 @@ static int authorize(struct _SeafileSession *session, json_t *request)
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,response_body);
     curl_easy_setopt(curl,CURLOPT_WRITEDATA,body);
     if (curl_easy_perform(curl)!=CURLE_OK) goto done;
-    long status=0;
-    if (curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status)!=CURLE_OK || status!=200) goto done;
-    reply=json_loadb(body->str,body->len,JSON_REJECT_DUPLICATES,NULL);
-    if (json_is_true(json_object_get(reply,"allowed")) &&
-        !g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1")) result=0;
+    if (curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status)!=CURLE_OK) status=-1;
 done:
     if (curl) curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
     if (jwt) jwt_free(jwt);
+    g_free(token);g_free(auth);g_free(url);
+    return status;
+}
+
+static int authorize(struct _SeafileSession *session, json_t *request)
+{
+    int result=-1;
+    char *payload=NULL;
+    GString *body=g_string_new(NULL);
+    json_t *reply=NULL;
+    payload=json_dumps(request,JSON_COMPACT);
+    if (!payload) goto done;
+    if (cf_v2_acl_check_json(session,payload,body)!=200) goto done;
+    reply=json_loadb(body->str,body->len,JSON_REJECT_DUPLICATES,NULL);
+    if (json_is_true(json_object_get(reply,"allowed")) &&
+        !g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1")) result=0;
+done:
     json_decref(reply);
-    g_free(token);g_free(auth);g_free(url);g_free(payload);g_string_free(body,TRUE);
+    g_free(payload);g_string_free(body,TRUE);
     return result;
 }
 

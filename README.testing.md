@@ -14,6 +14,8 @@
 ```bash
 ./tests/cf-acl/run.sh
 ./tests/cf-fileop/run.sh
+./tests/cf-permission-many/run.sh
+./tests/cf-dir-share/run.sh
 # 目录分页另需 valac / libjansson 开发包
 ./tests/cf-dir-page/run.sh
 
@@ -33,6 +35,8 @@ go test -count=1 -run 'Cf[A-Z]' .
 | `tests/cf-acl/run.sh` | ACL 解析、继承、优先级、权限不放宽不变量 | 数据库查询、RPC 和进程集成 |
 | `tests/cf-dir-page/run.sh` | 生产 C 扫描、RPC、ACL 过滤及相邻 Hub 端点的共享分页用例 | 存储/数据库与进程间 RPC 使用 fixture，不等于部署 E2E |
 | `tests/cf-fileop/run.sh` | 路径/操作词汇、provider 分发、空 provider 透传、C 写入口字段与参数形状 | 运行时变量值是否传对、完整 seaf-server 编译 |
+| `tests/cf-permission-many/run.sh` | 批量权限传输、标量/入口一致性、`check_permission_by_path` 在"无库权限 + 目录共享"下的回退与失败语义 | Hub 的 V2 裁决本身（用 stub 能力），不是部署 E2E |
+| `tests/cf-dir-share/run.sh` | 目录共享资格的请求形状、路径规范化、r/rw 映射，以及拒绝/故障/缺字段的判别 | 真实 Hub HTTP、JWT 与进程间调用（channel 为 stub） |
 | Go `Cf*` 测试 | C/Go 词汇、JSON 字段、错误码、共享用例 | MySQL 依赖的上游测试 |
 | `tests/cf-s3/run.sh` | C commit/fs/block S3 backend 与错误语义 | 未设置端点时会跳过，不构成 S3 验收 |
 | `ci/run.py` | 上游构建、MySQL、C/Go fileserver 和 pytest | 需要 Linux 与完整依赖链 |
