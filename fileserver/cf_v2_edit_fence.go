@@ -122,8 +122,10 @@ func cfEditGuardQuery(ctx context.Context, tx *sql.Tx) (string, error) {
 		}
 		return true
 	}
-	pathStore := has("repo_id", "path_hash", "path", "guard_id", "lease_expires_at")
-	resourceStore := has("resource_uid", "repo_id", "lifecycle_ref", "guard_id", "generation", "mode", "owner", "owner_native_user", "source", "holder", "credential_epoch", "proof_digest", "base_file_id", "pending_intent", "lease_until", "hard_expire_at")
+	// Require the complete reviewed layout, matching Hub qualification. A
+	// partial or mixed table must not be mistaken for a valid Guard store.
+	pathStore := len(columns) == 15 && has("repo_id", "path_hash", "path", "guard_id", "generation", "owner_uid", "owner_native_user", "terminal_type", "terminal_name", "checkout_ip", "proof_digest", "base_file_id", "lease_expires_at", "created_at", "updated_at")
+	resourceStore := len(columns) == 16 && has("resource_uid", "repo_id", "lifecycle_ref", "guard_id", "generation", "mode", "owner", "owner_native_user", "source", "holder", "credential_epoch", "proof_digest", "base_file_id", "pending_intent", "lease_until", "hard_expire_at")
 	if pathStore && !resourceStore {
 		return "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", nil
 	}

@@ -79,7 +79,7 @@ func (r *uploadGuardRows) Next(dest []driver.Value) error {
 }
 
 var resourceGuardColumns = strings.Fields("resource_uid repo_id lifecycle_ref guard_id generation mode owner owner_native_user source holder credential_epoch proof_digest base_file_id pending_intent lease_until hard_expire_at")
-var pathGuardColumns = strings.Fields("repo_id path_hash path guard_id lease_expires_at")
+var pathGuardColumns = strings.Fields("repo_id path_hash path guard_id generation owner_uid owner_native_user terminal_type terminal_name checkout_ip proof_digest base_file_id lease_expires_at created_at updated_at")
 
 func TestUploadGuardAcceptsInstalledLayoutsWithoutDisablingTheFence(t *testing.T) {
 	old := option.V2GuardAvailable
@@ -122,6 +122,10 @@ func TestUploadGuardRefusesUnknownAmbiguousOrUnavailableState(t *testing.T) {
 	defer func() { option.V2GuardAvailable = old }()
 	for _, f := range []*uploadGuardFixture{
 		{columns: []string{"repo_id", "guard_id"}},
+		// The previously accepted five-column subset is not the installed DDL.
+		{columns: []string{"repo_id", "path_hash", "path", "guard_id", "lease_expires_at"}},
+		{columns: append(append([]string{}, pathGuardColumns...), "resource_uid")},
+		{columns: append(append([]string{}, resourceGuardColumns...), "path")},
 		{columns: append(append([]string{}, resourceGuardColumns...), pathGuardColumns...)},
 		{columns: resourceGuardColumns, failMetadata: true},
 		{columns: resourceGuardColumns, failGuard: true},
