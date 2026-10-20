@@ -2208,6 +2208,12 @@ func fastForwardOrMerge(user, token string, repo *repomgr.Repo, base, newCommit 
 	return nil
 }
 
+// The only commit failure worth retrying is a concurrent HEAD move.
+// Schema drift, ACL/Guard denial and SQL/IO failures cannot be fixed by sleep.
+func cfBranchConflictRetryable(err error) bool {
+	return errors.Is(err, ErrConflict)
+}
+
 func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *commitmgr.Commit, newRoot, user string, handleConncurrentUpdate bool, commitID *string, lastGCID string, checkGC bool) (bool, error) {
 	var secondParentID string
 	repoID := repo.ID
@@ -2270,7 +2276,7 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 	// are deterministic until the deployment is repaired. Never spend ten
 	// upload retries turning a schema fault into "Concurrent upload".
 	if err != nil {
-		if errors.Is(err, ErrConflict) {
+		if cfBranchConflictRetryable(err) {
 			return true, nil
 		}
 		return false, err
