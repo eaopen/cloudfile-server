@@ -15,7 +15,14 @@ int main(int argc,char **argv) {
  g_assert_true(g_file_set_contents(orphan,"partial",-1,NULL));g_assert_true(g_file_set_contents(old,"partial",-1,NULL));
  n=0;g_assert_cmpint(b->foreach_obj(b,repo,1,count,&n),==,0);g_assert_cmpint(n,==,1);
  char *data=NULL;gsize len;g_assert_true(g_file_get_contents(final,&data,&len,NULL));g_assert_cmpmem(data,len,"complete",8);
- /* Store removal must leave an active or crashed writer visible for maintenance. */
- g_assert_cmpint(b->remove_store(b,repo,NULL,NULL),==,-1);g_assert_true(g_file_test(orphan,G_FILE_TEST_EXISTS));
+ /* Unknown shard names and both old/new staging formats stay untouched. */
+ char *root=g_path_get_dirname(parent),*unknown_dir=g_build_filename(root,"zz",NULL);
+ char *unknown=g_build_filename(unknown_dir,"do-not-delete",NULL);
+ g_assert_cmpint(g_mkdir_with_parents(unknown_dir,0700),==,0);
+ g_assert_true(g_file_set_contents(unknown,"foreign",-1,NULL));
+ g_assert_cmpint(b->remove_store(b,repo,NULL,NULL),==,-1);
+ g_assert_true(g_file_test(orphan,G_FILE_TEST_EXISTS));
+ g_assert_true(g_file_test(old,G_FILE_TEST_EXISTS));
+ g_assert_true(g_file_test(unknown,G_FILE_TEST_EXISTS));
  return 0;
 }
