@@ -162,18 +162,31 @@ func loadSeafileDB() {
 	seafileDB.SetMaxIdleConns(8)
 }
 
-// A controlled Guard schema migration requires restarting native services.
-// An unhealthy database is fatal: it must never be interpreted as no Checkout.
+// A capability change requires restarting Hub and native services. Disabled
+// Checkout never queries a Guard table, even when the baseline DDL includes it.
+func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
+	if !option.CloudFileCheckoutEnabled {
+		return false, nil
+	}
+	var count int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard'").Scan(&count); err != nil {
+		return false, fmt.Errorf("Checkout Guard discovery failed")
+	}
+	if count != 1 {
+		return false, fmt.Errorf("enabled Checkout requires an installed Guard table")
+	}
+	return true, nil
+}
+
 func detectV2Guard() {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	var count int
-	err := seafileDB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard'").Scan(&count)
-	if err != nil || count < 0 || count > 1 {
-		log.Fatalf("Failed to determine installed CloudFile Checkout Guard: %v (count=%d)", err, count)
+	available, err := loadV2GuardCapability(ctx, seafileDB)
+	if err != nil {
+		log.Fatal(err)
 	}
-	option.V2GuardAvailable = count == 1
+	option.V2GuardAvailable = available
 }
 
 func writePidFile(pid_file_path string) error {

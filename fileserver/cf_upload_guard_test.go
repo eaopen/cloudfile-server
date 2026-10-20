@@ -18,6 +18,7 @@ type uploadGuardFixture struct {
 	columns                 []string
 	paths                   []driver.Value
 	failMetadata, failGuard bool
+	tableCount              int
 	queries                 []string
 }
 type uploadGuardDriver struct{}
@@ -39,7 +40,12 @@ func (c *uploadGuardConn) Begin() (driver.Tx, error)           { return uploadGu
 func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.fixture.queries = append(c.fixture.queries, query)
 	rows := &uploadGuardRows{}
-	if strings.Contains(query, "information_schema.COLUMNS") {
+	if strings.Contains(query, "information_schema.TABLES") {
+		if c.fixture.failMetadata {
+			return nil, errors.New("database unavailable")
+		}
+		rows.values = append(rows.values, []driver.Value{int64(c.fixture.tableCount)})
+	} else if strings.Contains(query, "information_schema.COLUMNS") {
 		if c.fixture.failMetadata {
 			return nil, errors.New("database unavailable")
 		}
@@ -82,9 +88,9 @@ var resourceGuardColumns = strings.Fields("resource_uid repo_id lifecycle_ref gu
 var pathGuardColumns = strings.Fields("repo_id path_hash path guard_id generation owner_uid owner_native_user terminal_type terminal_name checkout_ip proof_digest base_file_id lease_expires_at created_at updated_at")
 
 func TestUploadGuardAcceptsInstalledLayoutsWithoutDisablingTheFence(t *testing.T) {
-	old := option.V2GuardAvailable
-	option.V2GuardAvailable = true
-	defer func() { option.V2GuardAvailable = old }()
+	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
+	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
+	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
 	cases := []struct {
 		name    string
 		columns []string
@@ -117,9 +123,9 @@ func TestUploadGuardAcceptsInstalledLayoutsWithoutDisablingTheFence(t *testing.T
 }
 
 func TestUploadGuardRefusesUnknownAmbiguousOrUnavailableState(t *testing.T) {
-	old := option.V2GuardAvailable
-	option.V2GuardAvailable = true
-	defer func() { option.V2GuardAvailable = old }()
+	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
+	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
+	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
 	for _, f := range []*uploadGuardFixture{
 		{columns: []string{"repo_id", "guard_id"}},
 		// The previously accepted five-column subset is not the installed DDL.
@@ -141,6 +147,41 @@ func TestUploadGuardRefusesUnknownAmbiguousOrUnavailableState(t *testing.T) {
 			t.Fatalf("unavailable or malformed guard was bypassed: %+v", f)
 		}
 		tx.Rollback()
+		db.Close()
+	}
+}
+
+// Nil DB/transaction proves the disabled path performs no metadata or Guard SQL.
+func TestUploadCheckoutDisabledNeverQueriesGuard(t *testing.T) {
+	old, enabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
+	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, enabled }()
+	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = false, true
+	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
+		t.Fatalf("disabled capability touched the database: %v", err)
+	}
+	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "repo", "old", "new"); err != nil {
+		t.Fatalf("disabled upload queried Guard: %v", err)
+	}
+	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = true, false
+	if !errors.Is(cfV2EditCheckUnscopedBranch(context.Background(), nil, "repo", "old", "new"), errCFEditGuard) {
+		t.Fatal("enabled but unavailable Guard was bypassed")
+	}
+}
+
+func TestUploadEnabledCheckoutRequiresInstalledGuard(t *testing.T) {
+	enabled := option.CloudFileCheckoutEnabled
+	option.CloudFileCheckoutEnabled = true
+	defer func() { option.CloudFileCheckoutEnabled = enabled }()
+	for _, f := range []*uploadGuardFixture{{tableCount: 1}, {tableCount: 0}, {failMetadata: true}} {
+		db := sql.OpenDB(uploadGuardConnector{f})
+		available, err := loadV2GuardCapability(context.Background(), db)
+		if f.tableCount == 1 && !f.failMetadata {
+			if err != nil || !available {
+				t.Fatal("installed Guard not enabled")
+			}
+		} else if err == nil || available {
+			t.Fatal("enabled Checkout accepted unavailable Guard")
+		}
 		db.Close()
 	}
 }
