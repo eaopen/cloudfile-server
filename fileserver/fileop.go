@@ -2265,11 +2265,15 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 	if gcConflict {
 		return false, err
 	}
-	if err == errCFACL {
-		return false, err
-	}
+	// Only an actual Branch HEAD compare-and-swap conflict is retryable.
+	// SQL/Guard/ACL failures (including missing cf_edit_guard columns/indexes)
+	// are deterministic until the deployment is repaired. Never spend ten
+	// upload retries turning a schema fault into "Concurrent upload".
 	if err != nil {
-		return true, nil
+		if errors.Is(err, ErrConflict) {
+			return true, nil
+		}
+		return false, err
 	}
 
 	if commitID != nil {
@@ -2341,8 +2345,8 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	}
 	if oldCommitID != commitID {
 		trans.Rollback()
-		err := fmt.Errorf("head commit id has changed")
-		return false, err
+		// The only retryable updateBranch result: another writer moved HEAD.
+		return false, ErrConflict
 	}
 
 	// Final and transactional: an upload preflight cannot protect against a
