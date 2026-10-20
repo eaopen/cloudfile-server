@@ -173,6 +173,15 @@ func detectV2Guard() {
 	if err != nil || count < 0 || count > 1 {
 		log.Fatalf("Failed to determine installed CloudFile Checkout Guard: %v (count=%d)", err, count)
 	}
+	if count == 1 {
+		// The old 029_editing_core table has the same name but different keys,
+		// path, lease and indexes. Table existence is not a schema contract.
+		// Fail startup with an actionable error instead of allowing every
+		// ordinary upload to retry a deterministic SQL 1176 ten times.
+		if err := cfV2GuardRequireCurrent(ctx, seafileDB); err != nil {
+			log.Fatalf("CF_EDIT_SCHEMA_MISMATCH: cf_edit_guard is not the current V2 Guard layout; preserve the old table and run the offline schema plan before restarting the fileserver: %v", err)
+		}
+	}
 	option.V2GuardAvailable = count == 1
 }
 
