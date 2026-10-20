@@ -7,7 +7,7 @@ static gboolean count(const char *r,int v,const char *id,void *p) {g_assert_cmps
 int main(int argc,char **argv) {
  g_assert_cmpint(argc,==,2);ObjBackend *b=obj_backend_fs_new(argv[1],"fs");g_assert_nonnull(b);
  g_assert_cmpint(b->write(b,repo,1,oid,"complete",8,TRUE),==,0);
- char final[SEAF_PATH_MAX];id_to_path(b->priv,oid,final,repo,1);
+ char final[SEAF_PATH_MAX];g_assert_cmpint(id_to_path(b->priv,oid,final,repo,1),==,0);
  fail_write=1;g_assert_cmpint(b->write(b,repo,1,oid,"partial",7,TRUE),==,-1);fail_write=0;
  char *parent=g_path_get_dirname(final);GDir *dir=g_dir_open(parent,0,NULL);const char *name;int n=0;
  while ((name=g_dir_read_name(dir))) {g_assert_false(g_str_has_prefix(name,".cf-tmp-"));n++;}g_dir_close(dir);g_assert_cmpint(n,==,1);
