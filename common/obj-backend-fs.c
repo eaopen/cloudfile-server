@@ -161,6 +161,7 @@ rename_and_sync (const char *tmp_path, const char *obj_path)
     int dir_fd = open (parent_dir, O_RDONLY);
     if (dir_fd < 0) {
         seaf_warning ("Failed to open dir %s: %s.\n", parent_dir, strerror(errno));
+        ret = -1;
         goto out;
     }
 
@@ -217,45 +218,45 @@ out:
 static int
 save_obj_contents (const char *path, const void *data, int len, gboolean need_sync)
 {
-    char tmp_path[SEAF_PATH_MAX];
-    int fd;
+    char *parent = g_path_get_dirname (path);
+    char *name = g_path_get_basename (path);
+    char *tmp_path = g_strdup_printf ("%s/.cf-tmp-%s-XXXXXX", parent, name);
+    int fd = -1, ret = -1, close_ret, saved_errno;
+    g_free (parent);
+    g_free (name);
 
-    snprintf (tmp_path, SEAF_PATH_MAX, "%s.XXXXXX", path);
+    /* Keep the existing same-directory metadata publication and need_sync
+     * behavior, but use the reserved prefix and clean every failure path. */
     fd = g_mkstemp (tmp_path);
-    if (fd < 0) {
-        seaf_warning ("[obj backend] Failed to open tmp file %s: %s.\n",
-                      tmp_path, strerror(errno));
-        return -1;
-    }
-
-    if (writen (fd, data, len) < 0) {
-        seaf_warning ("[obj backend] Failed to write obj %s: %s.\n",
-                      tmp_path, strerror(errno));
-        return -1;
-    }
-
+    if (fd < 0)
+        goto out;
+    if (writen (fd, data, len) < 0)
+        goto out;
     if (need_sync && fsync_obj_contents (fd) < 0)
-        return -1;
-
-    /* Close may return error, especially in NFS. */
-    if (close (fd) < 0) {
-        seaf_warning ("[obj backend Failed close obj %s: %s.\n",
-                      tmp_path, strerror(errno));
-        return -1;
-    }
-
+        goto out;
+    close_ret = close (fd);
+    fd = -1;
+    if (close_ret < 0)
+        goto out;
     if (need_sync) {
         if (rename_and_sync (tmp_path, path) < 0)
-            return -1;
-    } else {
-        if (g_rename (tmp_path, path) < 0) {
-            seaf_warning ("[obj backend] Failed to rename %s: %s.\n",
-                          path, strerror(errno));
-            return -1;
-        }
+            goto out;
+    } else if (g_rename (tmp_path, path) < 0) {
+        goto out;
     }
-
-    return 0;
+    ret = 0;
+out:
+    saved_errno = errno;
+    if (fd >= 0)
+        close (fd);
+    if (ret < 0) {
+        seaf_warning ("[obj backend] Failed to publish object: %s.\n",
+                      strerror (saved_errno));
+        g_unlink (tmp_path);
+    }
+    g_free (tmp_path);
+    errno = saved_errno;
+    return ret;
 }
 
 static int
@@ -385,6 +386,10 @@ obj_backend_fs_foreach_obj (ObjBackend *bend,
     pos = path + dir_len;
 
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
+        /* Only real object shards belong in the published object namespace. */
+        if (strlen (dname1) != 2 || !g_ascii_isxdigit (dname1[0]) ||
+            !g_ascii_isxdigit (dname1[1]))
+            continue;
         snprintf (pos, sizeof(path) - dir_len, "/%s", dname1);
 
         dir2 = g_dir_open (path, 0, NULL);
@@ -394,7 +399,12 @@ obj_backend_fs_foreach_obj (ObjBackend *bend,
         }
 
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
+            /* Exclude current and historical staging names from GC/fsck. */
+            if (strlen (dname2) != 38)
+                continue;
             snprintf (obj_id, sizeof(obj_id), "%s%s", dname1, dname2);
+            if (!is_object_id_valid (obj_id))
+                continue;
             if (!process (repo_id, version, obj_id, user_data)) {
                 g_dir_close (dir2);
                 goto out;
@@ -464,46 +474,94 @@ obj_backend_fs_remove_store (ObjBackend *bend,
     const char *dname1, *dname2;
     char *path1, *path2;
     guint64 removed_count = 0;
+    GError *error = NULL;
+    int ret = 0;
 
     obj_dir = g_build_filename (priv->obj_dir, store_id, NULL);
+    if (!obj_dir)
+        return -1;
 
-    dir1 = g_dir_open (obj_dir, 0, NULL);
+    dir1 = g_dir_open (obj_dir, 0, &error);
     if (!dir1) {
         g_free (obj_dir);
-        return 0;
+        if (error->code == G_FILE_ERROR_NOENT) {
+            g_clear_error (&error);
+            return 0;
+        }
+        seaf_warning ("Failed to open obj dir: %s.\n", error->message);
+        g_clear_error (&error);
+        return -1;
     }
 
+    GList *dir_list = NULL;
+    GList *ptr1;
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
-        path1 = g_build_filename (obj_dir, dname1, NULL);
+        /* Unknown shard directories remain untouched and make removal fail. */
+        if (strlen (dname1) != 2 || !g_ascii_isxdigit (dname1[0]) ||
+            !g_ascii_isxdigit (dname1[1]))
+            continue;
+        dir_list = g_list_prepend(dir_list, g_strdup(dname1));
+    }
+    g_dir_close (dir1);
+
+    for (ptr1 = dir_list; ptr1; ptr1 = ptr1->next) {
+        path1 = g_build_filename (obj_dir, (char *)(ptr1->data), NULL);
 
         dir2 = g_dir_open (path1, 0, NULL);
         if (!dir2) {
             seaf_warning ("Failed to open obj dir %s.\n", path1);
-            g_dir_close (dir1);
             g_free (path1);
-            g_free (obj_dir);
-            return -1;
+            ret = -1;
+            continue;
         }
 
+        GList *file_list = NULL;
+        GList  *ptr2;
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
-            path2 = g_build_filename (path1, dname2, NULL);
-            g_unlink (path2);
+            /* Remove published blocks/objects only. Preserve active staging,
+             * historical partial names and unknown files for maintenance;
+             * the nonempty directory then causes a visible removal failure. */
+            if (strlen (dname2) != 38)
+                continue;
+            char published_id[41];
+            g_snprintf (published_id, sizeof(published_id), "%s%s",
+                        (const char *)(ptr1->data), dname2);
+            if (!is_object_id_valid (published_id))
+                continue;
+            file_list = g_list_prepend (file_list, g_strdup (dname2));
+        }
+        g_dir_close (dir2);
+
+        for (ptr2 = file_list; ptr2; ptr2 = ptr2->next) {
+            path2 = g_build_filename (path1, (char *)(ptr2->data), NULL);
+            if (g_unlink (path2) < 0) {
+                seaf_warning ("Failed to delete file %s.\n", path2);
+                ret = -1;
+            }
             ++removed_count;
             if (progress_cb)
                 progress_cb (store_id, removed_count, user_data);
             g_free (path2);
         }
-        g_dir_close (dir2);
 
-        g_rmdir (path1);
+        if (g_rmdir (path1) < 0) {
+            seaf_warning ("Failed to delete dir %s.\n", path1);
+            ret = -1;
+        }
         g_free (path1);
+
+        string_list_free (file_list);
     }
 
-    g_dir_close (dir1);
-    g_rmdir (obj_dir);
+    if (g_rmdir (obj_dir) < 0) {
+        seaf_warning ("Failed to delete dir %s.\n", obj_dir);
+        ret = -1;
+    }
     g_free (obj_dir);
 
-    return 0;
+    string_list_free (dir_list);
+
+    return ret;
 }
 
 ObjBackend *

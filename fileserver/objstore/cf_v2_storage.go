@@ -123,7 +123,7 @@ func (b *v2StorageBackend) resolve(repoID string) (*fsBackend, error) {
 	// Native code retains its own fs/block identifiers, including virtual repo
 	// origin IDs. Only the physical root changes. No per-request pool or cache.
 	return &fsBackend{objDir: filepath.Join(keyDir, "storage", b.native.objType),
-		objType: b.native.objType, tmpDir: filepath.Join(keyDir, "tmpfiles")}, nil
+		objType: b.native.objType}, nil
 }
 
 func (b *v2StorageBackend) read(repoID, objID string, w io.Writer) error {
@@ -139,11 +139,8 @@ func (b *v2StorageBackend) write(repoID, objID string, r io.Reader, sync bool) e
 	if err != nil {
 		return err
 	}
-	if child != b.native {
-		if err = os.MkdirAll(child.tmpDir, 0700); err != nil {
-			return err
-		}
-	}
+	// The object backend owns same-directory staging for both native and
+	// routed libraries; never create a separate per-library tmpfiles tree.
 	return child.write(repoID, objID, r, sync)
 }
 

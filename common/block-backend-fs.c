@@ -31,8 +31,6 @@ struct _BHandle {
 typedef struct {
     char          *block_dir;
     int            block_dir_len;
-    char          *tmp_dir;
-    int            tmp_dir_len;
 } FsPriv;
 
 static char *
@@ -46,6 +44,7 @@ static int
 open_tmp_file (BlockBackend *bend,
                const char *basename,
                const char *store_id,
+               int version,
                char **path);
 
 static BHandle *
@@ -74,7 +73,7 @@ block_backend_fs_open_block (BlockBackend *bend,
             return NULL;
         }
     } else {
-        fd = open_tmp_file (bend, block_id, store_id, &tmp_file);
+        fd = open_tmp_file (bend, block_id, store_id, version, &tmp_file);
         if (fd < 0) {
             ccnet_warning ("[block bend] failed to open block %s for write: %s\n",
                            block_id, strerror(errno));
@@ -302,6 +301,10 @@ block_backend_fs_foreach_block (BlockBackend *bend,
     pos = path + dir_len;
 
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
+        /* Reserved staging files/directories are not hexadecimal shards. */
+        if (strlen (dname1) != 2 || !g_ascii_isxdigit (dname1[0]) ||
+            !g_ascii_isxdigit (dname1[1]))
+            continue;
         snprintf (pos, sizeof(path) - dir_len, "/%s", dname1);
 
         dir2 = g_dir_open (path, 0, NULL);
@@ -311,7 +314,13 @@ block_backend_fs_foreach_block (BlockBackend *bend,
         }
 
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
+            /* Never enumerate partial writes (including older suffix-based
+             * temp names) as blocks while a writer or cold GC is active. */
+            if (strlen (dname2) != 38)
+                continue;
             snprintf (block_id, sizeof(block_id), "%s%s", dname1, dname2);
+            if (!is_object_id_valid (block_id))
+                continue;
             if (!process (store_id, version, block_id, user_data)) {
                 g_dir_close (dir2);
                 goto out;
@@ -404,6 +413,10 @@ block_backend_fs_remove_store (BlockBackend *bend,
     GList *dir_list = NULL;
     GList *ptr1;
     while ((dname1 = g_dir_read_name(dir1)) != NULL) {
+        /* Unknown shard directories remain untouched and make removal fail. */
+        if (strlen (dname1) != 2 || !g_ascii_isxdigit (dname1[0]) ||
+            !g_ascii_isxdigit (dname1[1]))
+            continue;
         dir_list = g_list_prepend(dir_list, g_strdup(dname1));
     }
     g_dir_close (dir1);
@@ -422,7 +435,17 @@ block_backend_fs_remove_store (BlockBackend *bend,
         GList *file_list = NULL;
         GList  *ptr2;
         while ((dname2 = g_dir_read_name(dir2)) != NULL) {
-            file_list = g_list_prepend(file_list, g_strdup(dname2));
+            /* Remove published blocks/objects only. Preserve active staging,
+             * historical partial names and unknown files for maintenance;
+             * the nonempty directory then causes a visible removal failure. */
+            if (strlen (dname2) != 38)
+                continue;
+            char published_id[41];
+            g_snprintf (published_id, sizeof(published_id), "%s%s",
+                        (const char *)(ptr1->data), dname2);
+            if (!is_object_id_valid (published_id))
+                continue;
+            file_list = g_list_prepend (file_list, g_strdup (dname2));
         }
         g_dir_close (dir2);
 
@@ -479,20 +502,23 @@ static int
 open_tmp_file (BlockBackend *bend,
                const char *basename,
                const char *store_id,
+               int version,
                char **path)
 {
-    FsPriv *priv = bend->be_priv;
+    char final_path[SEAF_PATH_MAX];
+    char *dir;
     int fd;
 
-    char *dir = NULL;
-    if (cf_v2_storage_enabled ()) {
-        dir = cf_v2_store_dir (priv->block_dir, store_id);
-        if (!dir || g_mkdir_with_parents (dir, 0700) < 0) {
-            g_free (dir);
-            return -1;
-        }
+    /* Resolve the actual final shard first. A library root or shared tmpfiles
+     * directory may be a different bind mount even on the same filesystem. */
+    if (!get_block_path (bend, basename, final_path, store_id, version))
+        return -1;
+    dir = g_path_get_dirname (final_path);
+    if (g_mkdir_with_parents (dir, 0700) < 0) {
+        g_free (dir);
+        return -1;
     }
-    *path = g_strdup_printf ("%s/%s.XXXXXX", dir ? dir : priv->tmp_dir, basename);
+    *path = g_strdup_printf ("%s/.cf-tmp-%s-XXXXXX", dir, basename);
     g_free (dir);
     fd = g_mkstemp (*path);
     if (fd < 0)
@@ -514,8 +540,9 @@ block_backend_fs_new (const char *seaf_dir, const char *tmp_dir)
     priv->block_dir = g_build_filename (seaf_dir, "storage", "blocks", NULL);
     priv->block_dir_len = strlen (priv->block_dir);
 
-    priv->tmp_dir = g_strdup (tmp_dir);
-    priv->tmp_dir_len = strlen (tmp_dir);
+    /* Keep the native constructor ABI; object writes no longer depend on
+     * this legacy staging directory or any operational symlink beneath it. */
+    (void)tmp_dir;
 
     if (g_mkdir_with_parents (priv->block_dir, 0777) < 0) {
         seaf_warning ("Block dir %s does not exist and"
@@ -523,11 +550,6 @@ block_backend_fs_new (const char *seaf_dir, const char *tmp_dir)
         goto onerror;
     }
 
-    if (g_mkdir_with_parents (tmp_dir, 0777) < 0) {
-        seaf_warning ("Blocks tmp dir %s does not exist and"
-                   " is unable to create\n", tmp_dir);
-        goto onerror;
-    }
 
     bend->open_block = block_backend_fs_open_block;
     bend->read_block = block_backend_fs_read_block;

@@ -2,16 +2,17 @@
 package objstore
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path"
+	"syscall"
 )
 
 type fsBackend struct {
 	// Path of the object directory
 	objDir  string
 	objType string
-	tmpDir  string
 }
 
 func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
@@ -20,15 +21,9 @@ func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmpDir := path.Join(seafileDataDir, "tmpfiles")
-	err = os.MkdirAll(tmpDir, os.ModePerm)
-	if err != nil {
-		return nil, err
-	}
 	backend := new(fsBackend)
 	backend.objDir = objDir
 	backend.objType = objType
-	backend.tmpDir = tmpDir
 	return backend, nil
 }
 
@@ -48,7 +43,7 @@ func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
 	return nil
 }
 
-func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) error {
+func (b *fsBackend) write(repoID string, objID string, r io.Reader, needSync bool) error {
 	parentDir := path.Join(b.objDir, repoID, objID[:2])
 	p := path.Join(parentDir, objID[2:])
 	err := os.MkdirAll(parentDir, os.ModePerm)
@@ -56,16 +51,15 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 		return err
 	}
 
-	tmpDir := b.tmpDir
-	if b.objType != "blocks" {
-		tmpDir = parentDir
-	}
-	tFile, err := os.CreateTemp(tmpDir, objID+".*")
+	// Stage beside the final object: even bind mounts of the same device reject
+	// cross-mount rename. The reserved name is never a published object ID.
+	tFile, err := os.CreateTemp(parentDir, ".cf-tmp-"+objID+"-*")
 	if err != nil {
 		return err
 	}
 	success := false
 	defer func() {
+		tFile.Close()
 		if !success {
 			os.Remove(tFile.Name())
 		}
@@ -77,6 +71,13 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 		return err
 	}
 
+	// Honor the existing durability request before publication, as the native
+	// metadata writer does; callers that do not request it retain their policy.
+	if needSync {
+		if err = tFile.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+			return err
+		}
+	}
 	err = tFile.Close()
 	if err != nil {
 		return err
@@ -88,6 +89,19 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 	}
 
 	success = true
+	if needSync {
+		// A successful rename alone does not durably persist its directory entry.
+		dir, err := os.Open(parentDir)
+		if err != nil {
+			return err
+		}
+		err = dir.Sync()
+		closeErr := dir.Close()
+		if err != nil && !errors.Is(err, syscall.EINVAL) {
+			return err
+		}
+		return closeErr
+	}
 	return nil
 }
 
