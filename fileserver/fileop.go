@@ -2212,6 +2212,15 @@ func fastForwardOrMerge(user, token string, repo *repomgr.Repo, base, newCommit 
 	return nil
 }
 
+// cfBranchConflictRetryable names the only transient commit failure: another
+// writer moved the Branch HEAD. Guard, schema, ACL and SQL failures are
+// deterministic until the deployment is repaired, so retrying them only turns
+// one visible fault into ten hidden ones. Kept as a helper so the contract is
+// testable without a database.
+func cfBranchConflictRetryable(err error) bool {
+	return errors.Is(err, ErrConflict)
+}
+
 func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *commitmgr.Commit, newRoot, user string, handleConncurrentUpdate bool, commitID *string, lastGCID string, checkGC bool) (bool, error) {
 	var secondParentID string
 	repoID := repo.ID
@@ -2271,7 +2280,7 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 	}
 	// Only a changed Branch head is a concurrent-publication retry. Guard,
 	// schema and authority failures are deterministic, not ten hidden retries.
-	if errors.Is(err, ErrConflict) {
+	if cfBranchConflictRetryable(err) {
 		return true, nil
 	}
 	if err != nil {
