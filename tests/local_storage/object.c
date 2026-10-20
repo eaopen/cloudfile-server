@@ -15,6 +15,10 @@ int main(int argc,char **argv) {
  g_assert_true(g_file_set_contents(orphan,"partial",-1,NULL));g_assert_true(g_file_set_contents(old,"partial",-1,NULL));
  n=0;g_assert_cmpint(b->foreach_obj(b,repo,1,count,&n),==,0);g_assert_cmpint(n,==,1);
  char *data=NULL;gsize len;g_assert_true(g_file_get_contents(final,&data,&len,NULL));g_assert_cmpmem(data,len,"complete",8);
+ if (g_getenv("CF_TEST_V2_STORAGE_ROOT")) {
+  char *native=g_build_filename(argv[1],"storage","fs",repo,"ab",oid+2,NULL);
+  g_assert_false(g_file_test(native,G_FILE_TEST_EXISTS));g_free(native);
+ }
  /* Unknown shard names and both old/new staging formats stay untouched. */
  char *root=g_path_get_dirname(parent),*unknown_dir=g_build_filename(root,"zz",NULL);
  char *unknown=g_build_filename(unknown_dir,"do-not-delete",NULL);
