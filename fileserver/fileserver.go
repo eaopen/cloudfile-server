@@ -176,6 +176,15 @@ func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
 	if count != 1 {
 		return false, fmt.Errorf("enabled Checkout requires an installed Guard table")
 	}
+	// Modification: validate the installed column/index contract before serving.
+	// Reason: a present table is not a usable schema. A legacy resource-keyed
+	// table or a missing cf_edit_guard_active index previously failed every
+	// upload with SQL 1176; fail once at startup with an operator instruction
+	// instead, without making disabled Checkout read Guard metadata at all.
+	if err := cfV2GuardRequireCurrent(ctx, db); err != nil {
+		return false, fmt.Errorf("CF_EDIT_SCHEMA_MISMATCH: installed cf_edit_guard is not the reviewed V2 layout (%v); "+
+			"archive the legacy rows and apply the reviewed database/v2 SQL package before enabling Checkout", err)
+	}
 	return true, nil
 }
 
