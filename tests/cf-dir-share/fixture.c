@@ -23,7 +23,8 @@ static gboolean seaf_db_statement_exists(SeafDB *db, const char *sql, gboolean *
     (void)db; (void)n;
     /* The current V2 contract has exactly these three extension tables;
      * a legacy-only installation must never make the new grant active. */
-    if (!strstr(sql, "'cf_library_storage'") || !strstr(sql, "'cf_dir_acl'") ||
+    if (!strstr(sql, "SELECT 1 FROM information_schema.tables") ||
+        !strstr(sql, "'cf_library_storage'") || !strstr(sql, "'cf_dir_acl'") ||
         !strstr(sql, "'cf_sso_group_map'") || strstr(sql, "cf_managed_library") ||
         !strstr(sql, "COUNT(DISTINCT table_name)=3"))
         return FALSE;
