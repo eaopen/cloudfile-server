@@ -22,9 +22,8 @@
  * never returns "admin", and it is consulted only after the native gate denied.
  */
 
-/* Register the capability. No-op unless the deployment has the V2 managed
- * schema, an internal Hub channel, and [cloudfile] dir_share_native_grant is
- * not explicitly off. */
+/* Auto-register for the three-table V2 schema and an internal Hub channel.
+ * No legacy managed-library schema or additional feature switch is required. */
 void cf_v2_share_init (void);
 
 /* "r" or "rw" for a share-qualified path, else NULL. Never "admin". */
