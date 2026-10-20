@@ -180,7 +180,20 @@ void
 cf_lock_init (void)
 {
     char *backend = cf_ext_config_string ("lock_backend");
-    lock_on = cf_ext_config_bool ("file_lock_enabled") &&
+    gboolean installed = FALSE;
+    if (cf_ext_database () && seaf_db_type (cf_ext_database ()) == SEAF_DB_TYPE_MYSQL) {
+        int rows = seaf_db_statement_foreach_row (
+            cf_ext_database (),
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema=DATABASE() AND table_name='cf_edit_guard'",
+            barrier_row, NULL, 0);
+        /* An unreadable schema is not proof the table is absent. Preserve the
+         * write barrier and fail closed in check_path until it is repaired. */
+        installed = rows != 0;
+    }
+    /* Checkout must protect native C writes even when the old optional
+     * file_lock_enabled setting was never configured. */
+    lock_on = (installed || cf_ext_config_bool ("file_lock_enabled")) &&
               (!backend || strcmp (backend, "cloudfile") == 0);
     if (backend && strcmp (backend, "cloudfile") != 0)
         seaf_warning ("CloudFile: unsupported lock backend '%s'.\n", backend);
