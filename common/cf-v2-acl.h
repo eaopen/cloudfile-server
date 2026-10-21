@@ -3,8 +3,9 @@
 #include <glib.h>
 #include "seaf-db.h"
 struct _SeafileSession;
-/* Zero only for an unprotected native repo. Errors and protected scopes deny
- * unscoped C/sync paths. This is ACL, not the CF-EDIT writer reservation. */
+/* Only paths without an authenticated actor/target must prove their complete
+ * repository scope. This is an operation constraint, not a repository class.
+ * Path-qualified actions use V2 Authority instead. */
 /* Guard owns a dedicated SQL connection and both library advisory locks.
  * Protected/virtual scopes or any proof failure return NULL. Callers must run
  * synchronously while the guard lives; cleanup releases connection locks. */

@@ -4,26 +4,6 @@
 #include <jansson.h>
 #include "seaf-db.h"
 
-/* Opt-in monotonic managed-library boundary. Zero means legacy access allowed;
- * managed, missing/drifted schema and storage failures all reject. The caller
- * holds this transaction through its final publication statement. */
-gboolean cf_policy_legacy_guard_enabled (GKeyFile *config);
-/* Temporary native read ticket compatibility; invalid values remain closed. */
-gboolean cf_policy_allow_legacy_managed_reads (GKeyFile *config);
-/* Installed extension state makes the boundary mandatory, even without an
- * opt-in setting. A missing registry cannot reopen an installed deployment. */
-gboolean cf_policy_managed_guard_required (SeafDB *db, GKeyFile *config);
-int cf_policy_check_legacy_library (SeafDBTrans *trans, const char *repo);
-int cf_policy_check_legacy_access (SeafDB *db, GKeyFile *config, const char *repo);
-/* Same decision, additionally reporting whether the refusal came from an
- * unreadable runtime (schema missing/drifted, SQL/transaction failure) rather
- * than the deliberate managed-library boundary. Callers that surface the
- * answer to a user must use this form and answer "unavailable" for the
- * former, never "no permission". @unavailable may be NULL. */
-int cf_policy_check_legacy_access_reason (SeafDB *db, GKeyFile *config,
-                                          const char *repo, gboolean *unavailable);
-int cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo);
-
 /* Same final transaction, authenticated current snapshot and exact RPC target.
  * Returns 0 only for a write granted by the shared C ACL core. Not an entry API. */
 int cf_policy_check_write (SeafDBTrans *trans, const char *repo, const char *path,

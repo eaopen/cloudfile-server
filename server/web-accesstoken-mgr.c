@@ -16,7 +16,7 @@
 #ifdef FULL_FEATURE
 #include <jansson.h>
 #include "cloudfile-acl.h"
-#include "cloudfile-policy.h"
+#include "cf-v2-acl.h"
 #include "branch-mgr.h"
 #endif
 
@@ -148,13 +148,11 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
                                       GError **error)
 {
 #ifdef FULL_FEATURE
-    gboolean read_only = op && (!strcmp(op, "view") || !strcmp(op, "download") ||
-        !strcmp(op, "downloadblks") || !strcmp(op, "download-dir") ||
-        !strcmp(op, "download-multi") || !strcmp(op, "download-link") ||
-        !strcmp(op, "download-dir-link") || !strcmp(op, "download-multi-link"));
-    if (!bound_path && !(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
-        cf_policy_check_legacy_access (seaf->db, seaf->config, repo_id) < 0) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "Legacy library access unavailable");
+    /* Unbound native tickets cannot prove directory-level authority;
+     * the path-bound V2 ticket flow remains available for the same repo. */
+    if (!bound_path && cf_v2_acl_unscoped(seaf, repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Path-qualified authorization required");
         return NULL;
     }
 #endif
@@ -283,12 +281,7 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 
     if (info != NULL && info->conditions == NULL) {
 #ifdef FULL_FEATURE
-        gboolean read_only = !strcmp(info->op, "view") || !strcmp(info->op, "download") ||
-            !strcmp(info->op, "downloadblks") || !strcmp(info->op, "download-dir") ||
-            !strcmp(info->op, "download-multi") || !strcmp(info->op, "download-link") ||
-            !strcmp(info->op, "download-dir-link") || !strcmp(info->op, "download-multi-link");
-        if (!info->path && !(read_only && cf_policy_allow_legacy_managed_reads (seaf->config)) &&
-            cf_policy_check_legacy_access (seaf->db, seaf->config, info->repo_id) < 0) {
+        if (!info->path && cf_v2_acl_unscoped(seaf, info->repo_id) < 0) {
             pthread_mutex_unlock (&mgr->priv->lock);
             return NULL;
         }
