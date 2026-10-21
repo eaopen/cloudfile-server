@@ -4,8 +4,11 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
-read -r -a glib_cflags <<< "$(pkg-config --cflags glib-2.0 gobject-2.0)"
-read -r -a glib_libs <<< "$(pkg-config --libs glib-2.0 gobject-2.0)"
+# lib/utils.h includes <jansson.h> directly. On Linux it sits in /usr/include, so
+# the flags only ever named glib; on macOS the Homebrew prefix is not a default
+# include path and the build failed there. Ask pkg-config for both.
+read -r -a glib_cflags <<< "$(pkg-config --cflags glib-2.0 gobject-2.0 jansson)"
+read -r -a glib_libs <<< "$(pkg-config --libs glib-2.0 gobject-2.0 jansson)"
 for name in block object; do
  # The test-only include directory supplies only the socket typedef needed
  # by lib/utils.h; production continues using the real libevent headers.
