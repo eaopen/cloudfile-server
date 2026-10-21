@@ -13,6 +13,7 @@
 #ifdef FULL_FEATURE
 #include "notif-mgr.h"
 #include "cloudfile-policy.h"
+#include "cf-v2-acl.h"
 #include "cloudfile-acl.h"
 #include "repo-mgr.h"
 #include "fs-mgr.h"
@@ -207,10 +208,10 @@ seaf_branch_manager_add_branch (SeafBranchManager *mgr, SeafBranch *branch)
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
+    if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_policy_check_legacy_library (trans, branch->repo_id);
+        int rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans,
                 "REPLACE INTO Branch(name,repo_id,commit_id) VALUES(?,?,?)",
@@ -284,10 +285,10 @@ seaf_branch_manager_del_branch (SeafBranchManager *mgr,
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
+    if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_policy_check_legacy_library (trans, repo_id);
+        int rc = cf_v2_acl_final (trans, mgr->seaf, repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans, "DELETE FROM Branch WHERE name=? AND repo_id=?",
                 2, "string", name, "string", repo_id);
@@ -327,10 +328,10 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
     return 0;
 #else
 #ifdef FULL_FEATURE
-    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config)) {
+    if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_policy_check_legacy_library (trans, branch->repo_id);
+        int rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans,
                 "UPDATE Branch SET commit_id=? WHERE name=? AND repo_id=?",
@@ -1266,11 +1267,13 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_trans_close (trans);
         return -2;
     }
-    /* Match policy mutation order: authority scopes, managed marker, Branch.
-     * Enrollment rolls back with any denied/failed enhanced publication. */
-    if (cf_policy_managed_guard_required (mgr->seaf->db, mgr->seaf->config) &&
-        (enhanced ? cf_policy_enroll_managed_library (trans, branch->repo_id) :
-         cf_policy_check_legacy_library (trans, branch->repo_id)) < 0) {
+    /* The final Branch transaction requires authenticated path-scoped proof.
+     * Native whole-repository commits have no actor/path scope: do not grant. */
+    int acl_result = enhanced ? cf_v2_acl_final_scoped(trans, mgr->seaf,
+                                branch->repo_id, old_commit_id, branch->commit_id,
+                                native_username) :
+                                cf_v2_acl_final(trans, mgr->seaf, branch->repo_id);
+    if (acl_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -2;
