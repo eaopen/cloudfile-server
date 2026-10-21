@@ -53,5 +53,33 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         self.assertIn('filter_chunk(repo,dir,user,p,count,&visible)', listing)
         self.assertNotIn('cf_acl_apply(', listing)
 
+    def test_upload_blks_is_path_qualified(self):
+        source = (ROOT / 'fileserver/fileop.go').read_text()
+        commit = source.split('func doUploadBlks(', 1)[1].split('func commitFileBlocks(', 1)[0]
+        self.assertNotIn('cfACLRequireRepoWideProof(', commit)
+        self.assertIn('isParentMatched(fsm.parentDir, parentDir)', commit)
+        self.assertIn('cfACLPath(repoID, user, parentDir, "dir", "write")', commit)
+        self.assertIn('cfACLPath(repoID, user, filepath.Join(parentDir, fileName), "file", "write")', commit)
+        self.assertIn('commitFileBlocks(repoID, parentDir, fileName', commit)
+        raw = source.split('func doUploadRawBlks(', 1)[1]
+        self.assertIn('cfACLRequireRepoWideProof(fsm.repoID)', raw)
+
+    def test_native_links_check_target_and_v2_requires_go(self):
+        native = (ROOT / 'server/http-tx-mgr.c').read_text()
+        self.assertIn('cf_v2_acl_public_link_scope(seaf,repo_id,target,!file)', native)
+        self.assertNotIn('cf_v2_acl_unscoped(seaf, seafile_share_link_info_get_repo_id(info))', native)
+        policy = (ROOT / 'common/cf-v2-acl.c').read_text()
+        self.assertIn('int cf_v2_acl_public_link_scope(', policy)
+        self.assertIn("path=? OR ? LIKE CONCAT(path,'/%')", policy)
+        session = (ROOT / 'server/seafile-session.c').read_text()
+        self.assertIn('CloudFile V2 requires ENABLE_GO_FILESERVER=true', session)
+
+    def test_retired_fixtures_do_not_regain_authority(self):
+        for name in ('tests/cf-dir-page', 'tests/cf-permission-many'):
+            self.assertFalse((ROOT / name).exists(), name)
+        contract = (ROOT / 'doc/server-architecture.md').read_text()
+        self.assertIn('没有托管库', contract)
+        self.assertIn('cf_edit_guard', contract)
+
 if __name__ == '__main__':
     unittest.main()
