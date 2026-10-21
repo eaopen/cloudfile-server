@@ -68,8 +68,8 @@ gboolean cf_ext_active (void);
  * tighten. @native_perm is borrowed.
  *
  * @unavailable is optional (may be NULL). A provider must set it TRUE only
- * when it could not read its own authoritative data -- managed schema missing
- * or drifted, SQL/transaction failure -- and therefore refuses. It must be
+ * when it could not read its own authoritative data -- required ACL data unavailable,
+ * SQL/transaction failure -- and therefore refuses. It must be
  * left untouched for a deliberate denial. The dispatcher turns that into an
  * explicit RPC error, because reporting an infrastructure failure as "no
  * permission" is indistinguishable to the client from a real denial.
