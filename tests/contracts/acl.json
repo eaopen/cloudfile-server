@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "eap-cloudfile/contracts",
+  "source": "contracts/acl.json",
   "acl_defaults": {
     "userId": "u1",
     "departments": [

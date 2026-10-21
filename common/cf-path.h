@@ -18,7 +18,7 @@
  * Depends on nothing but glib, so it compiles into the standalone test
  * binaries alongside the pure-policy halves of the capabilities.
  *
- * Rules: cloudfile-docker/docs/fileop-lifecycle.md section 4.
+ * Rules: fileop-lifecycle.md section 4.
  */
 
 #ifndef CF_PATH_H

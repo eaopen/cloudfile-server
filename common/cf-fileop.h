@@ -22,8 +22,8 @@
  * rules and the dispatcher all compile into tests/cf-fileop without the
  * seafile build. Providers supply their own I/O.
  *
- * Spec: cloudfile-docker/docs/fileop-lifecycle.md
- * Cases: cloudfile-docker/docs/fileop-cases.json
+ * Spec: fileop-lifecycle.md
+ * Cases: cloudfile-docker/tests/cases/fileop-cases.json
  */
 
 #ifndef CF_FILEOP_H

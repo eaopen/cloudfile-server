@@ -14,7 +14,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$here/../.." && pwd)
 workspace=$(dirname "$repo_root")
 
-cases=${CF_FILEOP_CASES:-$workspace/cloudfile-docker/docs/fileop-cases.json}
+cases=${CF_FILEOP_CASES:-$workspace/cloudfile-docker/tests/cases/fileop-cases.json}
 
 if [[ ! -f $cases ]]; then
     echo "shared fileop case set not found at $cases; set CF_FILEOP_CASES" >&2

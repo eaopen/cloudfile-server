@@ -3,7 +3,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-cases="${CF_AUTO_STORAGE_CASES:-$root/../cloudfile-docker/docs/features/automatic-local-storage-cases.json}"
+cases="${CF_AUTO_STORAGE_CASES:-$root/../cloudfile-docker/tests/cases/automatic-local-storage-cases.json}"
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
 cc -std=gnu99 -Wall -Wextra -Werror -o "$build/policy" "$here/test-policy.c" \

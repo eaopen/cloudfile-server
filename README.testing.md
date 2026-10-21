@@ -8,7 +8,7 @@
 ## 快速门禁
 
 需要 Go 1.22、Python 3、C 编译器、`pkg-config` 和 glib 开发包。ACL 与 fileop
-用例默认从相邻 `cloudfile-docker/docs/` 读取共享 JSON；不使用并排 checkout 时，
+用例默认从相邻 `cloudfile-docker/tests/cases/` 读取共享 JSON；不使用并排 checkout 时，
 分别设置 `CF_ACL_CASES` 和 `CF_FILEOP_CASES`。
 
 ```bash

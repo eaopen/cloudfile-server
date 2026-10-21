@@ -572,7 +572,7 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
 
     # CloudFile write lifecycle. `fop_json` is the JSON form of a CfFileOp;
-    # see cloudfile-docker/docs/fileop-lifecycle.md section 4.
+    # see fileop-lifecycle.md section 4.
     #
     # seafdav and Seahub do NOT call these: their writes go through
     # seafile_api.post_file and friends, which land in repo-op.c where the

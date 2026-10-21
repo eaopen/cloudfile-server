@@ -39,7 +39,7 @@
  * Every call site is behind cf_fileop_active(), so a build with no capability
  * registered does one global read and changes nothing.
  *
- * Contract: cloudfile-docker/docs/fileop-lifecycle.md
+ * Contract: fileop-lifecycle.md
  */
 #include "cf-fileop.h"
 #include "cf-lock.h"

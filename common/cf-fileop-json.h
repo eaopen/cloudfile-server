@@ -12,7 +12,7 @@
  * caller; widening a JSON object means neither side has to move in lockstep,
  * and an older peer simply does not send the new key.
  *
- * Wire format: cloudfile-docker/docs/fileop-lifecycle.md section 4.
+ * Wire format: fileop-lifecycle.md section 4.
  */
 
 #ifndef CF_FILEOP_JSON_H
