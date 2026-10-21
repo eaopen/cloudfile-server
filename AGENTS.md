@@ -44,3 +44,9 @@ CloudFile Server、Hub、Docker 共用以下规则：
 - 新版当前只明确新增四张业务表：`cf_library_storage`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`。历史表仅作备份或迁移输入，不属于新版运行库及运行依赖；增加业务表须先确认，历史数据单独归档，不直接删除。
 - 开发期建表、升级及数据迁移通过 Docker 仓 `database/` 下独立、人工执行的 SQL 交付，DEV 验证与 PROD 发布复用固定脚本及校验和。启动/重启仅校验，不自动执行扩展 DDL、旧迁移链或兼容补丁。
 - 仅明确审核的成熟版本之间才考虑自动升级；须定义精确源/目标范围和数据/中断恢复验证。不得根据 dev 分支、表名存在或旧台账自动推断升级路径，不自动回滚。
+
+## Agent2 本地文件编辑
+
+- V2 本地查看/普通编辑/独占编辑经 Hub 签发 scoped JWT，Server Go `/cf-edit/v1/*` 复核权限、原生 File ID 与 Guard。
+- 只保留 `cf_edit_guard` 的独占编辑状态；Seafile 管理原生文件版本，Agent2 本地 Journal 持有未确认任务。普通编辑不创建 Guard 或 Session。
+- C 层历史编辑证明、Resource、Intent、Edit Session 通道已退出，调用应拒绝，不能为修复 `cf_edit_session` 缺表错误恢复旧 DDL 或旧分支 SQL。
