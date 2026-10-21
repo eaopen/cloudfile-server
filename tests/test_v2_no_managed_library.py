@@ -40,5 +40,12 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         self.assertIn('func cfACLPublicLinkScope(', public)
         self.assertIn("path=? OR ? LIKE CONCAT(path,'/%')", public)
 
+    def test_directory_listing_uses_bounded_path_batch(self):
+        adapter = (ROOT / 'common/cf-acl.c').read_text()
+        self.assertIn('cf_v2_acl_check_json(seaf,payload,body)', adapter)
+        self.assertIn('json_object_set_new(req,"partial",json_true())', adapter)
+        self.assertIn('count<512', adapter)
+        self.assertNotIn('cf_acl_apply(repo,path,user,native', adapter)
+
 if __name__ == '__main__':
     unittest.main()
