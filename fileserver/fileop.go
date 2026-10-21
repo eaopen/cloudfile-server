@@ -3673,9 +3673,8 @@ func uploadBlksAPICB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func doUploadBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appError {
-	if denied := cfACLRequireRepoWideProof(fsm.repoID); denied != nil {
-		return denied
-	}
+	// Commit-only block uploads carry an authenticated user, token-bound parent
+	// and actual file name. They are not whole-repository operations.
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		return &appError{nil, "", http.StatusBadRequest}
 	}
@@ -3716,6 +3715,19 @@ func doUploadBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appE
 	if fileName == "" {
 		msg := "No file_name given.\n"
 		return &appError{nil, msg, http.StatusBadRequest}
+	}
+
+	// The token's parent_dir and the requested destination must agree before
+	// ACL checks, otherwise a token scoped to /A could publish in /B.
+	if !cfACLCanonical(parentDir) || !cfACLCanonical(filepath.Join(parentDir, fileName)) ||
+		shouldIgnoreFile(fileName) || !isParentMatched(fsm.parentDir, parentDir) {
+		return &appError{nil, "Invalid or mismatched upload destination", http.StatusForbidden}
+	}
+	if denied := cfACLPath(repoID, user, parentDir, "dir", "write"); denied != nil {
+		return denied
+	}
+	if denied := cfACLPath(repoID, user, filepath.Join(parentDir, fileName), "file", "write"); denied != nil {
+		return denied
 	}
 
 	fileSizeStr := r.FormValue("file_size")
