@@ -103,9 +103,9 @@ func TestCfACLAuthorityFailuresRemainDistinct(t *testing.T) {
 	checks := []cfACLCheck{{"/shared/file", "file", "read"}}
 	for _, tc := range []struct {
 		status int
-		body string
-		want error
-		code int
+		body   string
+		want   error
+		code   int
 	}{
 		{http.StatusOK, `{"allowed":true,"contract":"cf-acl-v1"}`, nil, 0},
 		{http.StatusForbidden, `{"code":"ACL_DENIED"}`, errCFACL, http.StatusForbidden},
@@ -117,7 +117,9 @@ func TestCfACLAuthorityFailuresRemainDistinct(t *testing.T) {
 		status, body = tc.status, tc.body
 		err := cfACLAuthorize(context.Background(), "repo", "current-user", checks)
 		if tc.want == nil {
-			if err != nil { t.Fatalf("status %d should grant: %v", tc.status, err) }
+			if err != nil {
+				t.Fatalf("status %d should grant: %v", tc.status, err)
+			}
 			continue
 		}
 		if !errors.Is(err, tc.want) {
