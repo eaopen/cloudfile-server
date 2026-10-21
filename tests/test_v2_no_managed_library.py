@@ -64,6 +64,13 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         raw = source.split('func doUploadRawBlks(', 1)[1]
         self.assertIn('cfACLRequireRepoWideProof(fsm.repoID)', raw)
 
+    def test_unused_directory_acl_feature_switch_is_not_restored(self):
+        option = (ROOT / 'fileserver/option/option.go').read_text()
+        self.assertNotIn('CloudFileDirACLEnabled', option)
+        self.assertNotIn('dir_acl_enabled', option)
+        policy = (ROOT / 'common/cf-acl.c').read_text()
+        self.assertNotIn('dir_acl_enabled', policy)
+
     def test_native_links_check_target_and_v2_requires_go(self):
         native = (ROOT / 'server/http-tx-mgr.c').read_text()
         self.assertIn('cf_v2_acl_public_link_scope(seaf,repo_id,target,!file)', native)
