@@ -79,8 +79,75 @@ cf_acl_apply (const char *repo, const char *path, const char *user,
     return v2_effective_read(repo,path,user,unavailable);
 }
 
-/* Every visible child is checked on its actual path. A sparse ACL on /A may
- * hide /A but must not hide the /B siblings or the entire repository. */
+/* One bounded internal Authority batch, with a result for every original
+ * child. Partial mode returns null for hidden entries instead of failing the
+ * whole batch when one sibling is denied. An outage still refuses the batch.
+ * Batching avoids one Hub/Redis round trip per directory child. */
+static int
+filter_chunk (const char *repo, const char *dir, const char *user,
+              GList *begin, unsigned count, GList **visible)
+{
+    int result=-1;
+    json_t *req=json_object(), *checks=json_array(), *reply=NULL;
+    GString *body=g_string_new(NULL);
+    char *payload=NULL;
+    if (!req || !checks || !body || !repo || !dir || !user) goto done;
+    for (GList *p=begin; p && count > 0; p=p->next, --count) {
+        GObject *item=p->data;
+        char *name=NULL;
+        g_object_get(item,"obj_name",&name,NULL);
+        if (!name || !*name || strchr(name,'/') ||
+            !strcmp(name,".") || !strcmp(name,"..")) {
+            g_free(name);
+            goto done;
+        }
+        char *path=g_build_filename(dir,name,NULL);
+        g_free(name);
+        json_t *check=json_pack("{s:s,s:s,s:s}",
+                                "path",path,"kind","dir","action","read");
+        g_free(path);
+        if (!check || json_array_append_new(checks,check)) {
+            json_decref(check);
+            goto done;
+        }
+    }
+    unsigned size=(unsigned)json_array_size(checks);
+    if (!size || size>512 ||
+        json_object_set_new(req,"repo_id",json_string(repo)) ||
+        json_object_set_new(req,"username",json_string(user)) ||
+        json_object_set_new(req,"partial",json_true()) ||
+        json_object_set(req,"checks",checks)) goto done;
+    payload=json_dumps(req,JSON_COMPACT);
+    if (!payload || cf_v2_acl_check_json(seaf,payload,body)!=200) goto done;
+    reply=json_loadb(body->str,body->len,JSON_REJECT_DUPLICATES,NULL);
+    json_t *permissions=json_object_get(reply,"permissions");
+    if (!json_is_true(json_object_get(reply,"allowed")) ||
+        g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1") ||
+        !json_is_array(permissions) || json_array_size(permissions)!=size) goto done;
+    GList *p=begin;
+    for (unsigned i=0;i<size;++i,p=p->next) {
+        const char *permission=json_string_value(json_array_get(permissions,i));
+        if (!json_is_null(json_array_get(permissions,i)) &&
+            (!permission || (strcmp(permission,"r") && strcmp(permission,"rw"))))
+            goto done;
+    }
+    p=begin;
+    for (unsigned i=0;i<size;++i,p=p->next) {
+        const char *permission=json_string_value(json_array_get(permissions,i));
+        if (permission) {
+            GObject *item=p->data;
+            g_object_set(item,"permission",permission,NULL);
+            *visible=g_list_prepend(*visible,g_object_ref(item));
+        }
+    }
+    result=0;
+done:
+    json_decref(reply);json_decref(req);json_decref(checks);
+    g_free(payload);
+    if(body)g_string_free(body,TRUE);
+    return result;
+}
+
 GList *
 cf_acl_filter_dirents (const char *repo, const char *dir,
                        const char *user, GList *dirents)
@@ -88,22 +155,22 @@ cf_acl_filter_dirents (const char *repo, const char *dir,
     if(!cf_acl_on || !dirents) return dirents;
     int scope=cf_v2_acl_unscoped(seaf,repo);
     if(scope==0) return dirents;
-    if(scope!=-2) { g_list_free_full(dirents,g_object_unref); return NULL; }
+    if(scope!=-2 || !dir || !user || !*user) {
+        g_list_free_full(dirents,g_object_unref);
+        return NULL;
+    }
     GList *visible=NULL;
-    for(GList *p=dirents;p;p=p->next) {
-        GObject *item=p->data;
-        char *name=NULL,*native=NULL;
-        g_object_get(item,"obj_name",&name,"permission",&native,NULL);
-        char *path=name && *name && !strchr(name,'/') &&
-                   strcmp(name,".") && strcmp(name,"..") ?
-                   g_build_filename(dir,name,NULL) : NULL;
-        gboolean unavailable=FALSE;
-        char *perm=path ? cf_acl_apply(repo,path,user,native,&unavailable) : NULL;
-        if(perm) {
-            g_object_set(item,"permission",perm,NULL);
-            visible=g_list_prepend(visible,g_object_ref(item));
+    GList *p=dirents;
+    while(p) {
+        unsigned count=0;
+        GList *end=p;
+        for (;end && count<512;end=end->next) ++count;
+        if (filter_chunk(repo,dir,user,p,count,&visible)<0) {
+            g_list_free_full(visible,g_object_unref);
+            g_list_free_full(dirents,g_object_unref);
+            return NULL;
         }
-        g_free(perm);g_free(path);g_free(name);g_free(native);
+        p=end;
     }
     g_list_free_full(dirents,g_object_unref);
     return g_list_reverse(visible);
