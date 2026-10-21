@@ -669,11 +669,13 @@ http_tx_manager_query_share_link_info (const char *token, const char *cookie, co
                      "parent_dir",&parent_dir,"share_type",&share_type,NULL);
         gboolean file=share_type && !strcmp(share_type,"f");
         const char *target=file ? file_path : parent_dir;
-        if (cf_v2_acl_public_link_scope(seaf,repo_id,target,!file)<0) {
+        int scope=cf_v2_acl_public_link_scope(seaf,repo_id,target,!file);
+        if (scope!=0) {
             g_object_unref(info);
             info=NULL;
-            *status=403;
-            *err_msg=g_strdup("Share-link target not authorized");
+            *status=scope<0 ? 503 : 403;
+            *err_msg=g_strdup(scope<0 ? "Share-link ACL unavailable" :
+                               "Share-link target not authorized");
         }
         g_free(repo_id);g_free(file_path);g_free(parent_dir);g_free(share_type);
     }

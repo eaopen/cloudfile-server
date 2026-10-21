@@ -14,7 +14,9 @@ CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
     const char *source, const char *destination);
 void cf_v2_acl_transfer_free(CfV2ACLTransfer *guard);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2ACLTransfer, cf_v2_acl_transfer_free)
-/* Public-link token is checked by Seahub; this rechecks only the link path. */
+/* Public-link token is checked by Seahub; this rechecks only the link path.
+ * 0=authorized target, 1=denied/unsupported target, -1=policy unavailable.
+ * Missing SQL/DB must never be presented as a user's permission denial. */
 int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
                                 const char *repo, const char *path,
                                 gboolean subtree);

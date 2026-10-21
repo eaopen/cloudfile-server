@@ -123,14 +123,16 @@ int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
                                 const char *repo, const char *path,
                                 gboolean subtree)
 {
-    if (!session || !session->db || !repo || strlen(repo)!=36 ||
-        !canonical(path) || seaf_db_type(session->db)!=SEAF_DB_TYPE_MYSQL)
+    if (!repo || strlen(repo)!=36 || !canonical(path))
+        return 1;
+    if (!session || !session->db || seaf_db_type(session->db)!=SEAF_DB_TYPE_MYSQL)
         return -1;
     gboolean failed=FALSE;
     gboolean virtual=seaf_db_statement_exists(session->db,
         "SELECT 1 FROM VirtualRepo WHERE repo_id=?",
         &failed, 1, "string", repo);
-    if (failed || virtual) return -1;
+    if (failed) return -1;
+    if (virtual) return 1;
     const char *sql =
         "SELECT 1 FROM cf_dir_acl WHERE repo_id=? AND "
         "(path='/' OR path=? OR ? LIKE CONCAT(path,'/%') OR "
@@ -138,7 +140,8 @@ int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
     gboolean intersects=seaf_db_statement_exists(session->db,sql,&failed,6,
         "string",repo,"string",path,"string",path,
         "int",subtree?1:0,"string",path,"string",path);
-    return failed || intersects ? -1 : 0;
+    if (failed) return -1;
+    return intersects ? 1 : 0;
 }
 
 static gboolean canonical(const char *path)
