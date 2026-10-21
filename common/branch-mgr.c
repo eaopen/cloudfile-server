@@ -438,160 +438,17 @@ get_gc_id (SeafDBRow *row, void *data)
     return FALSE;
 }
 
-typedef struct {
-    int rank;
-    char *canonical;
-    const char *type;
-    gboolean blocked;
-} CloudFileScope;
-
-static void
-cloudfile_scope_free (gpointer data)
-{
-    CloudFileScope *scope = data;
-    free (scope->canonical);
-    g_free (scope);
-}
-
-static gint
-cloudfile_scope_compare (gconstpointer a, gconstpointer b)
-{
-    const CloudFileScope *one = *(CloudFileScope * const *)a;
-    const CloudFileScope *two = *(CloudFileScope * const *)b;
-    return one->rank != two->rank ? one->rank - two->rank : strcmp (one->canonical, two->canonical);
-}
-
-static gboolean
-scope_identifier (json_t *value)
-{
-    if (!json_is_string (value))
-        return FALSE;
-    const char *text = json_string_value (value);
-    return json_string_length (value) == strlen (text) && *text &&
-           g_utf8_validate (text, -1, NULL) && g_utf8_strlen (text, -1) <= 255;
-}
-
-static gboolean
-scope_is_exact (SeafDBRow *row, void *data)
-{
-    /* Hash lookup never substitutes for comparing the complete scope. */
-    CloudFileScope *scope = data;
-    if (g_strcmp0 (seaf_db_row_get_column_text (row, 0), scope->canonical) == 0)
-        scope->blocked = TRUE;
-    return TRUE;
-}
-
+/* Pre-release PolicyHost/JobStore scope barriers are retired.
+ * Current V2 authorizes in native ACL/Guard and Go publish; no old
+ * cf_background_job table or migration ledger can be consulted. */
 static int
-cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id, const char *scopes_json,
-                         CcnetUserManager *user_mgr, const char *native_username)
+cloudfile_check_barriers (SeafDBTrans *trans, const char *repo_id,
+                          const char *scopes_json, CcnetUserManager *user_mgr,
+                          const char *native_username)
 {
-    json_t *root = NULL, *scopes = NULL;
-    GPtrArray *ordered = g_ptr_array_new_with_free_func (cloudfile_scope_free);
-    char *database = NULL;
-    int result = -1;
-    gboolean has_user = FALSE, has_repo = FALSE;
-    const char *user_id = NULL;
-    if (strlen (scopes_json) > 16384)
-        goto out;
-    root = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
-    scopes = json_is_object (root) ? json_object_get (root, "scopes") : root;
-    if (!json_is_array (scopes) || json_array_size (scopes) < 2 || json_array_size (scopes) > 16)
-        goto out;
-    for (size_t i = 0; i < json_array_size (scopes); ++i) {
-        json_t *value = json_array_get (scopes, i);
-        const char *key;
-        json_t *field;
-        if (!json_is_object (value))
-            goto out;
-        json_object_foreach (value, key, field) {
-            if ((strcmp (key, "type") && strcmp (key, "provider") &&
-                 strcmp (key, "external_id") && strcmp (key, "namespace")) || !scope_identifier (field))
-                goto out;
-        }
-        if (!scope_identifier (json_object_get (value, "type")) ||
-            !scope_identifier (json_object_get (value, "provider")) ||
-            !scope_identifier (json_object_get (value, "external_id")))
-            goto out;
-        const char *type = json_string_value (json_object_get (value, "type"));
-        int rank;
-        if (strcmp (type, "provider") == 0)
-            rank = 0;
-        else if (strcmp (type, "user") == 0 || strcmp (type, "subject") == 0) {
-            rank = 1;
-            if (strcmp (type, "subject") == 0 && !json_object_get (value, "namespace"))
-                goto out;
-            has_user |= strcmp (type, "user") == 0;
-            if (strcmp (type, "user") == 0) {
-                const char *candidate = json_string_value (json_object_get (value, "external_id"));
-                if (user_id && strcmp (user_id, candidate))
-                    goto out;
-                user_id = candidate;
-            }
-        } else if (strcmp (type, "repo") == 0) {
-            rank = 2;
-            /* This primitive publishes exactly one non-virtual repository. */
-            if (strcmp (json_string_value (json_object_get (value, "external_id")), repo_id) != 0)
-                goto out;
-            has_repo = TRUE;
-        } else
-            goto out;
-        CloudFileScope *scope = g_new0 (CloudFileScope, 1);
-        scope->rank = rank;
-        scope->type = type;
-        scope->canonical = json_dumps (value, JSON_COMPACT | JSON_SORT_KEYS);
-        if (!scope->canonical) {
-            g_free (scope);
-            goto out;
-        }
-        g_ptr_array_add (ordered, scope);
-    }
-    if (!has_user || !has_repo)
-        goto out;
-    g_ptr_array_sort (ordered, cloudfile_scope_compare);
-    /* One total acquisition budget, matching Hub's monotonic deadline.
-     * Never multiply five seconds by the number of requested scopes. */
-    gint64 scope_deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
-    if (seaf_db_trans_foreach_selected_row (trans, "SELECT DATABASE()", get_gc_id,
-                                           &database, 0) != 1 || !database || strchr (database, '\n'))
-        goto out;
-    for (guint i = 0; i < ordered->len; ++i) {
-        CloudFileScope *scope = g_ptr_array_index (ordered, i);
-        if (i > 0 && strcmp (scope->canonical, ((CloudFileScope *)g_ptr_array_index (ordered, i-1))->canonical) == 0)
-            continue;
-        char *text = g_strdup_printf ("%s\n%s", database, scope->canonical);
-        char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, text, -1);
-        char *name = g_strdup_printf ("cf.auth.%.56s", digest);
-        gint64 remaining = scope_deadline - g_get_monotonic_time ();
-        int timeout = remaining > 0 ? (int)(remaining / G_TIME_SPAN_SECOND) : 0;
-        int locked = seaf_db_trans_acquire_scope_lock (trans, name, timeout);
-        g_free (name);
-        g_free (digest);
-        g_free (text);
-        if (locked < 0)
-            goto out;
-    }
-    /* Current/locking reads, after all authority locks and before GC/Branch.
-     * JobStore establishes and clears barriers under these exact SQL locks. */
-    for (guint i = 0; i < ordered->len; ++i) {
-        CloudFileScope *scope = g_ptr_array_index (ordered, i);
-        char *digest = g_compute_checksum_for_string (G_CHECKSUM_SHA256, scope->canonical, -1);
-        int rows = seaf_db_trans_foreach_selected_row (
-            trans, "SELECT scope_id FROM cf_background_job WHERE scope_type=? AND scope_hash=? AND barrier_active=1 FOR UPDATE",
-            scope_is_exact, scope, 2, "string", scope->type, "string", digest);
-        g_free (digest);
-        if (rows < 0 || scope->blocked)
-            goto out;
-    }
-    if (ccnet_user_manager_lock_active_account (user_mgr, trans, native_username) < 0 ||
-        ccnet_user_manager_lock_business_identity (user_mgr, trans, native_username, user_id) < 0)
-        goto out;
-    result = 0;
-out:
-    g_free (database);
-    g_ptr_array_free (ordered, TRUE);
-    if (root)
-        json_decref (root);
-    return result;
+    (void)trans; (void)repo_id; (void)scopes_json;
+    (void)user_mgr; (void)native_username;
+    return -1;
 }
 
 /* Caller-supplied context is an expectation, never an authorization grant.
@@ -1193,83 +1050,13 @@ cloudfile_reference_text (json_t *object, const char *name, size_t maximum)
         strlen (text) <= maximum ? text : NULL;
 }
 
-static int
-cloudfile_check_oidc_schema (SeafDBTrans *trans)
-{
-    gboolean error = FALSE;
-    const char *versions[] = {"012_oidc_sessions", "013_oidc_logout_fences", "014_oidc_scope_expiry"};
-    for (int i = 0; i < 3; ++i) {
-        if (!seaf_db_trans_check_for_existence (trans,
-            "SELECT version FROM cf_schema_migration WHERE version=? AND state='applied' AND step=1 FOR UPDATE",
-            &error, 1, "string", versions[i]) || error) return -1;
-    }
-    const char *tables[] = {"cf_oidc_session", "cf_oidc_logout_fence"};
-    for (int i = 0; i < 2; ++i) {
-        if (!seaf_db_trans_check_for_existence (trans,
-            "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=? AND engine='InnoDB'",
-            &error, 1, "string", tables[i]) || error) return -1;
-    }
-    /* Verify exact non-prefix index axes, not merely an index bearing the
-     * expected name. Hub's require_current additionally checks all checksums
-     * and migration structures; this native gate does not replace that. */
-    const char *checks[] = {
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_session' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=2 AND SUM(non_unique=0 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='session_key')))=2",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_logout_fence' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(non_unique=0 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='target_type') OR (seq_in_index=3 AND column_name='target_hash')))=3",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_oidc_session' AND index_name='oidc_scope_expiry' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(non_unique=1 AND sub_part IS NULL AND ((seq_in_index=1 AND column_name='scope_hash') OR (seq_in_index=2 AND column_name='expires_at') OR (seq_in_index=3 AND column_name='session_key')))=3"
-    };
-    for (int i = 0; i < 3; ++i)
-        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
-    return 0;
-}
-
+/* Retired OIDC Session/LogoutFence SQL cannot be a native V2 dependency.
+ * A supplied legacy proof fails closed, never falls back to weaker access. */
 static int
 cloudfile_check_oidc_reference (SeafBranchManager *mgr, SeafDBTrans *trans, json_t *root)
 {
-    json_t *reference = json_object_get (root, "oidc_session");
-    if (!reference) return 0;
-    if (!json_is_object (reference) || json_object_size (reference) != 5) return -1;
-    const char *scope = cloudfile_reference_text (reference, "scope_hash", 64);
-    const char *key = cloudfile_reference_text (reference, "session_key", 32);
-    const char *subject = cloudfile_reference_text (reference, "subject_hash", 64);
-    json_t *sid_value = json_object_get (reference, "sid_hash");
-    const char *sid = json_is_null (sid_value) ? NULL : cloudfile_reference_text (reference, "sid_hash", 64);
-    json_t *issued = json_object_get (reference, "authenticated_at");
-    if (!scope || strlen (scope) != 64 || strspn (scope, "0123456789abcdef") != 64 ||
-        !key || strlen (key) != 32 || strspn (key, "0123456789abcdefghijklmnopqrstuvwxyz") != 32 ||
-        !subject || strlen (subject) != 64 || strspn (subject, "0123456789abcdef") != 64 ||
-        (!json_is_null (sid_value) && (!sid || strlen (sid) != 64 || strspn (sid, "0123456789abcdef") != 64)) ||
-        !json_is_integer (issued) || json_integer_value (issued) < 0) return -1;
-    char provider[33];
-    g_snprintf (provider, sizeof provider, "cf_oidc_%.24s", scope);
-    gboolean locked_scope = FALSE;
-    json_t *scopes = json_object_get (root, "scopes");
-    for (size_t i = 0; i < json_array_size (scopes); ++i) {
-        json_t *candidate = json_array_get (scopes, i);
-        if (!g_strcmp0 (json_string_value (json_object_get (candidate, "type")), "provider") &&
-            !g_strcmp0 (json_string_value (json_object_get (candidate, "provider")), provider) &&
-            !g_strcmp0 (json_string_value (json_object_get (candidate, "external_id")), provider)) locked_scope = TRUE;
-    }
-    if (!locked_scope || cloudfile_check_oidc_schema (trans) < 0) return -1;
-    gboolean error = FALSE;
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT session_key FROM cf_oidc_session WHERE scope_hash=? AND session_key=? "
-        "AND subject_hash=? AND COALESCE(sid_hash,'')=? AND authenticated_at=? AND expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
-        &error, 5, "string", scope, "string", key, "string", subject, "string", sid ? sid : "",
-        "int64", (gint64)json_integer_value (issued)) || error) return -1;
-    const char *types[] = {"subject", "sid"};
-    const char *targets[] = {subject, sid};
-    for (int i = 0; i < 2; ++i) {
-        if (!targets[i]) continue;
-        if (seaf_db_trans_check_for_existence (trans,
-            "SELECT cutoff_at FROM cf_oidc_logout_fence WHERE scope_hash=? AND target_type=? "
-            "AND target_hash=? AND cutoff_at>=? FOR UPDATE", &error,
-            4, "string", scope, "string", types[i], "string", targets[i],
-            "int64", (gint64)json_integer_value (issued)) || error) return -1;
-    }
-    /* Locking read, not an RR snapshot: local flush must invalidate a transfer
-     * even when subsequent index cleanup fails. Signed reference verification
-     * remains the trusted Hub's responsibility before ticket issuance. */
-    return ccnet_user_manager_lock_live_session (mgr->seaf->user_mgr, trans, key);
+    (void)mgr; (void)trans;
+    return root && json_object_get (root, "oidc_session") ? -1 : 0;
 }
 
 /* Legacy CE/Authentik OAuth browser session proof. The trusted Hub has already
