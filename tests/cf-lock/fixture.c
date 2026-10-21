@@ -7,8 +7,6 @@
 #include "log.h"
 typedef int SeafDB;
 typedef int SeafDBRow;
-typedef int SeafDBTrans;
-static gboolean transaction_error;
 static SeafDB database;
 static gboolean checkout;
 static int sql_calls, exact_rows, descendant_rows;
@@ -31,17 +29,6 @@ static int seaf_db_statement_foreach_row(SeafDB *db, const char *sql,
     if (strstr(sql,"path_hash=UNHEX(?)")) return exact_rows;
     g_assert_nonnull(strstr(sql,"path LIKE ?"));
     return descendant_rows;
-}
-static gboolean seaf_db_trans_check_for_existence(SeafDBTrans *trans,
-    const char *sql, gboolean *error, int count, ...)
-{
-    ++sql_calls;
-    g_assert_nonnull(strstr(sql,"FROM cf_edit_guard"));
-    g_assert_nonnull(strstr(sql,"path_hash=UNHEX(?)"));
-    g_assert_nonnull(strstr(sql,"FOR UPDATE"));
-    g_assert_null(strstr(sql,"cf_resource"));
-    *error = transaction_error;
-    return exact_rows > 0;
 }
 #include "production.c"
 
@@ -76,17 +63,6 @@ int main(void)
     checkout=FALSE; cf_fileop_reset(); cf_lock_init(); sql_calls=0;
     g_assert_cmpint(write_path("/file",&error),==,0);
     g_assert_cmpint(sql_calls,==,0);
-    /* The final Branch transaction uses the real production function too. */
-    g_assert_cmpint(cf_policy_check_unleased_write(NULL,"fixture","/file","owner"),==,0);
-    g_assert_cmpint(sql_calls,==,0);
-    checkout=TRUE; cf_lock_init(); exact_rows=0;
-    g_assert_cmpint(cf_policy_check_unleased_write(NULL,"fixture","/file","owner"),==,0);
-    exact_rows=1;
-    g_assert_cmpint(cf_policy_check_unleased_write(NULL,"fixture","/file","owner"),==,-1);
-    exact_rows=0; transaction_error=TRUE;
-    g_assert_cmpint(cf_policy_check_unleased_write(NULL,"fixture","/file","owner"),==,-1);
-    transaction_error=FALSE;
-    g_assert_cmpint(cf_policy_check_unleased_write(NULL,"fixture","relative","owner"),==,-1);
-    g_print("PASS 12 native Checkout barrier and final-transaction cases\n");
+    g_print("PASS native Checkout barrier cases (disabled, active, denied, SQL failure)\n");
     return 0;
 }

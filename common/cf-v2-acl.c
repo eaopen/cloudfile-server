@@ -175,7 +175,7 @@ static size_t response_body(char *data, size_t size, size_t n, void *opaque)
 /*
  * Transport only: one POST to the Hub's internal V2 check endpoint.
  *
- * Split out of authorize() so the directory-share qualification (cf-v2-share.c)
+ * Shared transport so the directory-share qualification (cf-v2-share.c)
  * reuses this channel instead of growing a second curl block with its own JWT
  * lifetime rules -- two copies of an internal-auth handshake are one copy too
  * many, and the one that drifts is always the less exercised one.
@@ -222,63 +222,4 @@ done:
     if (jwt) jwt_free(jwt);
     g_free(token);g_free(auth);g_free(url);
     return status;
-}
-
-static int authorize(struct _SeafileSession *session, json_t *request)
-{
-    int result=-1;
-    char *payload=NULL;
-    GString *body=g_string_new(NULL);
-    json_t *reply=NULL;
-    payload=json_dumps(request,JSON_COMPACT);
-    if (!payload) goto done;
-    if (cf_v2_acl_check_json(session,payload,body)!=200) goto done;
-    reply=json_loadb(body->str,body->len,JSON_REJECT_DUPLICATES,NULL);
-    if (json_is_true(json_object_get(reply,"allowed")) &&
-        !g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1")) result=0;
-done:
-    json_decref(reply);
-    g_free(payload);g_string_free(body,TRUE);
-    return result;
-}
-
-int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
-    const char *repo_id, const char *old_id, const char *new_id, const char *actor)
-{
-    if (!trans) return -1;
-    int state=cf_v2_acl_final(trans,session,repo_id);
-    if (state==0) return 0;
-    if (state!=-2) return -1;
-    /* Distinguish protected scope from a SQL/config failure: neither grants.
-     * The HTTP authority independently reads the same facts and denies failures. */
-    if (!actor || !*actor || !old_id || !new_id) return -1;
-    SeafRepo *repo=seaf_repo_manager_get_repo(session->repo_mgr,repo_id);
-    if (!repo || repo->virtual_info) { if (repo) seaf_repo_unref(repo); return -1; }
-    SeafCommit *old=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,old_id);
-    SeafCommit *next=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,new_id);
-    GList *changes=NULL;
-    json_t *checks=json_array();
-    json_t *request=json_object();
-    int result=-1;
-    if (!old || !next || diff_commit_roots(repo->store_id,repo->version,old->root_id,next->root_id,&changes,FALSE)<0) goto done;
-    for (GList *p=changes;p;p=p->next) {
-        DiffEntry *delta=p->data;
-        if (json_array_size(checks)>=4096 || (delta->status!=DIFF_STATUS_ADDED && delta->status!=DIFF_STATUS_MODIFIED)) goto done;
-        char *path=g_strconcat("/",delta->name,NULL);
-        if (!canonical(path)) {g_free(path);goto done;}
-        json_array_append_new(checks,json_pack("{s:s,s:s,s:s}","path",path,"kind","file","action","write"));
-        g_free(path);
-    }
-    if (!json_array_size(checks)) goto done;
-    json_object_set_new(request,"repo_id",json_string(repo_id));
-    json_object_set_new(request,"username",json_string(actor));
-    json_object_set(request,"checks",checks);
-    result=authorize(session,request);
-done:
-    json_decref(request);json_decref(checks);
-    g_list_free_full(changes,(GDestroyNotify)diff_entry_free);
-    if (old) seaf_commit_unref(old);
-    if (next) seaf_commit_unref(next);
-    seaf_repo_unref(repo);
-    return result;
 }

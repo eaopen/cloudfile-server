@@ -11,7 +11,6 @@
 #include "cf-ext.h"
 #include "cf-v2-acl.h"
 #include "cf-v2-share.h"
-#include "cloudfile-policy.h"
 
 /* One path, one check: the request is a fixed shape, so the bound only has to
  * catch a path that already escaped the RPC's own validation. */

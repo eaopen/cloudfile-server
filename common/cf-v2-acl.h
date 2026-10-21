@@ -23,8 +23,7 @@ int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
 int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id);
 int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session,
                     const char *repo_id);
-int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
-    const char *repo_id, const char *old_id, const char *new_id, const char *actor);
+
 /* Transport only: one internal-JWT POST to /cloudfile/acl/check/. Returns the
  * HTTP status, or -1 when the channel is unusable. @body is reset and holds the
  * reply on 200. The single implementation of that handshake; cf-v2-share.c

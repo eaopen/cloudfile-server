@@ -29,16 +29,16 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         self.assertIn('cfACLPath(repoID, info.User, filePath, "file", "read")', fileop)
         self.assertNotIn('checkLegacyLibrary(', fileop)
         branch = (ROOT / 'common/branch-mgr.c').read_text(encoding='utf-8')
-        self.assertIn('cf_v2_acl_final_scoped(', branch)
+        self.assertIn('cf_v2_acl_final(', branch)
         self.assertNotIn('cf_policy_enroll_managed_library(', branch)
 
     def test_c_final_acl_follows_branch_lock_and_head_validation(self):
         source = (ROOT / 'common/branch-mgr.c').read_text()
         commit = source.split('test_and_update_branch (', 1)[1]
         self.assertLess(commit.index('AND repo_id=? FOR UPDATE'),
-                        commit.index('cf_v2_acl_final_scoped('))
+                        commit.index('cf_v2_acl_final('))
         self.assertLess(commit.index('strcmp (old_commit_id, commit_id)'),
-                        commit.index('cf_v2_acl_final_scoped('))
+                        commit.index('cf_v2_acl_final('))
         policy = (ROOT / 'common/cf-v2-acl.c').read_text()
         self.assertIn('g_strconcat(query, " FOR UPDATE", NULL)', policy)
 
@@ -109,6 +109,20 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         contract = (ROOT / 'doc/server-architecture.md').read_text()
         self.assertIn('没有托管库', contract)
         self.assertIn('cf_edit_guard', contract)
+
+    def test_retired_policy_and_ticket_engines_are_absent(self):
+        forbidden = ('cf_policy_check_read', 'cf_policy_check_write', 'cf_acl_evaluate',
+                     'cf_acl_resolve', 'with_barriers', 'cloudFileReadCB',
+                     'seafile_cloudfile_issue_read_ticket', 'cf_lock_controlled_publish_enter')
+        for base in ('common', 'server', 'include', 'fileserver', 'python'):
+            for path in (ROOT / base).rglob('*'):
+                if path.suffix not in ('.c', '.h', '.go', '.py') or path.name.endswith('_test.go'):
+                    continue
+                for token in forbidden:
+                    self.assertNotIn(token, path.read_text(), str(path))
+        self.assertNotIn('libcloudfile_acl', (ROOT / 'server/Makefile.am').read_text())
+        native = (ROOT / 'server/web-accesstoken-mgr.c').read_text()
+        self.assertIn('seaf_web_at_manager_get_scoped_download_token', native)
 
 if __name__ == '__main__':
     unittest.main()
