@@ -34,10 +34,19 @@ func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
 // Caller must already hold Branch(master) FOR UPDATE in this same transaction.
 // SQL errors and native diff failures deny, never silently fall back to CE.
 func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-	if !option.V2GuardAvailable {
+	// Ordinary upload must not depend on Guard schema or SQL when Checkout
+	// is disabled. Enabled-but-unavailable is an error, never a bypass.
+	if !option.CloudFileCheckoutEnabled {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) WHERE repo_id=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repoID)
+	if !option.V2GuardAvailable {
+		return errCFEditGuard
+	}
+	// The startup gate qualified the installed 15-column/4-index path store
+	// when Checkout was enabled, so the final transaction uses the reviewed
+	// query directly instead of re-reading information_schema on every commit.
+	// Runtime drift still denies: a failed query returns errCFEditGuard.
+	rows, err := tx.QueryContext(ctx, cfEditGuardFenceSQL, repoID)
 	if err != nil {
 		return errCFEditGuard
 	}
@@ -87,3 +96,9 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 	}
 	return nil
 }
+
+// Reviewed V2 fence query. Only this path-keyed store is supported; the
+// resource-keyed 029 layout is archived by the reviewed SQL package and must
+// not remain reachable as a runtime fallback.
+const cfEditGuardFenceSQL = "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) " +
+	"WHERE repo_id=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE"

@@ -112,10 +112,14 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 }
 
 func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
-	oldFlag, oldSecret := option.V2GuardAvailable, option.JWTPrivateKey
+	oldFlag, oldSecret, oldEnabled := option.V2GuardAvailable, option.JWTPrivateKey, option.CloudFileCheckoutEnabled
 	option.V2GuardAvailable = false
 	option.JWTPrivateKey = "unit-test-secret"
-	defer func() { option.V2GuardAvailable = oldFlag; option.JWTPrivateKey = oldSecret }()
+	defer func() {
+		option.V2GuardAvailable = oldFlag
+		option.JWTPrivateKey = oldSecret
+		option.CloudFileCheckoutEnabled = oldEnabled
+	}()
 	now := time.Now()
 	ticket := cfEditClaims{
 		UID:      "uid-test",
@@ -135,13 +139,18 @@ func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
-	req.Header.Set("Authorization", "Bearer "+signed)
-	rec := httptest.NewRecorder()
-	cfEditAPI(rec, req)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CHECKOUT_UNSUPPORTED") {
-		t.Fatalf("unexpected disabled checkout response: %d %s", rec.Code, rec.Body.String())
+	// A table alone cannot enable Checkout or allow its API to create a lock.
+	for _, flags := range []struct{ enabled, available bool }{{false, true}, {true, false}} {
+		option.CloudFileCheckoutEnabled, option.V2GuardAvailable = flags.enabled, flags.available
+		req := httptest.NewRequest("POST", "/cf-edit/v1/checkout", nil)
+		req.Header.Set("Authorization", "Bearer "+signed)
+		rec := httptest.NewRecorder()
+		cfEditAPI(rec, req)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CHECKOUT_UNSUPPORTED") {
+			t.Fatalf("unexpected disabled checkout response: %d %s", rec.Code, rec.Body.String())
+		}
 	}
+
 }
 
 func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {

@@ -408,9 +408,9 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		}
 	}
 	out["sha256"] = hex.EncodeToString(hasher.Sum(nil))
-	if option.V2GuardAvailable {
-		// Checkout is schema-derived; ordinary optimistic editing is always available.
-		// A V2 deployment without the Guard table never queries it.
+	if option.CloudFileCheckoutEnabled && option.V2GuardAvailable {
+		// Checkout is explicitly enabled and its Guard is installed.
+		// Disabled Checkout leaves ordinary optimistic editing independent of Guard SQL.
 		var gID, owner sql.NullString
 		var generation uint64
 		var expires sql.NullTime
@@ -506,7 +506,7 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 	if action == "optimistic" {
 		// No persistent lock or Intent is allocated for an ordinary save.
 		// The Guard query is needed only on deployments with an installed Guard.
-		if option.V2GuardAvailable {
+		if option.CloudFileCheckoutEnabled && option.V2GuardAvailable {
 			var held int
 			err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cf_edit_guard WHERE repo_id=? AND path_hash=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repo.ID, cfEditHash(c.FilePath)).Scan(&held)
 			if err != nil || held != 0 {
@@ -603,7 +603,7 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditFail(w, 403, "READ_ONLY_TICKET")
 		return
 	}
-	if !option.V2GuardAvailable && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
+	if (!option.CloudFileCheckoutEnabled || !option.V2GuardAvailable) && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
 		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
 		return
 	}

@@ -24,8 +24,11 @@ var CloudFileManagedLibraryGuard bool
 var CloudFileAllowLegacyManagedReads bool
 var CloudFileTrustedTLSProxies []*net.IPNet
 
-// Startup schema detection sets this once before serving requests. Keeping the
-// default false preserves ordinary edits when Checkout Guard is not installed.
+// Checkout is an explicit existing capability, not implied by a table name.
+// Both values are initialized before serving requests; disabled means no Guard SQL.
+var CloudFileCheckoutEnabled bool
+
+// True only after enabled Checkout has a usable installed Guard table.
 var V2GuardAvailable bool
 
 // Storage unit.
@@ -151,7 +154,17 @@ func LoadFileServerOptions(centralDir string) {
 	CloudFileTrustedTLSProxies = nil
 	CloudFileManagedLibraryGuard = false
 	CloudFileAllowLegacyManagedReads = false
+	CloudFileCheckoutEnabled = false
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
+		// Reuse CF_ENABLE_CHECKOUT -> [cloudfile] checkout_enabled from Docker.
+		// Invalid values must not silently disable an explicitly requested fence.
+		if key, keyErr := section.GetKey("checkout_enabled"); keyErr == nil {
+			var parseErr error
+			CloudFileCheckoutEnabled, parseErr = key.Bool()
+			if parseErr != nil {
+				log.Fatal("Invalid CloudFile checkout_enabled")
+			}
+		}
 		if key, keyErr := section.GetKey("allow_legacy_managed_reads"); keyErr == nil {
 			var parseErr error
 			CloudFileAllowLegacyManagedReads, parseErr = key.Bool()

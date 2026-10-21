@@ -1950,6 +1950,10 @@ func postMultiFiles(rsp http.ResponseWriter, r *http.Request, repoID, parentDir,
 		})
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
+		} else if errors.Is(err, errCFEditGuard) {
+			// An installed Guard cannot be queried or rejects the publication;
+			// report that failure directly instead of a fabricated retry timeout.
+			return &appError{nil, "The server cannot verify the Checkout guard.", http.StatusServiceUnavailable}
 		} else {
 			err := fmt.Errorf("failed to post files and gen commit: %v", err)
 			return &appError{err, "", http.StatusInternalServerError}
@@ -2208,6 +2212,15 @@ func fastForwardOrMerge(user, token string, repo *repomgr.Repo, base, newCommit 
 	return nil
 }
 
+// cfBranchConflictRetryable names the only transient commit failure: another
+// writer moved the Branch HEAD. Guard, schema, ACL and SQL failures are
+// deterministic until the deployment is repaired, so retrying them only turns
+// one visible fault into ten hidden ones. Kept as a helper so the contract is
+// testable without a database.
+func cfBranchConflictRetryable(err error) bool {
+	return errors.Is(err, ErrConflict)
+}
+
 func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *commitmgr.Commit, newRoot, user string, handleConncurrentUpdate bool, commitID *string, lastGCID string, checkGC bool) (bool, error) {
 	var secondParentID string
 	repoID := repo.ID
@@ -2265,11 +2278,13 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 	if gcConflict {
 		return false, err
 	}
-	if err == errCFACL {
-		return false, err
+	// Only a changed Branch head is a concurrent-publication retry. Guard,
+	// schema and authority failures are deterministic, not ten hidden retries.
+	if cfBranchConflictRetryable(err) {
+		return true, nil
 	}
 	if err != nil {
-		return true, nil
+		return false, err
 	}
 
 	if commitID != nil {
@@ -2341,8 +2356,7 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	}
 	if oldCommitID != commitID {
 		trans.Rollback()
-		err := fmt.Errorf("head commit id has changed")
-		return false, err
+		return false, ErrConflict
 	}
 
 	// Final and transactional: an upload preflight cannot protect against a
