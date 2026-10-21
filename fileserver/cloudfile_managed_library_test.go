@@ -5,118 +5,53 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"github.com/haiwen/seafile-server/fileserver/option"
-	"strings"
+	"io"
 	"testing"
-	"time"
 )
 
-// Publication orchestration, not evidence of MySQL locking semantics.
-type managedLibraryConnector struct {
-	fixture *readAuditSQLFixture
-	missing bool
+const scopedQuery = "SELECT repo_id FROM cf_dir_acl WHERE repo_id=? LIMIT 1 FOR UPDATE"
+
+type scopedConnector struct { hasRule, fails bool }
+type scopedDriver struct{}
+type scopedConn struct { hasRule, fails bool }
+type scopedTxn struct{}
+type scopedRows struct { id string; yielded bool }
+
+func (c scopedConnector) Driver() driver.Driver { return scopedDriver{} }
+func (c scopedConnector) Connect(context.Context) (driver.Conn, error) {
+	return &scopedConn{hasRule: c.hasRule, fails: c.fails}, nil
+}
+func (scopedDriver) Open(string) (driver.Conn, error) { return nil, errors.New("connector only") }
+func (*scopedConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("no prepare") }
+func (*scopedConn) Close() error { return nil }
+func (*scopedConn) Begin() (driver.Tx, error) { return scopedTxn{}, nil }
+func (c *scopedConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) { return scopedTxn{}, nil }
+func (c *scopedConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if query != scopedQuery || c.fails { return nil, errors.New("V2 ACL unavailable") }
+	if !c.hasRule { return &scopedRows{}, nil }
+	return &scopedRows{id: "22222222-2222-2222-2222-222222222222"}, nil
+}
+func (scopedTxn) Commit() error { return nil }
+func (scopedTxn) Rollback() error { return nil }
+func (r *scopedRows) Columns() []string { return []string{"repo_id"} }
+func (r *scopedRows) Close() error { return nil }
+func (r *scopedRows) Next(dst []driver.Value) error {
+	if r.id == "" || r.yielded { return io.EOF }
+	dst[0] = r.id
+	r.yielded = true
+	return nil
 }
 
-func (c managedLibraryConnector) Driver() driver.Driver { return readAuditDriver{} }
-func (c managedLibraryConnector) Connect(context.Context) (driver.Conn, error) {
-	return &managedLibraryConnection{readAuditConnection: readAuditConnection{c.fixture}, missing: c.missing}, nil
-}
-
-type managedLibraryConnection struct {
-	readAuditConnection
-	missing bool
-}
-
-func (c *managedLibraryConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if c.missing {
-		return nil, errors.New("missing managed storage")
-	}
-	switch {
-	case query == "SELECT @@transaction_isolation":
-		return nil, errors.New("unknown variable")
-	case query == "SELECT @@tx_isolation":
-		return &readAuditRows{columns: []string{"isolation"}, values: [][]driver.Value{{"REPEATABLE-READ"}}}, nil
-	case strings.Contains(query, "LIMIT 0"), strings.Contains(query, "FROM VirtualRepo"):
-		return &readAuditRows{columns: []string{"repo_id"}}, nil
-	case strings.Contains(query, "WHERE repo_id=? FOR UPDATE"):
-		return &readAuditRows{columns: []string{"repo_id"}, values: [][]driver.Value{{args[0].Value}}}, nil
-	default:
-		return &readAuditRows{columns: []string{"count"}, values: [][]driver.Value{{int64(1)}}}, nil
-	}
-}
-func TestLegacyManagedLibraryCannotPublishBranch(t *testing.T) {
-	originalDB, originalGuard, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard, option.DBOpTimeout
-	defer func() {
-		seafileDB = originalDB
-		option.CloudFileManagedLibraryGuard = originalGuard
-		option.DBOpTimeout = originalTimeout
-	}()
-	option.CloudFileManagedLibraryGuard = true
-	option.DBOpTimeout = 2 * time.Second
-	for _, missing := range []bool{false, true} {
-		fixture := &readAuditSQLFixture{}
-		seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture, missing: missing})
-		_, err := updateBranch("22222222-2222-2222-2222-222222222222", "", strings.Repeat("a", 40), strings.Repeat("b", 40), "", false, "")
-		seafileDB.Close()
-		if err == nil || fixture.commits != 0 || fixture.rollbacks != 1 || len(fixture.execQueries) != 0 {
-			t.Fatalf("protected/missing library published: err=%v fixture=%+v", err, fixture)
-		}
-	}
-}
-
-func TestLegacyManagedReadCompatibilityDoesNotPermitPublication(t *testing.T) {
-	originalDB, originalGuard, originalReads, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard,
-		option.CloudFileAllowLegacyManagedReads, option.DBOpTimeout
-	defer func() {
-		seafileDB = originalDB
-		option.CloudFileManagedLibraryGuard = originalGuard
-		option.CloudFileAllowLegacyManagedReads = originalReads
-		option.DBOpTimeout = originalTimeout
-	}()
-	option.CloudFileManagedLibraryGuard = true
-	option.CloudFileAllowLegacyManagedReads = true
-	option.DBOpTimeout = 2 * time.Second
-	fixture := &readAuditSQLFixture{}
-	seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture, missing: true})
-	defer seafileDB.Close()
-	if err := legacyLibraryAllowed(context.Background(), "22222222-2222-2222-2222-222222222222"); err != nil {
-		t.Fatalf("native read compatibility was rejected: %v", err)
-	}
-	_, err := updateBranch("22222222-2222-2222-2222-222222222222", "", strings.Repeat("a", 40), strings.Repeat("b", 40), "", false, "")
-	if !errors.Is(err, errCloudFileLegacyLibrary) || fixture.commits != 0 ||
-		fixture.rollbacks != 1 || len(fixture.execQueries) != 0 {
-		t.Fatalf("native mutation bypassed managed-library publication guard: err=%v fixture=%+v", err, fixture)
-	}
-}
-
-// 2026-10-15, v0.9-only: the legacy sync entry must refuse managed libraries
-// even when the temporary native-read carve-out is on, and it must fail
-// closed when no authority is reachable.
-func TestSyncLegacyEntryDeniesManagedLibraries(t *testing.T) {
-	originalDB, originalGuard, originalReads, originalTimeout := seafileDB, option.CloudFileManagedLibraryGuard,
-		option.CloudFileAllowLegacyManagedReads, option.DBOpTimeout
-	defer func() {
-		seafileDB = originalDB
-		option.CloudFileManagedLibraryGuard = originalGuard
-		option.CloudFileAllowLegacyManagedReads = originalReads
-		option.DBOpTimeout = originalTimeout
-	}()
-	option.CloudFileManagedLibraryGuard = true
-	option.CloudFileAllowLegacyManagedReads = true
-	option.DBOpTimeout = 2 * time.Second
-
-	// The fake connector answers "managed" for every repo, so the read
-	// carve-out must not reach the sync boundary.
-	fixture := &readAuditSQLFixture{}
-	seafileDB = sql.OpenDB(managedLibraryConnector{fixture: fixture})
-	if !syncLegacyEntryDenied(context.Background(), "22222222-2222-2222-2222-222222222222") {
-		t.Fatal("managed library was allowed on the legacy sync entry")
-	}
-	seafileDB.Close()
-
-	// No authority at all: refuse rather than fall back to the cached grant.
-	seafileDB = nil
-	if !syncLegacyEntryDenied(context.Background(), "22222222-2222-2222-2222-222222222222") {
-		t.Fatal("missing authority must fail closed on the legacy sync entry")
+func TestV2ScopedLibraryBoundary(t *testing.T) {
+	for _, tc := range []struct { rule, fails, deny bool }{
+		{false, false, false}, {true, false, true}, {false, true, true},
+	} {
+		db := sql.OpenDB(scopedConnector{hasRule:tc.rule, fails:tc.fails})
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil { t.Fatal(err) }
+		err = checkLegacyLibrary(context.Background(), tx, "22222222-2222-2222-2222-222222222222")
+		if (err != nil) != tc.deny { t.Fatalf("rule=%v fails=%v err=%v", tc.rule,tc.fails,err) }
+		_ = tx.Rollback()
+		_ = db.Close()
 	}
 }

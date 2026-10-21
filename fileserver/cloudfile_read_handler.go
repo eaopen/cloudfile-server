@@ -52,21 +52,13 @@ func cloudFileReadCB(rsp http.ResponseWriter, r *http.Request) (returned *appErr
 	if failure != nil {
 		return failure
 	}
-	requestID := uuid.New().String()
-	fact, err := captureCloudFileReadAudit(token, requestID)
-	if err != nil || fact.RepoID != info.repoID || fact.Operation != info.op {
-		return &appError{nil, "Read audit context unavailable", http.StatusServiceUnavailable}
-	}
-	fact.ClientIP = cloudFileAuditClientIP(r, option.CloudFileTrustedTLSProxies)
-	rsp.Header().Set("X-Request-ID", requestID)
-	fact.Outcome = cloudFileReadOutcome{Result: "attempted"}
-	if appendCloudFileReadAudit(r.Context(), seafileDB, fact) != nil {
-		return &appError{nil, "Read audit unavailable", http.StatusServiceUnavailable}
-	}
+	// The V2 operation log captures mutations, not routine file reads.
+	// Keep the native short-lived ticket, continuous authorization checks and
+	// completion cleanup; no legacy Outbox/SchemaRunner SQL in this hot path.
+	rsp.Header().Set("X-Request-ID", uuid.New().String())
 	defer func() {
 		interruption := recover()
-		completionError := finishCloudFileReadAudit(r, tracked, writer, seafileDB, fact,
-			returned != nil || interruption != nil)
+		completionError := writer.Close()
 		if interruption != nil {
 			panic(interruption)
 		}
