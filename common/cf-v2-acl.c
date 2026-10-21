@@ -113,6 +113,34 @@ int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session, const c
 #include "diff-simple.h"
 #include "repo-mgr.h"
 
+static gboolean canonical(const char *path);
+
+/* Public links are independently authenticated by Seahub. Check whether
+ * ACL policy intersects the ACTUAL linked path or exported subtree; an ACL
+ * on a sibling is not a repository-wide block. Virtual links need an origin
+ * proof this entry cannot provide, so refuse until routed through V2. */
+int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
+                                const char *repo, const char *path,
+                                gboolean subtree)
+{
+    if (!session || !session->db || !repo || strlen(repo)!=36 ||
+        !canonical(path) || seaf_db_type(session->db)!=SEAF_DB_TYPE_MYSQL)
+        return -1;
+    gboolean failed=FALSE;
+    gboolean virtual=seaf_db_statement_exists(session->db,
+        "SELECT 1 FROM VirtualRepo WHERE repo_id=?",
+        &failed, 1, "string", repo);
+    if (failed || virtual) return -1;
+    const char *sql =
+        "SELECT 1 FROM cf_dir_acl WHERE repo_id=? AND "
+        "(path='/' OR path=? OR ? LIKE CONCAT(path,'/%') OR "
+        "(? AND ((?='/' AND path<>'/') OR path LIKE CONCAT(?,'/%')))) LIMIT 1";
+    gboolean intersects=seaf_db_statement_exists(session->db,sql,&failed,6,
+        "string",repo,"string",path,"string",path,
+        "int",subtree?1:0,"string",path,"string",path);
+    return failed || intersects ? -1 : 0;
+}
+
 static gboolean canonical(const char *path)
 {
     if (!path || path[0] != '/' || strlen(path) > 4096 || !g_utf8_validate(path, -1, NULL) ||

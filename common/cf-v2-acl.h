@@ -14,6 +14,10 @@ CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
     const char *source, const char *destination);
 void cf_v2_acl_transfer_free(CfV2ACLTransfer *guard);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2ACLTransfer, cf_v2_acl_transfer_free)
+/* Public-link token is checked by Seahub; this rechecks only the link path. */
+int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
+                                const char *repo, const char *path,
+                                gboolean subtree);
 int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id);
 int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session,
                     const char *repo_id);
