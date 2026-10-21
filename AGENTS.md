@@ -50,3 +50,8 @@ CloudFile Server、Hub、Docker 共用以下规则：
 - V2 本地查看/普通编辑/独占编辑经 Hub 签发 scoped JWT，Server Go `/cf-edit/v1/*` 复核权限、原生 File ID 与 Guard。
 - 只保留 `cf_edit_guard` 的独占编辑状态；Seafile 管理原生文件版本，Agent2 本地 Journal 持有未确认任务。普通编辑不创建 Guard 或 Session。
 - C 层历史编辑证明、Resource、Intent、Edit Session 通道已退出，调用应拒绝，不能为修复 `cf_edit_session` 缺表错误恢复旧 DDL 或旧分支 SQL。
+
+## SQL 表边界
+
+- 当前 Server V2 只允许 `cf_library_storage`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`、`cf_audit_event` 业务表。历史 `cf_library_storage_key` 的分配和冷 GC 账本不允许重新引入；存储依赖 `cf-v2-storage.c` 的预占与激活。
+- `scripts/sql/mysql/cloudfile.sql` 和 `scripts/sql/sqlite/cloudfile.sql` 属于未发行旧设计，已从产品源码删除。旧数据库迁移属于外置一次性工具，不属于构建/启动路径。
