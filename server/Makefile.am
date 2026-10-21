@@ -20,14 +20,9 @@ AM_CFLAGS = -DPKGDATADIR=\"$(pkgdatadir)\" \
 
 bin_PROGRAMS = seaf-server
 
-pkglib_LTLIBRARIES = libcloudfile_acl.la
-libcloudfile_acl_la_SOURCES = cloudfile-acl.c
-libcloudfile_acl_la_LDFLAGS = -version-info 1:0:0 -no-undefined
 
 noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	repo-mgr.h \
-	cloudfile-acl.h \
-	cloudfile-policy.h \
 	share-mgr.h \
 	passwd-mgr.h \
 	quota-mgr.h \
@@ -54,7 +49,6 @@ noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	../common/cf-storage.h \
 	../common/cf-auto-storage.h \
 	../common/cf-acl.h \
-	../common/cf-acl-resolve.h \
 	../common/cf-v2-share.h \
 	../common/cf-s3-client.h \
 	../common/storage-backend-multi.h \
@@ -76,7 +70,6 @@ seaf_server_SOURCES = \
 	quota-mgr.c \
 	repo-op.c \
 	repo-perm.c \
-	cloudfile-policy.c \
 	size-sched.c \
 	virtual-repo.c \
 	copy-mgr.c \
@@ -122,7 +115,6 @@ seaf_server_SOURCES = \
 	../common/cf-path.c \
 	../common/cf-storage.c \
 	../common/cf-acl.c \
-	../common/cf-acl-resolve.c \
 	../common/block-mgr.c \
 	../common/block-backend.c \
 	../common/block-backend-fs.c \
@@ -133,7 +125,6 @@ seaf_server_SOURCES = \
 	../common/block-tx-utils.c
 
 seaf_server_LDADD = $(top_builddir)/lib/libseafile_common.la \
-	libcloudfile_acl.la \
 	@GLIB2_LIBS@ @GOBJECT_LIBS@ @SSL_LIBS@ @LIB_RT@ @LIB_UUID@ -lsqlite3 @LIBEVENT_LIBS@ @EVHTP_LIBS@ \
 	$(top_builddir)/common/cdc/libcdc.la \
 	@SEARPC_LIBS@ @JANSSON_LIBS@ ${LIB_WS32} @ZLIB_LIBS@ \

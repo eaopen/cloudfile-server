@@ -185,30 +185,7 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cloudfile_put_file_if_head,
                                      "seafile_cloudfile_put_file_if_head",
                     searpc_signature_string__string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_put_file_with_barriers,
-                                     "seafile_cloudfile_put_file_with_barriers",
-                    searpc_signature_string__string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_publish_edit,
-                                     "seafile_cloudfile_publish_edit",
-                    searpc_signature_string__string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_stage_raw_block,
-                                     "seafile_cloudfile_stage_raw_block",
-                    searpc_signature_int__string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_publish_edit_blocks,
-                                     "seafile_cloudfile_publish_edit_blocks",
-                    searpc_signature_string__string_string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_publish_optimistic_blocks,
-                                     "seafile_cloudfile_publish_optimistic_blocks",
-                    searpc_signature_string__string_string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-                                     seafile_cloudfile_checkin_edit,
-                                     "seafile_cloudfile_checkin_edit",
-                    searpc_signature_string__string_string_string_string());
+
     /* searpc_server_register_function ("seafserv-threaded-rpcserver", */
     /*                                  seafile_put_file_blocks, */
     /*                                  "seafile_put_file_blocks", */
@@ -629,27 +606,6 @@ static void start_rpc_service (const char *seafile_dir,
         seafile_web_get_scoped_download_token,
         "seafile_web_get_scoped_download_token",
         searpc_signature_string__string_string_string_int());
-    /* Privileged named-pipe RPC only. No public HTTP download registration. */
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_issue_read_ticket, "seafile_cloudfile_issue_read_ticket",
-        searpc_signature_string__string_string_string_string_string_string_string());
-    /* Versioned token-bound entry: an older Server must reject the Hub call,
-     * not silently ignore a credential condition it does not understand. */
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_issue_read_ticket, "seafile_cloudfile_issue_token_read_ticket",
-        searpc_signature_string__string_string_string_string_string_string_string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_consume_read_ticket, "seafile_cloudfile_consume_read_ticket",
-        searpc_signature_object__string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_check_read_transfer, "seafile_cloudfile_check_read_transfer",
-        searpc_signature_int__string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_end_read_transfer, "seafile_cloudfile_end_read_transfer",
-        searpc_signature_int__string());
-    searpc_server_register_function ("seafserv-threaded-rpcserver",
-        seafile_cloudfile_read_transfer_fact, "seafile_cloudfile_read_transfer_fact",
-        searpc_signature_string__string());
 #endif
     searpc_server_register_function ("seafserv-threaded-rpcserver",
                                      seafile_web_get_access_token,
@@ -775,11 +731,6 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cf_fileop_aborted,
                                      "cf_fileop_aborted",
                                      searpc_signature_int__string());
-
-
-
-
-
 
     /* CloudFile storage-class assignment (P2 storage backends) */
     searpc_server_register_function ("seafserv-threaded-rpcserver",

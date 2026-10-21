@@ -38,3 +38,9 @@
 - `tests/test_v2_no_managed_library.py`：阻止旧托管库表、函数、错误前置权限判断回流。
 
 测试矩阵至少覆盖：无 ACL、无关目录 ACL、真实目录局部缩/扩权、无库共享根、上传分块绑定路径、公共链接、C/Go 最终写入、SQL/Hub 故障、原生整库同步限制、C Go 选择。构建、CI、DEV/PROD 状态分别报告，不能混称完成。
+
+## 旧授权出口退役
+
+独立 C ACL resolver、ctypes `libcloudfile_acl`、旧 read-ticket/transfer 和 scope-barrier/edit-intent RPC 已删除。Go 的旧 `/cloudfile/read` 与 browser-ticket 路由同时取消。原生 CE 令牌和 V2 scoped download、内部 JWT、Go 编辑提交继续保留；不能把旧凭据当作新授权。
+
+C Branch 最终检查位于原生行锁及旧 head 验证之后。保留普通写入 Guard 与 CAS，移除只供退役 publisher 使用的 Guard 跳过分支。允许已有权限缓存至 TTL 到期，不增加实时撤权机制。

@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"github.com/haiwen/seafile-server/fileserver/option"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type linkConnector struct{ matched, failed bool }
@@ -46,8 +48,9 @@ func (r *linkRows) Next(dst []driver.Value) error {
 }
 
 func TestPublicShareOnlyChecksActualSubtree(t *testing.T) {
-	previous := seafileDB
-	defer func() { seafileDB = previous }()
+	previous, timeout := seafileDB, option.DBOpTimeout
+	defer func() { seafileDB, option.DBOpTimeout = previous, timeout }()
+	option.DBOpTimeout = 2 * time.Second
 	const repo = "11111111-1111-4111-8111-111111111111"
 	for _, tc := range []struct {
 		matched, failed bool

@@ -512,13 +512,6 @@ seafile_web_query_access_token (const char *token, GError **error);
 char *seafile_web_get_scoped_download_token (
     const char *repo_id, const char *path, const char *username,
     int use_onetime, GError **error);
-char *seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
-    const char *head_id, const char *object_id, const char *op,
-    const char *username, const char *conditions, GError **error);
-GObject *seafile_cloudfile_consume_read_ticket (const char *token, GError **error);
-int seafile_cloudfile_check_read_transfer (const char *token, GError **error);
-int seafile_cloudfile_end_read_transfer (const char *token, GError **error);
-char *seafile_cloudfile_read_transfer_fact (const char *token, GError **error);
 #endif
 
 char *
@@ -751,39 +744,6 @@ char *
 seafile_cloudfile_put_file_if_head (const char *repo_id, const char *temp_file_path,
                                    const char *parent_dir, const char *file_name,
                                    const char *user, const char *head_id, GError **error);
-
-/* Internal barrier/whole-head primitive; not a complete authorization guard. */
-char *
-seafile_cloudfile_put_file_with_barriers (const char *repo_id, const char *temp_file_path,
-    const char *parent_dir, const char *file_name, const char *user,
-    const char *condition_json, GError **error);
-
-/* Publishes one prepared Checkout intent and its receipt in the Branch txn. */
-int
-seafile_cloudfile_stage_raw_block (const char *repo_id, const char *block_id,
-    const char *temp_file_path, const char *user, GError **error);
-
-char *
-seafile_cloudfile_publish_edit_blocks (const char *repo_id,
-    const char *blockids_json, const char *size_text, const char *parent_dir,
-    const char *file_name, const char *user, const char *condition_json,
-    GError **error);
-
-char *
-seafile_cloudfile_publish_optimistic_blocks (const char *repo_id,
-    const char *blockids_json, const char *size_text, const char *parent_dir,
-    const char *file_name, const char *user, const char *condition_json,
-    GError **error);
-
-char *
-seafile_cloudfile_publish_edit (const char *repo_id, const char *temp_file_path,
-    const char *parent_dir, const char *file_name, const char *user,
-    const char *condition_json, GError **error);
-
-/* Releases a Checkout without new bytes in the final native Branch transaction. */
-char *
-seafile_cloudfile_checkin_edit (const char *repo_id, const char *path,
-    const char *user, const char *condition_json, GError **error);
 
 /**
  * Add file blocks at once.

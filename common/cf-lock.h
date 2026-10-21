@@ -13,9 +13,4 @@ void cf_lock_init (void);
 
 gboolean cf_lock_enabled (void);
 
-/* Narrow synchronous exception for the native edit publisher. The final
- * Branch transaction must validate and complete the checkout proof. */
-void cf_lock_controlled_publish_enter (const char *repo, const char *path);
-void cf_lock_controlled_publish_leave (void);
-
 #endif /* CF_LOCK_H */

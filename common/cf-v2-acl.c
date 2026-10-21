@@ -1,6 +1,7 @@
 #include "common.h"
 #include "cf-v2-acl.h"
 #include "seafile-session.h"
+#include "repo-mgr.h"
 
 static const char *query =
     "SELECT 1 FROM cf_dir_acl WHERE repo_id=? OR repo_id IN "
@@ -17,10 +18,14 @@ static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char
     if (!session || !session->db || !repo_id ||
         seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
     gboolean protected = FALSE;
-    int count = trans ? seaf_db_trans_foreach_selected_row(trans, query, found, &protected,
+    /* A prior barrier read may have established a REPEATABLE READ snapshot.
+     * Use a locking/current read after Branch, never that older snapshot. */
+    char *current_query = trans ? g_strconcat(query, " FOR UPDATE", NULL) : NULL;
+    int count = trans ? seaf_db_trans_foreach_selected_row(trans, current_query, found, &protected,
                             2, "string", repo_id, "string", repo_id) :
                        seaf_db_statement_foreach_row(session->db, query, found, &protected,
                             2, "string", repo_id, "string", repo_id);
+    g_free(current_query);
     return count < 0 ? -1 : protected ? -2 : 0;
 }
 
@@ -81,12 +86,9 @@ CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
     for (int i=0;i<2;++i) {
         const char *repo=guard->repos[i];
         if (!repo) continue;
-        /* Virtual repositories need an origin/path proof; do not infer it from
-         * an unprotected child. SQL failure is distinct from an empty result. */
-        gboolean db_error=FALSE;
-        gboolean virtual=seaf_db_trans_check_for_existence(guard->trans,
-            "SELECT 1 FROM VirtualRepo WHERE repo_id=?", &db_error, 1, "string", repo);
-        if (db_error || virtual || check(guard->trans,session,repo)!=0) goto failed;
+        /* CE virtual libraries remain usable when neither library nor origin
+         * carries ACL restrictions. Scoped restrictions still need proof. */
+        if (check(guard->trans,session,repo)!=0) goto failed;
     }
     return guard;
 failed:
@@ -117,8 +119,8 @@ static gboolean canonical(const char *path);
 
 /* Public links are independently authenticated by Seahub. Check whether
  * ACL policy intersects the ACTUAL linked path or exported subtree; an ACL
- * on a sibling is not a repository-wide block. Virtual links need an origin
- * proof this entry cannot provide, so refuse until routed through V2. */
+ * on a sibling is not a repository-wide block. CE virtual links use the
+ * existing native origin/path mapping. */
 int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
                                 const char *repo, const char *path,
                                 gboolean subtree)
@@ -132,7 +134,20 @@ int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
         "SELECT 1 FROM VirtualRepo WHERE repo_id=?",
         &failed, 1, "string", repo);
     if (failed) return -1;
-    if (virtual) return 1;
+    if (virtual) {
+        SeafVirtRepo *info = seaf_repo_manager_get_virtual_repo_info(session->repo_mgr, repo);
+        if (!info) return -1;
+        if (!canonical(info->path) || !strcmp(info->origin_repo_id, repo)) {
+            seaf_virtual_repo_info_free(info);
+            return -1;
+        }
+        char *mapped = !strcmp(path, "/") ? g_strdup(info->path) :
+            g_build_filename(info->path, path + 1, NULL);
+        int result = cf_v2_acl_public_link_scope(session, info->origin_repo_id, mapped, subtree);
+        g_free(mapped);
+        seaf_virtual_repo_info_free(info);
+        return result;
+    }
     const char *sql =
         "SELECT 1 FROM cf_dir_acl WHERE repo_id=? AND "
         "(path='/' OR path=? OR ? LIKE CONCAT(path,'/%') OR "
@@ -171,7 +186,7 @@ static size_t response_body(char *data, size_t size, size_t n, void *opaque)
 /*
  * Transport only: one POST to the Hub's internal V2 check endpoint.
  *
- * Split out of authorize() so the directory-share qualification (cf-v2-share.c)
+ * Shared transport so the directory-share qualification (cf-v2-share.c)
  * reuses this channel instead of growing a second curl block with its own JWT
  * lifetime rules -- two copies of an internal-auth handshake are one copy too
  * many, and the one that drifts is always the less exercised one.
@@ -218,63 +233,4 @@ done:
     if (jwt) jwt_free(jwt);
     g_free(token);g_free(auth);g_free(url);
     return status;
-}
-
-static int authorize(struct _SeafileSession *session, json_t *request)
-{
-    int result=-1;
-    char *payload=NULL;
-    GString *body=g_string_new(NULL);
-    json_t *reply=NULL;
-    payload=json_dumps(request,JSON_COMPACT);
-    if (!payload) goto done;
-    if (cf_v2_acl_check_json(session,payload,body)!=200) goto done;
-    reply=json_loadb(body->str,body->len,JSON_REJECT_DUPLICATES,NULL);
-    if (json_is_true(json_object_get(reply,"allowed")) &&
-        !g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1")) result=0;
-done:
-    json_decref(reply);
-    g_free(payload);g_string_free(body,TRUE);
-    return result;
-}
-
-int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
-    const char *repo_id, const char *old_id, const char *new_id, const char *actor)
-{
-    if (!trans) return -1;
-    int state=cf_v2_acl_final(trans,session,repo_id);
-    if (state==0) return 0;
-    if (state!=-2) return -1;
-    /* Distinguish protected scope from a SQL/config failure: neither grants.
-     * The HTTP authority independently reads the same facts and denies failures. */
-    if (!actor || !*actor || !old_id || !new_id) return -1;
-    SeafRepo *repo=seaf_repo_manager_get_repo(session->repo_mgr,repo_id);
-    if (!repo || repo->virtual_info) { if (repo) seaf_repo_unref(repo); return -1; }
-    SeafCommit *old=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,old_id);
-    SeafCommit *next=seaf_commit_manager_get_commit(session->commit_mgr,repo_id,repo->version,new_id);
-    GList *changes=NULL;
-    json_t *checks=json_array();
-    json_t *request=json_object();
-    int result=-1;
-    if (!old || !next || diff_commit_roots(repo->store_id,repo->version,old->root_id,next->root_id,&changes,FALSE)<0) goto done;
-    for (GList *p=changes;p;p=p->next) {
-        DiffEntry *delta=p->data;
-        if (json_array_size(checks)>=4096 || (delta->status!=DIFF_STATUS_ADDED && delta->status!=DIFF_STATUS_MODIFIED)) goto done;
-        char *path=g_strconcat("/",delta->name,NULL);
-        if (!canonical(path)) {g_free(path);goto done;}
-        json_array_append_new(checks,json_pack("{s:s,s:s,s:s}","path",path,"kind","file","action","write"));
-        g_free(path);
-    }
-    if (!json_array_size(checks)) goto done;
-    json_object_set_new(request,"repo_id",json_string(repo_id));
-    json_object_set_new(request,"username",json_string(actor));
-    json_object_set(request,"checks",checks);
-    result=authorize(session,request);
-done:
-    json_decref(request);json_decref(checks);
-    g_list_free_full(changes,(GDestroyNotify)diff_entry_free);
-    if (old) seaf_commit_unref(old);
-    if (next) seaf_commit_unref(next);
-    seaf_repo_unref(repo);
-    return result;
 }

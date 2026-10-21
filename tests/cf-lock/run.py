@@ -14,10 +14,7 @@ with tempfile.TemporaryDirectory(prefix='cf-lock-test-') as folder:
     build = Path(folder)
     # Keep every production statement; replace only external include boundaries.
     source = re.sub(r'^#include[^\n]*\n', '', (root/'common/cf-lock.c').read_text(), flags=re.M)
-    policy = (root/'server/cloudfile-policy.c').read_text()
-    start = policy.index('int\ncf_policy_check_unleased_write (')
-    end = policy.index('\n}\n', start) + 3
-    (build/'production.c').write_text(source + '\n' + policy[start:end])
+    (build/'production.c').write_text(source)
     flags = subprocess.check_output(['pkg-config','--cflags','--libs','glib-2.0'], text=True).split()
     subprocess.run(['cc','-std=c99','-Wall','-Wextra','-Werror','-Wno-unused-parameter',
         '-I'+str(build),'-I'+str(root/'common'),'-I'+str(root/'include'),

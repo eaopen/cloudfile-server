@@ -171,40 +171,6 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     cloudfile_put_file_if_head = seafile_cloudfile_put_file_if_head
 
-    # Trusted scopes + durable barriers; still not a complete business guard.
-    @searpc_func("string", ["string", "string", "string", "string", "string", "string"])
-    def seafile_cloudfile_put_file_with_barriers(repo_id, tmp_file_path, parent_dir, filename, user, condition_json):
-        pass
-    cloudfile_put_file_with_barriers = seafile_cloudfile_put_file_with_barriers
-
-    @searpc_func("string", ["string", "string", "string", "string", "string", "string"])
-    def seafile_cloudfile_publish_edit(repo_id, tmp_file_path, parent_dir, filename, user, condition_json):
-        pass
-    cloudfile_publish_edit = seafile_cloudfile_publish_edit
-
-    @searpc_func("int", ["string", "string", "string", "string"])
-    def seafile_cloudfile_stage_raw_block(repo_id, block_id, tmp_file_path, user):
-        pass
-    cloudfile_stage_raw_block = seafile_cloudfile_stage_raw_block
-
-    @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])
-    def seafile_cloudfile_publish_edit_blocks(repo_id, blockids_json, file_size, parent_dir,
-                                              filename, user, condition_json):
-        pass
-    cloudfile_publish_edit_blocks = seafile_cloudfile_publish_edit_blocks
-
-    @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])
-    def seafile_cloudfile_publish_optimistic_blocks(repo_id, blockids_json, file_size, parent_dir,
-                                                    filename, user, condition_json):
-        pass
-    cloudfile_publish_optimistic_blocks = seafile_cloudfile_publish_optimistic_blocks
-
-    @searpc_func("string", ["string", "string", "string", "string"])
-    def seafile_cloudfile_checkin_edit(repo_id, path, user, condition_json):
-        pass
-
-    cloudfile_checkin_edit = seafile_cloudfile_checkin_edit
-
     @searpc_func("int", ["string", "string", "string", "string"])
     def seafile_del_file(repo_id, parent_dir, filename, user):
         pass
@@ -913,24 +879,6 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
     def seafile_web_get_scoped_download_token(repo_id, path, username, use_onetime=0):
         pass
     web_get_scoped_download_token = seafile_web_get_scoped_download_token
-
-    # Privileged legacy calls retain their separate protocol.
-
-    @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])
-    def seafile_cloudfile_issue_read_ticket(repo_id, path, head_id, object_id, op, username, conditions):
-        pass
-
-    @searpc_func("object", ["string"])
-    def seafile_cloudfile_consume_read_ticket(token):
-        pass
-
-    @searpc_func("int", ["string"])
-    def seafile_cloudfile_check_read_transfer(token):
-        pass
-
-    @searpc_func("int", ["string"])
-    def seafile_cloudfile_end_read_transfer(token):
-        pass
 
     @searpc_func("string", ["string", "string", "string", "string", "int"])
     def seafile_web_get_access_token(repo_id, obj_id, op, username, use_onetime=1):

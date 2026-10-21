@@ -11,38 +11,6 @@
 #include "seafile-error.h"
 
 static gboolean lock_on = FALSE;
-typedef struct {
-    char *repo;
-    char *path;
-} ControlledTarget;
-
-static void
-controlled_target_free (gpointer data)
-{
-    ControlledTarget *target = data;
-    if (!target) return;
-    g_free (target->repo);
-    g_free (target->path);
-    g_free (target);
-}
-
-static GPrivate controlled_target = G_PRIVATE_INIT(controlled_target_free);
-
-void
-cf_lock_controlled_publish_enter (const char *repo, const char *path)
-{
-    ControlledTarget *target = g_new0 (ControlledTarget, 1);
-    target->repo = g_strdup (repo);
-    target->path = g_strdup (path);
-    g_private_replace (&controlled_target, target);
-}
-
-void
-cf_lock_controlled_publish_leave (void)
-{
-    g_private_replace (&controlled_target, NULL);
-}
-
 static gboolean
 barrier_row (SeafDBRow *db_row, void *data)
 {
@@ -135,14 +103,6 @@ cf_lock_prepare (const CfFileOp *fop, GError **error)
         return 0;
     GList *subjects = cf_fileop_subject_paths (fop);
     GList *sources = cf_fileop_source_paths (fop);
-    ControlledTarget *controlled = g_private_get (&controlled_target);
-    if (controlled && g_strcmp0 (fop->op, CF_OP_UPDATE_FILE) == 0 &&
-        g_strcmp0 (fop->repo_id, controlled->repo) == 0 &&
-        subjects && !subjects->next && !sources &&
-        g_strcmp0 (subjects->data, controlled->path) == 0) {
-        g_list_free_full (subjects, g_free);
-        return 0;
-    }
     int ret = 0;
     for (GList *p = subjects; p && ret == 0; p = p->next)
         ret = check_path (fop->repo_id, p->data, fop->user, error);
