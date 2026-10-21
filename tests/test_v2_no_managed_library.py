@@ -74,6 +74,18 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         session = (ROOT / 'server/seafile-session.c').read_text()
         self.assertIn('CloudFile V2 requires ENABLE_GO_FILESERVER=true', session)
 
+    def test_hub_outage_is_not_reported_as_user_denial(self):
+        go = (ROOT / 'fileserver/cf_v2_acl.go').read_text()
+        self.assertIn('errCFACLUnavailable', go)
+        self.assertIn('return cfACLPathFailure(err)', go)
+        self.assertIn('http.StatusServiceUnavailable', go)
+        tests = (ROOT / 'fileserver/cf_v2_acl_test.go').read_text()
+        self.assertIn('TestCfACLAuthorityFailuresRemainDistinct', tests)
+        native = (ROOT / 'server/http-tx-mgr.c').read_text()
+        self.assertIn('*status=scope<0 ? 503 : 403;', native)
+        policy = (ROOT / 'common/cf-v2-acl.c').read_text()
+        self.assertIn('return intersects ? 1 : 0;', policy)
+
     def test_retired_fixtures_do_not_regain_authority(self):
         for name in ('tests/cf-dir-page', 'tests/cf-permission-many'):
             self.assertFalse((ROOT / name).exists(), name)
