@@ -32,6 +32,16 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         self.assertIn('cf_v2_acl_final_scoped(', branch)
         self.assertNotIn('cf_policy_enroll_managed_library(', branch)
 
+    def test_c_final_acl_follows_branch_lock_and_head_validation(self):
+        source = (ROOT / 'common/branch-mgr.c').read_text()
+        commit = source.split('test_and_update_branch (', 1)[1]
+        self.assertLess(commit.index('AND repo_id=? FOR UPDATE'),
+                        commit.index('cf_v2_acl_final_scoped('))
+        self.assertLess(commit.index('strcmp (old_commit_id, commit_id)'),
+                        commit.index('cf_v2_acl_final_scoped('))
+        policy = (ROOT / 'common/cf-v2-acl.c').read_text()
+        self.assertIn('g_strconcat(query, " FOR UPDATE", NULL)', policy)
+
     def test_whole_repo_protocol_is_a_capability_gate_only(self):
         source = (ROOT / 'fileserver/cf_v2_acl.go').read_text(encoding='utf-8')
         self.assertIn('func cfACLRequireRepoWideProof(', source)

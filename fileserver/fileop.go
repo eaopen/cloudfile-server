@@ -3719,7 +3719,7 @@ func doUploadBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appE
 
 	// The token's parent_dir and the requested destination must agree before
 	// ACL checks, otherwise a token scoped to /A could publish in /B.
-	if !cfACLCanonical(parentDir) || !cfACLCanonical(filepath.Join(parentDir, fileName)) ||
+	if fsm.parentDir == "" || !cfACLCanonical(parentDir) || !cfACLCanonical(filepath.Join(parentDir, fileName)) ||
 		shouldIgnoreFile(fileName) || !isParentMatched(fsm.parentDir, parentDir) {
 		return &appError{nil, "Invalid or mismatched upload destination", http.StatusForbidden}
 	}

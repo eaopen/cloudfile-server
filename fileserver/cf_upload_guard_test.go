@@ -19,6 +19,7 @@ type uploadGuardFixture struct {
 	paths                   []driver.Value
 	failMetadata, failGuard bool
 	tableCount              int
+	currentSchema           bool
 	queries                 []string
 }
 type uploadGuardDriver struct{}
@@ -39,7 +40,7 @@ func (c *uploadGuardConn) Close() error                        { return nil }
 func (c *uploadGuardConn) Begin() (driver.Tx, error)           { return uploadGuardTx{}, nil }
 func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.fixture.queries = append(c.fixture.queries, query)
-	rows := &uploadGuardRows{}
+	rows := &uploadGuardRows{names: []string{"value"}}
 	if strings.Contains(query, "information_schema.TABLES") {
 		if c.fixture.failMetadata {
 			return nil, errors.New("database unavailable")
@@ -49,8 +50,28 @@ func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []d
 		if c.fixture.failMetadata {
 			return nil, errors.New("database unavailable")
 		}
+		if c.fixture.currentSchema {
+			rows.names = []string{"name", "kind", "length", "nullable", "full_kind"}
+			for name, column := range cfV2GuardColumns {
+				fullKind := column.kind
+				if column.unsigned {
+					fullKind += " unsigned"
+				}
+				rows.values = append(rows.values, []driver.Value{name, column.kind, column.length, column.nullable, fullKind})
+			}
+			return rows, nil
+		}
 		for _, name := range c.fixture.columns {
 			rows.values = append(rows.values, []driver.Value{name})
+		}
+	} else if strings.Contains(query, "information_schema.STATISTICS") {
+		rows.names = []string{"index", "order", "column", "non_unique", "prefix"}
+		if c.fixture.currentSchema {
+			for name, parts := range cfV2GuardIndexes {
+				for i, part := range parts {
+					rows.values = append(rows.values, []driver.Value{name, int64(i + 1), part.name, part.nonUnique, nil})
+				}
+			}
 		}
 	} else {
 		if c.fixture.failGuard {
@@ -71,9 +92,12 @@ type uploadGuardTx struct{}
 func (uploadGuardTx) Commit() error   { return nil }
 func (uploadGuardTx) Rollback() error { return nil }
 
-type uploadGuardRows struct{ values [][]driver.Value }
+type uploadGuardRows struct {
+	values [][]driver.Value
+	names  []string
+}
 
-func (r *uploadGuardRows) Columns() []string { return []string{"value"} }
+func (r *uploadGuardRows) Columns() []string { return r.names }
 func (r *uploadGuardRows) Close() error      { return nil }
 func (r *uploadGuardRows) Next(dest []driver.Value) error {
 	if len(r.values) == 0 {
@@ -156,10 +180,10 @@ func TestUploadEnabledCheckoutRequiresInstalledGuard(t *testing.T) {
 	enabled := option.CloudFileCheckoutEnabled
 	option.CloudFileCheckoutEnabled = true
 	defer func() { option.CloudFileCheckoutEnabled = enabled }()
-	for _, f := range []*uploadGuardFixture{{tableCount: 1}, {tableCount: 0}, {failMetadata: true}} {
+	for _, f := range []*uploadGuardFixture{{tableCount: 1, currentSchema: true}, {tableCount: 1}, {tableCount: 0}, {failMetadata: true}} {
 		db := sql.OpenDB(uploadGuardConnector{f})
 		available, err := loadV2GuardCapability(context.Background(), db)
-		if f.tableCount == 1 && !f.failMetadata {
+		if f.tableCount == 1 && f.currentSchema && !f.failMetadata {
 			if err != nil || !available {
 				t.Fatal("installed Guard not enabled")
 			}

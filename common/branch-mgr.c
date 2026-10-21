@@ -1267,17 +1267,6 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_trans_close (trans);
         return -2;
     }
-    /* The final Branch transaction requires authenticated path-scoped proof.
-     * Native whole-repository commits have no actor/path scope: do not grant. */
-    int acl_result = enhanced ? cf_v2_acl_final_scoped(trans, mgr->seaf,
-                                branch->repo_id, old_commit_id, branch->commit_id,
-                                native_username) :
-                                cf_v2_acl_final(trans, mgr->seaf, branch->repo_id);
-    if (acl_result < 0) {
-        seaf_db_rollback (trans);
-        seaf_db_trans_close (trans);
-        return -2;
-    }
 
     if (check_gc) {
         sql = "SELECT gc_id FROM GCID WHERE repo_id = ? FOR UPDATE";
@@ -1337,6 +1326,21 @@ test_and_update_branch (SeafBranchManager *mgr,
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return -1;
+    }
+
+    /* Branch is locked before consulting the current authority. ACL writers
+     * acquire this same lock, serializing SQL changes with publication.
+     * Hub decisions retain their configured, bounded cache lifetime.
+     * The final transaction requires authenticated path-scoped proof.
+     * Native whole-repository commits have no actor/path scope: do not grant. */
+    int acl_result = enhanced ? cf_v2_acl_final_scoped(trans, mgr->seaf,
+                                branch->repo_id, old_commit_id, branch->commit_id,
+                                native_username) :
+                                cf_v2_acl_final(trans, mgr->seaf, branch->repo_id);
+    if (acl_result < 0) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return -2;
     }
 
     if (scopes_json && scopes_json[0] == '{') {

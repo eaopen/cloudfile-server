@@ -17,10 +17,14 @@ static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char
     if (!session || !session->db || !repo_id ||
         seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
     gboolean protected = FALSE;
-    int count = trans ? seaf_db_trans_foreach_selected_row(trans, query, found, &protected,
+    /* A prior barrier read may have established a REPEATABLE READ snapshot.
+     * Use a locking/current read after Branch, never that older snapshot. */
+    char *current_query = trans ? g_strconcat(query, " FOR UPDATE", NULL) : NULL;
+    int count = trans ? seaf_db_trans_foreach_selected_row(trans, current_query, found, &protected,
                             2, "string", repo_id, "string", repo_id) :
                        seaf_db_statement_foreach_row(session->db, query, found, &protected,
                             2, "string", repo_id, "string", repo_id);
+    g_free(current_query);
     return count < 0 ? -1 : protected ? -2 : 0;
 }
 
