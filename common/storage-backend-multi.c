@@ -635,7 +635,7 @@ prepare_auto_gc (MultiPriv *priv, const char *repo_id)
     if (!priv->auto_root)
         return 0;
     ret = seaf_db_statement_foreach_row (priv->db,
-        "SELECT repo_key FROM cf_library_storage_key WHERE repo_id = ?",
+        "SELECT repo_key FROM cf_library_storage WHERE repo_id = ?",
         read_storage_id, &key, 1, "string", repo_id);
     if (ret < 0)
         return -1;
