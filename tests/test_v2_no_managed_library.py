@@ -45,7 +45,13 @@ class NoManagedLibraryBoundary(unittest.TestCase):
         self.assertIn('cf_v2_acl_check_json(seaf,payload,body)', adapter)
         self.assertIn('json_object_set_new(req,"partial",json_true())', adapter)
         self.assertIn('count<512', adapter)
-        self.assertNotIn('cf_acl_apply(repo,path,user,native', adapter)
+        # The listing filter must use one bounded partial batch, not the
+        # per-child cf_acl_apply seam. Scope the assertion to the filter: the
+        # single-path sync gate still calls cf_acl_apply legitimately.
+        listing = adapter.split('cf_acl_filter_dirents (', 1)[1]
+        listing = listing.split('cf_acl_find_restricted_path', 1)[0]
+        self.assertIn('filter_chunk(repo,dir,user,p,count,&visible)', listing)
+        self.assertNotIn('cf_acl_apply(', listing)
 
 if __name__ == '__main__':
     unittest.main()
