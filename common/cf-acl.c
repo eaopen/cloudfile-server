@@ -14,7 +14,7 @@ void cf_acl_init (void)
 {
     /* V2 directory policy is built in, not activated by a legacy switch.
      * Register even when the Hub is offline: failures must not grant access. */
-    cf_acl_on = (seaf && seaf->db);
+    cf_acl_on = (seaf != NULL);
     if (cf_acl_on)
         cf_ext_register ("v2-path-authority", cf_acl_apply,
                          cf_acl_filter_dirents, cf_acl_find_restricted_path);
