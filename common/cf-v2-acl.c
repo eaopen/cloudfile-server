@@ -1,6 +1,7 @@
 #include "common.h"
 #include "cf-v2-acl.h"
 #include "seafile-session.h"
+#include "repo-mgr.h"
 
 static const char *query =
     "SELECT 1 FROM cf_dir_acl WHERE repo_id=? OR repo_id IN "
@@ -85,12 +86,9 @@ CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
     for (int i=0;i<2;++i) {
         const char *repo=guard->repos[i];
         if (!repo) continue;
-        /* Virtual repositories need an origin/path proof; do not infer it from
-         * an unprotected child. SQL failure is distinct from an empty result. */
-        gboolean db_error=FALSE;
-        gboolean virtual=seaf_db_trans_check_for_existence(guard->trans,
-            "SELECT 1 FROM VirtualRepo WHERE repo_id=?", &db_error, 1, "string", repo);
-        if (db_error || virtual || check(guard->trans,session,repo)!=0) goto failed;
+        /* CE virtual libraries remain usable when neither library nor origin
+         * carries ACL restrictions. Scoped restrictions still need proof. */
+        if (check(guard->trans,session,repo)!=0) goto failed;
     }
     return guard;
 failed:
@@ -121,8 +119,8 @@ static gboolean canonical(const char *path);
 
 /* Public links are independently authenticated by Seahub. Check whether
  * ACL policy intersects the ACTUAL linked path or exported subtree; an ACL
- * on a sibling is not a repository-wide block. Virtual links need an origin
- * proof this entry cannot provide, so refuse until routed through V2. */
+ * on a sibling is not a repository-wide block. CE virtual links use the
+ * existing native origin/path mapping. */
 int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
                                 const char *repo, const char *path,
                                 gboolean subtree)
@@ -136,7 +134,20 @@ int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
         "SELECT 1 FROM VirtualRepo WHERE repo_id=?",
         &failed, 1, "string", repo);
     if (failed) return -1;
-    if (virtual) return 1;
+    if (virtual) {
+        SeafVirtRepo *info = seaf_repo_manager_get_virtual_repo_info(session->repo_mgr, repo);
+        if (!info) return -1;
+        if (!canonical(info->path) || !strcmp(info->origin_repo_id, repo)) {
+            seaf_virtual_repo_info_free(info);
+            return -1;
+        }
+        char *mapped = !strcmp(path, "/") ? g_strdup(info->path) :
+            g_build_filename(info->path, path + 1, NULL);
+        int result = cf_v2_acl_public_link_scope(session, info->origin_repo_id, mapped, subtree);
+        g_free(mapped);
+        seaf_virtual_repo_info_free(info);
+        return result;
+    }
     const char *sql =
         "SELECT 1 FROM cf_dir_acl WHERE repo_id=? AND "
         "(path='/' OR path=? OR ? LIKE CONCAT(path,'/%') OR "

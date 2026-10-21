@@ -23,7 +23,6 @@ bin_PROGRAMS = seaf-server
 
 noinst_HEADERS = web-accesstoken-mgr.h  seafile-session.h \
 	repo-mgr.h \
-	cloudfile-acl.h \
 	share-mgr.h \
 	passwd-mgr.h \
 	quota-mgr.h \
