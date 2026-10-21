@@ -137,10 +137,8 @@ cf_v2_share_grant (const char *repo_id, const char *path, const char *user,
     return permission;
 }
 
-/* Standard V2 uses only the three reviewed extension tables, not the
- * retired cf_managed_library/cf_schema_migration schema. This startup check
- * detects the installed V2 contract; Hub remains authoritative for all
- * per-user/path grants and rejects malformed schema or ACL data. */
+/* This seam checks only the current V2 identity/storage/ACL schema.
+ * Hub remains authoritative for every authenticated user/path grant. */
 static gboolean
 v2_share_schema_present (void)
 {
