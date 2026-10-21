@@ -13,73 +13,26 @@ import (
 
 var errCloudFileLegacyLibrary = errors.New("legacy library access unavailable")
 
-// Missing/drifted schema is not an unmanaged library. Lock marker gaps through
-// final publication, so enrollment cannot race a successful legacy commit.
+// V2 scoped-library boundary. The legacy whole-repository native path may not
+// bypass directory ACLs: a repository with scoped rules must use V2-authorized
+// file endpoints. No legacy schema ledger or managed-library marker is needed.
+// This indexed locking read also protects an empty prefix against a concurrent
+// ACL insertion during native publication on InnoDB REPEATABLE READ.
 func checkLegacyLibrary(ctx context.Context, tx *sql.Tx, repoID string) error {
-	if !option.CloudFileManagedLibraryGuard {
-		var installed int
-		err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('cf_schema_migration','cf_managed_library')").Scan(&installed)
-		if err != nil {
-			return errCloudFileLegacyLibrary
-		}
-		if installed == 0 {
-			return nil
-		}
-	}
-	if len(repoID) != 36 {
+	if tx == nil || len(repoID) != 36 {
 		return errCloudFileLegacyLibrary
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT repo_id FROM cf_managed_library LIMIT 0 FOR UPDATE")
-	if err != nil {
+	var id string
+	err := tx.QueryRowContext(ctx,
+		"SELECT repo_id FROM cf_dir_acl WHERE repo_id=? LIMIT 1 FOR UPDATE",
+		repoID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil || id != "" {
 		return errCloudFileLegacyLibrary
 	}
-	err = rows.Close()
-	if err != nil {
-		return errCloudFileLegacyLibrary
-	}
-	checks := []string{
-		"SELECT COUNT(*) FROM cf_schema_migration WHERE version='032_managed_libraries' AND state='applied'",
-		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND ENGINE='InnoDB'",
-		"SELECT COUNT(*) FROM (SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_managed_library' GROUP BY table_name HAVING COUNT(*)=2 AND SUM(column_name='repo_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO')=1 AND SUM(column_name='created_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO')=1) AS shape",
-		"SELECT COUNT(*) FROM (SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_managed_library' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='repo_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1) AS shape",
-	}
-	for _, query := range checks {
-		var count int
-		if tx.QueryRowContext(ctx, query).Scan(&count) != nil || count != 1 {
-			return errCloudFileLegacyLibrary
-		}
-	}
-	var isolation string
-	err = tx.QueryRowContext(ctx, "SELECT @@transaction_isolation").Scan(&isolation)
-	if err != nil {
-		err = tx.QueryRowContext(ctx, "SELECT @@tx_isolation").Scan(&isolation)
-	}
-	if err != nil || (isolation != "REPEATABLE-READ" && isolation != "SERIALIZABLE") {
-		return errCloudFileLegacyLibrary
-	}
-	var origin string
-	err = tx.QueryRowContext(ctx, "SELECT origin_repo FROM VirtualRepo WHERE repo_id=? FOR UPDATE", repoID).Scan(&origin)
-	if err != nil && err != sql.ErrNoRows {
-		return errCloudFileLegacyLibrary
-	}
-	if err == nil && len(origin) != 36 {
-		return errCloudFileLegacyLibrary
-	}
-	first, second := repoID, origin
-	if second != "" && first > second {
-		first, second = second, first
-	}
-	for _, id := range []string{first, second} {
-		if id == "" {
-			continue
-		}
-		var marker string
-		err = tx.QueryRowContext(ctx, "SELECT repo_id FROM cf_managed_library WHERE repo_id=? FOR UPDATE", id).Scan(&marker)
-		if err != sql.ErrNoRows {
-			return errCloudFileLegacyLibrary
-		}
-	}
-	return nil
+	return errCloudFileLegacyLibrary
 }
 
 func legacyLibraryAllowed(ctx context.Context, repoID string) error {
