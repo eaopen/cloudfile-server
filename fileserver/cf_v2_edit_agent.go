@@ -73,6 +73,22 @@ func cfEditHex(s string, size int) bool {
 	return true
 }
 func cfEditHash(s string) []byte { sum := sha256.Sum256([]byte(s)); return sum[:] }
+// Record only business state changes absent from native CE Activity.
+// Sharing the Guard/Branch transaction makes the event truthful without
+// an Outbox, duplicate file-commit log or a second audit database.
+func cfEditWriteAudit(ctx context.Context, tx *sql.Tx, c *cfEditClaims, operation, commitID string) error {
+	var committed interface{}
+	if commitID != "" {
+		committed = commitID
+	}
+	_, err := tx.ExecContext(ctx,
+		"INSERT INTO cf_audit_event(repo_id,object_type,object_id,operation,operator,source,"+
+			"source_path,path_hash,commit_id,result,occurred_at) "+
+			"VALUES(?,'file',?, ?,?,'desktop',?,?,?,'success',UTC_TIMESTAMP(6))",
+		c.RepoID, c.BaseID, operation, c.Subject, c.FilePath, cfEditHash(c.FilePath), committed)
+	return err
+}
+
 func cfEditJSON(w http.ResponseWriter, n int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -323,7 +339,7 @@ func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, rep
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
 		return
 	}
-	if tx.Commit() != nil {
+	if err = cfEditWriteAudit(ctx, tx, c, "checkout", ""); err != nil || tx.Commit() != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
 		return
 	}
@@ -375,6 +391,9 @@ func cfEditGuardAction(w http.ResponseWriter, r *http.Request, c *cfEditClaims, 
 		_, err = tx.ExecContext(ctx, "UPDATE cf_edit_guard SET lease_expires_at=TIMESTAMPADD(SECOND,600,UTC_TIMESTAMP(6)),updated_at=UTC_TIMESTAMP(6) WHERE repo_id=? AND path_hash=?", repo.ID, cfEditHash(c.FilePath))
 	} else {
 		_, err = tx.ExecContext(ctx, "UPDATE cf_edit_guard SET guard_id=NULL,owner_uid=NULL,owner_native_user=NULL,terminal_type=NULL,terminal_name=NULL,checkout_ip=NULL,proof_digest=NULL,base_file_id=NULL,lease_expires_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE repo_id=? AND path_hash=?", repo.ID, cfEditHash(c.FilePath))
+	}
+	if err == nil && action == "release" {
+		err = cfEditWriteAudit(ctx, tx, c, "checkout_cancel", "")
 	}
 	if err != nil || tx.Commit() != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
@@ -554,6 +573,12 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 		_, err = tx.ExecContext(ctx, "UPDATE Branch SET commit_id=? WHERE repo_id=? AND name='master' AND commit_id=?", newCommitID, repo.ID, head)
 		if err != nil {
 			cfEditFail(w, 503, "BRANCH_FAILED")
+			return
+		}
+	}
+	if action == "checkin" {
+		if err = cfEditWriteAudit(ctx, tx, c, "checkin", newCommitID); err != nil {
+			cfEditFail(w, 503, "SQL_UNAVAILABLE")
 			return
 		}
 	}
