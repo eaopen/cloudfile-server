@@ -61,14 +61,12 @@ int cf_policy_edit_publish (SeafDBTrans *trans, const char *repo, const char *pa
 int cf_policy_check_read (SeafDBTrans *trans, const char *repo, const char *path,
                          const char *provider, const char *user, json_t *snapshot,
                          int ce_permission, int kind);
-/* Optional internal local_session condition. Never replaces current CE/C,
- * subject, native object or OIDC checks. Locks persist through ticket use. */
+/* Historical local_session proof rejects; use V2 Guard + Agent2 Journal. */
 int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
                                   const char *path, const char *object_id,
                                   int kind, json_t *root,
                                   json_t *current_subject, int ce_permission);
-/* The optimistic Agent uploads without Checkout; final durable result is
- * atomically committed beside Native Branch. NULL commit_id checks only. */
+/* Historical optimistic receipt rejects; V2 Go owns Branch CAS. */
 int cf_policy_optimistic_receipt (SeafDBTrans *trans, const char *repo,
                                   json_t *conditions, const char *commit_id);
 

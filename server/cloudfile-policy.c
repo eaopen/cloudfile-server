@@ -136,49 +136,6 @@ cf_policy_enroll_managed_library (SeafDBTrans *trans, const char *repo)
     return -1;
 }
 
-static int editing_schema (SeafDBTrans *trans)
-{
-    gboolean error = FALSE;
-    return seaf_db_trans_check_for_existence (trans,
-        "SELECT version FROM cf_schema_migration WHERE version='029_editing_core' "
-        "AND state='applied' AND step=2 FOR UPDATE", &error, 0) && !error ? 0 : -1;
-}
-
-typedef struct {
-    const char *path;
-    const char *expected_uid;
-    gboolean valid;
-} LeaseResourceLocation;
-
-static gboolean
-lease_resource_row (SeafDBRow *row, void *data)
-{
-    LeaseResourceLocation *location = data;
-    const char *uid = seaf_db_row_get_column_text (row, 0);
-    const char *path = seaf_db_row_get_column_text (row, 1);
-    if (!uid || strlen (uid) != 36 || g_strcmp0 (path, location->path) ||
-        (location->expected_uid && g_strcmp0 (uid, location->expected_uid)))
-        location->valid = FALSE;
-    return TRUE;
-}
-
-static int
-lease_resource_location (SeafDBTrans *trans, const char *repo,
-                         const char *path, const char *hash, const char *uid)
-{
-    LeaseResourceLocation location = {path, uid, TRUE};
-    /* Hash is an indexed locator, never identity. Read at most two CURRENT
-     * rows before joining a lease: a collision or duplicate active lifecycle
-     * must not be hidden by the UID-specific join or EXISTS short circuit.
-     * The repository authority scope serializes supported resource mutations.
-     * This does not replace native lifecycle reconciliation. */
-    int count = seaf_db_trans_foreach_selected_row (trans,
-        "SELECT uid,path FROM cf_resource WHERE repo_id=? AND path_hash=? "
-        "AND kind='file' AND state='active' LIMIT 2 FOR UPDATE",
-        lease_resource_row, &location, 2, "string", repo, "string", hash);
-    return count >= 0 && count <= 1 && location.valid && (!uid || count == 1) ? 0 : -1;
-}
-
 int
 cf_policy_check_unleased_write (SeafDBTrans *trans, const char *repo,
                                 const char *path, const char *user)
@@ -211,167 +168,15 @@ cf_policy_check_lease_write (SeafDBTrans *trans, const char *repo, const char *p
     return cf_policy_check_unleased_write (trans, repo, path, user);
 }
 
-typedef struct {
-    char action[24];
-} EditPublication;
-
-static gboolean
-edit_publication_row (SeafDBRow *row, void *data)
-{
-    EditPublication *publication = data;
-    const char *action = seaf_db_row_get_column_text (row, 0);
-    if (g_strcmp0 (action, "commit") && g_strcmp0 (action, "checkin") &&
-        g_strcmp0 (action, "checkin-unchanged"))
-        return FALSE;
-    g_strlcpy (publication->action, action, sizeof(publication->action));
-    return TRUE;
-}
-
-static const char *
-edit_text (json_t *object, const char *name, size_t maximum)
-{
-    json_t *value = json_object_get (object, name);
-    const char *text = json_string_value (value);
-    if (!json_is_string (value) || !text || !*text ||
-        json_string_length (value) != strlen (text) || strlen (text) > maximum)
-        return NULL;
-    return text;
-}
-
-static gboolean
-edit_decimal (const char *value)
-{
-    if (!value || !*value || *value == '0' || strlen (value) > 20)
-        return FALSE;
-    for (const char *p = value; *p; ++p)
-        if (!g_ascii_isdigit (*p)) return FALSE;
-    errno = 0;
-    guint64 number = g_ascii_strtoull (value, NULL, 10);
-    char canonical[32];
-    g_snprintf (canonical, sizeof(canonical), "%" G_GUINT64_FORMAT, number);
-    return !errno && strcmp (canonical, value) == 0;
-}
-
+/* Historical Resource/CommitIntent publisher retired. V2 Go owns CAS. */
 int
 cf_policy_edit_publish (SeafDBTrans *trans, const char *repo, const char *path,
-                        const char *user, json_t *conditions,
-                        const char *commit_id)
+                        const char *user, json_t *conditions, const char *commit_id)
 {
-    if (!cf_lock_enabled () || !trans || !repo || !path || !user ||
-        !json_is_object (conditions) || editing_schema (trans) < 0)
-        return -1;
-    json_t *edit = json_object_get (conditions, "editing");
-    if (!json_is_object (edit) || json_object_size (edit) != 9 ||
-        g_strcmp0 (edit_text (edit, "repo_id", 36), repo))
-        return -1;
-    const char *resource_uid = edit_text (edit, "resource_uid", 36);
-    const char *guard = edit_text (edit, "guard_id", 36);
-    const char *generation = edit_text (edit, "generation", 20);
-    const char *epoch = edit_text (edit, "credential_epoch", 20);
-    const char *holder = edit_text (edit, "holder", 128);
-    const char *token = edit_text (edit, "token", 64);
-    const char *intent = edit_text (edit, "intent_id", 36);
-    const char *base_id = edit_text (edit, "base_file_id", 40);
-    const char *old_id = edit_text (conditions, "native_old_file_id", 40);
-    const char *new_id = edit_text (conditions, "native_file_id", 40);
-    const char *content = edit_text (conditions, "native_digest", 64);
-    json_t *size = json_object_get (conditions, "native_size");
-    if (!json_is_integer (size) || json_integer_value (size) < 0) return -1;
-    json_t *context = json_object_get (conditions, "context");
-    const char *owner = edit_text (context, "userId", 225);
-    if (!resource_uid || strlen (resource_uid) != 36 ||
-        !guard || !edit_decimal (generation) || !edit_decimal (epoch) ||
-        !holder || !token || strlen (token) != 64 || !intent || !owner ||
-        !base_id || strlen (base_id) != 40 ||
-        !old_id || strlen (old_id) != 40 || strcmp (old_id, base_id) ||
-        !new_id || strlen (new_id) != 40 ||
-        !content || strlen (content) != 64 ||
-        !g_utf8_validate (path, -1, NULL) || path[0] != '/' || strlen (path) > 4096 ||
-        (commit_id && strlen (commit_id) != 40)) return -1;
-    for (const char *p = token; *p; ++p)
-        if (!g_ascii_isxdigit (*p)) return -1;
-    char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
-    char *token_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, token, -1);
-    EditPublication publication = {{0}};
-    int count = seaf_db_trans_foreach_selected_row (trans,
-        "SELECT i.action FROM cf_resource r JOIN cf_edit_guard g ON g.resource_uid=r.uid "
-        "JOIN cf_commit_intent i ON i.intent_id=g.pending_intent AND i.resource_uid=r.uid "
-        "WHERE r.repo_id=? AND r.uid=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-        "AND g.repo_id=r.repo_id AND g.lifecycle_ref=r.lifecycle_ref AND g.mode='checkout' "
-        "AND g.guard_id=? AND g.generation=CAST(? AS UNSIGNED) "
-        "AND g.credential_epoch=CAST(? AS UNSIGNED) "
-        "AND g.owner=? "
-        "AND g.owner_native_user=? AND g.holder=? AND g.proof_digest=? "
-        "AND g.lease_until>UTC_TIMESTAMP(6) AND g.hard_expire_at>UTC_TIMESTAMP(6) "
-        "AND i.intent_id=? AND i.guard_id=g.guard_id AND i.generation=g.generation "
-        "AND i.credential_epoch=g.credential_epoch AND i.state='prepared' "
-        "AND i.expected_file_id=? AND i.expected_file_id=g.base_file_id "
-        "AND (i.staged_file_id IS NULL OR i.staged_file_id=?) "
-        "AND i.content_digest=? AND (i.action='checkin-unchanged' OR (i.snapshot IS NOT NULL AND JSON_EXTRACT(i.snapshot,'$.size')=CAST(? AS UNSIGNED))) LIMIT 2 FOR UPDATE",
-        edit_publication_row, &publication, 16,
-        "string", repo, "string", resource_uid, "string", path_hash, "string", path,
-        "string", guard, "string", generation, "string", epoch,
-        "string", owner,
-        "string", user, "string", holder, "string", token_hash,
-        "string", intent, "string", old_id, "string", new_id,
-        "string", content, "int64", (gint64)json_integer_value (size));
-    g_free (path_hash);
-    g_free (token_hash);
-    if (count != 1 || !publication.action[0]) return -1;
-    gboolean unchanged = json_is_true (json_object_get (conditions, "editing_unchanged"));
-    if (unchanged != (strcmp (publication.action, "checkin-unchanged") == 0) ||
-        (unchanged && (strcmp (old_id, new_id) ||
-                       strcmp (content, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))))
-        return -1;
-    json_t *device = json_object_get (conditions, "local_commit");
-    if (device) {
-        gboolean error = FALSE;
-        const char *session = edit_text (device, "session_id", 36);
-        const char *device_id = edit_text (device, "device_id", 36);
-        if (!session || !device_id || !seaf_db_trans_check_for_existence (trans,
-            "SELECT intent_id FROM cf_commit_intent WHERE intent_id=? "
-            "AND JSON_UNQUOTE(JSON_EXTRACT(snapshot,'$.source'))='agent2-device' "
-            "AND JSON_UNQUOTE(JSON_EXTRACT(snapshot,'$.session_id'))=? "
-            "AND JSON_UNQUOTE(JSON_EXTRACT(snapshot,'$.device_id'))=? FOR UPDATE",
-            &error, 3, "string", intent, "string", session, "string", device_id) || error)
-            return -1;
-    }
-    if (!commit_id) return 0;
-    if (seaf_db_trans_query (trans,
-            "UPDATE cf_commit_intent SET state='published',staged_file_id=?,"
-            "result_file_id=?,result_commit_id=? WHERE intent_id=? AND state='prepared'",
-            4, "string", new_id, "string", new_id, "string", commit_id,
-            "string", intent) < 0) return -1;
-    if (device) {
-        /* Session and Checkout advance with Branch and the durable receipt.
-         * Old grants/references are fenced by the incremented revision. */
-        if (seaf_db_trans_query (trans,
-            "UPDATE cf_edit_session SET snapshot=JSON_SET(snapshot,'$.base_version',?),"
-            "state=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE session_id=? "
-            "AND revision<18446744073709551615",
-            3, "string", new_id,
-            "string", !strcmp (publication.action, "checkin") ? "completed" : "active",
-            "string", edit_text (device, "session_id", 36)) < 0) return -1;
-    }
-    if (!strcmp (publication.action, "checkin") || unchanged)
-        return seaf_db_trans_query (trans,
-            "UPDATE cf_edit_guard SET guard_id=NULL,"
-            "mode=NULL,owner=NULL,owner_native_user=NULL,source=NULL,holder=NULL,credential_epoch=0,"
-            "proof_digest=NULL,base_file_id=NULL,pending_intent=NULL,lease_until=NULL,"
-            "hard_expire_at=NULL WHERE guard_id=? AND pending_intent=?",
-            2, "string", guard, "string", intent);
-    return seaf_db_trans_query (trans,
-        "UPDATE cf_edit_guard SET base_file_id=?,pending_intent=NULL "
-        "WHERE guard_id=? AND pending_intent=?",
-        3, "string", new_id, "string", guard, "string", intent);
+    (void)trans; (void)repo; (void)path; (void)user;
+    (void)conditions; (void)commit_id;
+    return -1;
 }
-
-typedef struct {
-    GArray *rules;
-    GPtrArray *owned;
-    GHashTable *paths;
-    gboolean valid;
-} RuleRows;
 
 static gboolean valid_id (const char *value, int maximum)
 {
@@ -404,178 +209,16 @@ typedef struct {
     json_t *snapshot;
 } LocalSessionTarget;
 
-static int local_session_schema (SeafDBTrans *trans)
+/* Retired Session/Device lookup. V2 Agent2 persists no server-side session. */
+int
+cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
+                               const char *path, const char *object_id,
+                               int kind, json_t *root,
+                               json_t *current_subject, int ce_permission)
 {
-    gboolean error = FALSE;
-    const char *pins[] = {
-        "SELECT session_id FROM cf_edit_session LIMIT 0 FOR UPDATE",
-        "SELECT device_id FROM cf_local_device LIMIT 0 FOR UPDATE",
-        "SELECT uid FROM cf_resource LIMIT 0 FOR UPDATE"
-    };
-    for (size_t i = 0; i < G_N_ELEMENTS (pins); ++i) {
-        seaf_db_trans_check_for_existence (trans, pins[i], &error, 0);
-        if (error) return -1;
-    }
-    const char *checks[] = {
-        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_edit_session' GROUP BY table_name HAVING COUNT(*)=13 AND SUM("
-        "(column_name IN ('session_id','device_id') AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='provider' AND data_type='varchar' AND character_maximum_length=32 AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name='owner_user_id' AND data_type='varchar' AND character_maximum_length=225 AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name IN ('device_revision','revision','ticket_expires_at','expires_at') AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO') OR "
-        "(column_name='snapshot' AND data_type='longtext' AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name='state' AND data_type='varchar' AND character_maximum_length=12 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='ticket_digest' AND data_type='char' AND character_maximum_length=64 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name IN ('created_at','updated_at') AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO'))=13",
-        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_local_device' GROUP BY table_name HAVING COUNT(*)=9 AND SUM("
-        "(column_name='device_id' AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='provider' AND data_type='varchar' AND character_maximum_length=32 AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name='owner_user_id' AND data_type='varchar' AND character_maximum_length=225 AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name IN ('key_x','key_y','key_thumbprint') AND data_type='char' AND character_maximum_length=43 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='state' AND data_type='varchar' AND character_maximum_length=8 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='revision' AND data_type='bigint' AND column_type LIKE '%unsigned' AND is_nullable='NO') OR "
-        "(column_name='updated_at' AND data_type='datetime' AND datetime_precision=6 AND is_nullable='NO'))=9",
-        "SELECT table_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='cf_resource' GROUP BY table_name HAVING SUM("
-        "(column_name IN ('uid','repo_id') AND data_type='char' AND character_maximum_length=36 AND collation_name='ascii_bin' AND is_nullable='NO') OR "
-        "(column_name='path' AND data_type='longtext' AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name='path_hash' AND data_type='char' AND character_maximum_length=64 AND character_set_name='ascii' AND is_nullable='NO') OR "
-        "(column_name='kind' AND data_type='varchar' AND character_maximum_length=8 AND character_set_name='ascii' AND is_nullable='NO') OR "
-        "(column_name='state' AND data_type='varchar' AND character_maximum_length=16 AND character_set_name='ascii' AND is_nullable='NO') OR "
-        "(column_name='lifecycle_ref' AND data_type='varchar' AND character_maximum_length=512 AND collation_name='utf8mb4_bin' AND is_nullable='NO') OR "
-        "(column_name='local_open_type' AND data_type='varchar' AND character_maximum_length=64 AND character_set_name='ascii' AND is_nullable='YES'))=8",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_edit_session' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='session_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_local_device' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='device_id' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_local_device' AND index_name='owner_key' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(sub_part IS NULL AND non_unique=0 AND ((column_name='provider' AND seq_in_index=1) OR (column_name='owner_user_id' AND seq_in_index=2) OR (column_name='key_thumbprint' AND seq_in_index=3)))=3",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='PRIMARY' GROUP BY index_name HAVING COUNT(*)=1 AND SUM(column_name='uid' AND seq_in_index=1 AND sub_part IS NULL AND non_unique=0)=1",
-        "SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='cf_resource' AND index_name='resource_location' GROUP BY index_name HAVING COUNT(*)=3 AND SUM(sub_part IS NULL AND non_unique=1 AND ((column_name='repo_id' AND seq_in_index=1) OR (column_name='path_hash' AND seq_in_index=2) OR (column_name='kind' AND seq_in_index=3)))=3"
-    };
-    for (size_t i = 0; i < G_N_ELEMENTS (checks); ++i)
-        if (!seaf_db_trans_check_for_existence (trans, checks[i], &error, 0) || error) return -1;
-    return 0;
-}
-
-static gboolean local_session_target (SeafDBRow *row, void *data)
-{
-    LocalSessionTarget *target = data;
-    const char *encoded = seaf_db_row_get_column_text (row, 0);
-    json_t *snapshot = encoded && strlen (encoded) <= 16384 ?
-        json_loads (encoded, JSON_REJECT_DUPLICATES, NULL) : NULL;
-    json_t *resource = json_object_get (snapshot, "resource");
-    const char *mode = json_identifier (snapshot, "mode", 32);
-    target->valid = json_is_object (snapshot) && json_object_size (snapshot) == 8 &&
-        json_is_object (resource) && json_object_size (resource) == 3 &&
-        !g_strcmp0 (json_identifier (resource, "repo_id", 36), target->repo) &&
-        !g_strcmp0 (json_identifier (resource, "path", 4096), target->path) &&
-        !g_strcmp0 (json_identifier (resource, "kind", 8), "file") &&
-        !g_strcmp0 (json_identifier (snapshot, "base_version", 40), target->object_id) &&
-        !g_strcmp0 (json_identifier (snapshot, "resource_uid", 36),
-                    seaf_db_row_get_column_text (row, 1)) &&
-        !g_strcmp0 (json_identifier (snapshot, "lifecycle_ref", 512),
-                    seaf_db_row_get_column_text (row, 2)) &&
-        (json_is_string (json_object_get (snapshot, "local_open_type"))) &&
-        json_string_length (json_object_get (snapshot, "local_open_type")) ==
-            strlen (json_string_value (json_object_get (snapshot, "local_open_type"))) &&
-        !g_strcmp0 (json_string_value (json_object_get (snapshot, "local_open_type")),
-                    seaf_db_row_get_column_text (row, 3)) &&
-        (mode && (!strcmp (mode, "view") || !strcmp (mode, "optimistic-edit") ||
-                  !strcmp (mode, "exclusive-edit")));
-    if (target->snapshot) json_decref (target->snapshot);
-    target->snapshot = snapshot;
-    return TRUE;
-}
-
-static int local_session_lease (SeafDBTrans *trans, const char *repo,
-                                const char *user, json_t *snapshot)
-{
-    const char *mode = json_identifier (snapshot, "mode", 32);
-    json_t *lease = json_object_get (snapshot, "lease");
-    if (g_strcmp0 (mode, "exclusive-edit"))
-        return json_is_null (lease) ? 0 : -1;
-    const char *generation = json_identifier (lease, "fencing", 20);
-    const char *digest = json_identifier (lease, "token_digest", 64);
-    const char *uid = json_identifier (snapshot, "resource_uid", 36);
-    const char *lifecycle = json_identifier (snapshot, "lifecycle_ref", 512);
-    const char *base = json_identifier (snapshot, "base_version", 40);
-    if (!cf_lock_enabled () || !json_is_object (lease) || json_object_size (lease) != 2 ||
-        !edit_decimal (generation) || !digest || strlen (digest) != 64 || !uid || !lifecycle || !base ||
-        editing_schema (trans) < 0) return -1;
-    gboolean error = FALSE;
-    return seaf_db_trans_check_for_existence (trans,
-        "SELECT resource_uid FROM cf_edit_guard WHERE resource_uid=? AND repo_id=? "
-        "AND lifecycle_ref=? AND mode='checkout' AND owner=? AND guard_id IS NOT NULL "
-        "AND CAST(generation AS CHAR)=? AND proof_digest=? AND base_file_id=? "
-        "AND lease_until>UTC_TIMESTAMP(6) AND hard_expire_at>UTC_TIMESTAMP(6) FOR UPDATE",
-        &error, 7, "string", uid, "string", repo, "string", lifecycle, "string", user,
-        "string", generation, "string", digest, "string", base) && !error ? 0 : -1;
-}
-
-int cf_policy_check_local_session (SeafDBTrans *trans, const char *repo,
-                                  const char *path, const char *object_id,
-                                  int kind, json_t *root,
-                                  json_t *current_subject, int ce_permission)
-{
-    json_t *proof = json_object_get (root, "local_session");
-    if (!proof) return 0;
-    json_t *context = json_object_get (root, "context");
-    const char *session = json_identifier (proof, "session_id", 36);
-    const char *device = json_identifier (proof, "device_id", 36);
-    const char *device_revision = json_identifier (proof, "device_revision", 20);
-    const char *session_revision = json_identifier (proof, "session_revision", 20);
-    const char *provider = json_identifier (context, "provider", 32);
-    const char *user = json_identifier (context, "userId", 225);
-    if (!trans || kind != CF_FILE || !json_is_object (proof) || json_object_size (proof) != 4 ||
-        !session || !device || !device_revision || !session_revision || !provider || !user ||
-        strlen (session) != 36 || strlen (device) != 36 ||
-        device_revision[0] == '0' || session_revision[0] == '0' ||
-        strspn (device_revision, "0123456789") != strlen (device_revision) ||
-        strspn (session_revision, "0123456789") != strlen (session_revision)) return -1;
-    gboolean error = FALSE;
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT version FROM cf_schema_migration WHERE version='030_local_devices' "
-        "AND state='applied' AND step=2 FOR UPDATE", &error, 0) || error) return -1;
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT version FROM cf_schema_migration WHERE version='031_edit_sessions' "
-        "AND state='applied' AND step=1 FOR UPDATE", &error, 0) || error) return -1;
-    if (!seaf_db_trans_check_for_existence (trans,
-        "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
-        "AND TABLE_NAME IN ('cf_edit_session','cf_local_device','cf_resource') "
-        "AND ENGINE='InnoDB' HAVING COUNT(*)=3", &error, 0) || error) return -1;
-    if (local_session_schema (trans) < 0) return -1;
-    char *path_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, path, -1);
-    if (!path_hash || lease_resource_location (trans, repo, path, path_hash, NULL) < 0) {
-        g_free (path_hash);
-        return -1;
-    }
-    LocalSessionTarget target = { repo, path, object_id, FALSE, NULL };
-    int count = seaf_db_trans_foreach_selected_row (trans,
-        "SELECT s.snapshot,r.uid,r.lifecycle_ref,COALESCE(r.local_open_type,'') "
-        "FROM cf_edit_session s JOIN cf_local_device d ON d.device_id=s.device_id "
-        "JOIN cf_resource r ON r.repo_id=? AND r.path_hash=? AND r.path=? AND r.kind='file' AND r.state='active' "
-        "WHERE s.session_id=? AND s.provider=? AND s.owner_user_id=? AND s.device_id=? "
-        "AND d.provider=s.provider AND d.owner_user_id=s.owner_user_id AND d.state='active' "
-        "AND d.revision=s.device_revision AND CAST(d.revision AS CHAR)=? "
-        "AND CAST(s.revision AS CHAR)=? AND s.revision<18446744073709551615 AND s.state IN ('claimed','active') "
-        "AND s.expires_at>FLOOR(UNIX_TIMESTAMP()) LIMIT 2 FOR UPDATE",
-        local_session_target, &target, 9, "string", repo, "string", path_hash, "string", path,
-        "string", session, "string", provider, "string", user, "string", device,
-        "string", device_revision, "string", session_revision);
-    g_free (path_hash);
-    int result = count == 1 && target.valid &&
-        (!json_object_get (root, "agent_upload") ||
-         (json_object_size(json_object_get(root, "agent_upload")) == 5 &&
-          json_identifier(json_object_get(root, "agent_upload"), "intent_id", 36) &&
-          !g_strcmp0(json_identifier(target.snapshot, "mode", 32), "optimistic-edit"))) &&
-        (!json_object_get (root, "local_commit") ||
-         !g_strcmp0 (json_identifier (target.snapshot, "mode", 32), "exclusive-edit")) &&
-        local_session_lease (trans, repo, user, target.snapshot) == 0 ? 0 : -1;
-    /* An edit session cannot be used to start/continue an editable download
-     * after its native library or directory write permission is withdrawn.
-     * Use the caller's actual current subject, never the historical snapshot. */
-    if (result == 0 && g_strcmp0 (json_identifier (target.snapshot, "mode", 32), "view") &&
-        cf_policy_check_write (trans, repo, path, provider, user,
-                               current_subject, ce_permission) < 0)
-        result = -1;
-    if (target.snapshot) json_decref (target.snapshot);
-    return result;
+    (void)trans; (void)repo; (void)path; (void)object_id;
+    (void)kind; (void)root; (void)current_subject; (void)ce_permission;
+    return -1;
 }
 
 static int memberships (json_t *items, const char *type, const char *provider,
@@ -908,85 +551,22 @@ int cf_policy_check_create (SeafDBTrans *trans, const char *repo, const char *pa
                                                 user, snapshot, ce_permission) : -1;
 }
 
+/* Legacy Hub optimistic Intent/Session receipts are not part of V2. */
 int
 cf_policy_optimistic_receipt (SeafDBTrans *trans, const char *repo,
-                             json_t *conditions, const char *commit_id)
+                              json_t *conditions, const char *commit_id)
 {
-    if (!trans || !repo || !json_is_object(conditions) ||
-        !json_is_object(json_object_get(conditions, "agent_upload")))
-        return -1;
-    json_t *upload = json_object_get(conditions, "agent_upload");
-    json_t *ctx = json_object_get(conditions, "context");
-    const char *intent = json_identifier(upload, "intent_id", 36);
-    const char *session = json_identifier(upload, "session_id", 36);
-    const char *device = json_identifier(upload, "device_id", 36);
-    const char *base = json_identifier(conditions, "expected_file_id", 40);
-    const char *digest = json_identifier(conditions, "native_digest", 64);
-    const char *new_id = json_identifier(conditions, "native_file_id", 40);
-    json_t *bytes = json_object_get(conditions, "native_size");
-    if (json_object_size(upload) != 5 || !intent || strlen(intent) != 36 ||
-        !session || strlen(session) != 36 || !device || strlen(device) != 36 ||
-        !base || strlen(base) != 40 || !digest || strlen(digest) != 64 ||
-        !new_id || strlen(new_id) != 40 ||
-        !json_is_integer(bytes) || json_integer_value(bytes) < 0 ||
-        json_integer_value(bytes) > 128 * 1024 * 1024 ||
-        !json_identifier(ctx, "userId", 225) ||
-        (commit_id && strlen(commit_id) != 40))
-        return -1;
-    gboolean bad = FALSE;
-    if (!seaf_db_trans_check_for_existence(trans,
-        "SELECT intent_id FROM cf_optimistic_upload_intent "
-        "WHERE intent_id=? AND session_id=? AND device_id=? AND repo_id=? "
-        "AND base_file_id=? AND content_digest=? AND snapshot_size=? "
-        "AND state='prepared' AND result_file_id IS NULL FOR UPDATE",
-        &bad, 7, "string", intent, "string", session, "string", device,
-        "string", repo, "string", base, "string", digest,
-        "int64", (gint64)json_integer_value(bytes)) || bad)
-        return -1;
-    if (!commit_id) return 0;
-    /* Same SeafDBTrans holds current ACL/session/lock checks and Branch CAS:
-     * either Branch and receipt both commit, or neither can be observed. */
-    if (seaf_db_trans_query(trans,
-        "UPDATE cf_optimistic_upload_intent SET state='published',"
-        "result_file_id=?,result_commit_id=? "
-        "WHERE intent_id=? AND state='prepared'",
-        3, "string", new_id, "string", commit_id, "string", intent) < 0)
-        return -1;
-    /* A successfully committed optimistic save advances the SAME local
-     * editing session to the next original File ID. It does not acquire a
-     * Checkout or grant an unguarded write: next upload requires a NEW
-     * device-signed immutable Intent and current live session revision.
-     * Session and published receipt are in the identical Branch transaction.
-     */
-    return seaf_db_trans_query(trans,
-        "UPDATE cf_edit_session SET snapshot=JSON_SET(snapshot,'$.base_version',?),"
-        "revision=revision+1,state='active',updated_at=UTC_TIMESTAMP(6) "
-        "WHERE session_id=? AND device_id=? "
-        "AND state IN ('claimed','active') AND revision<18446744073709551615 "
-        "AND JSON_UNQUOTE(JSON_EXTRACT(snapshot,'$.base_version'))=?",
-        4, "string", new_id, "string", session, "string", device,
-        "string", base);
+    (void)trans; (void)repo; (void)conditions; (void)commit_id;
+    return -1;
 }
 
-int cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,
-                                  const char *path, json_t *conditions,
-                                  json_t *subject, int qualification)
+/* Legacy device-commit proof path is not registered in V2. */
+int
+cf_policy_check_device_commit (SeafDBTrans *trans, const char *repo,
+                               const char *path, json_t *conditions,
+                               json_t *subject, int qualification)
 {
-    json_t *device = json_object_get (conditions, "local_commit");
-    json_t *edit = json_object_get (conditions, "editing");
-    if (!device || !edit || json_object_get (conditions, "oidc_session") ||
-        json_object_get (conditions, "local_session") ||
-        json_object_get (conditions, "editing_unchanged")) return -1;
-    const char *base = edit_text (edit, "base_file_id", 40);
-    if (!base || strlen (base) != 40) return -1;
-    json_t *root = json_deep_copy (conditions);
-    if (!root) return -1;
-    if (json_object_set (root, "local_session", device) < 0) {
-        json_decref (root);
-        return -1;
-    }
-    int result = cf_policy_check_local_session (trans, repo, path, base,
-        CF_FILE, root, subject, qualification);
-    json_decref (root);
-    return result;
+    (void)trans; (void)repo; (void)path;
+    (void)conditions; (void)subject; (void)qualification;
+    return -1;
 }
