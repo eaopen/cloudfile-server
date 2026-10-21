@@ -84,59 +84,43 @@ func (r *uploadGuardRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-var resourceGuardColumns = strings.Fields("resource_uid repo_id lifecycle_ref guard_id generation mode owner owner_native_user source holder credential_epoch proof_digest base_file_id pending_intent lease_until hard_expire_at")
-var pathGuardColumns = strings.Fields("repo_id path_hash path guard_id generation owner_uid owner_native_user terminal_type terminal_name checkout_ip proof_digest base_file_id lease_expires_at created_at updated_at")
-
-func TestUploadGuardAcceptsInstalledLayoutsWithoutDisablingTheFence(t *testing.T) {
+func TestUploadGuardUsesReviewedPathQueryOnly(t *testing.T) {
 	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
 	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
-	cases := []struct {
-		name    string
-		columns []string
-		marker  string
-	}{
-		{"resource Checkout", resourceGuardColumns, "LEFT JOIN cf_resource"},
-		{"path Checkout", pathGuardColumns, "FORCE INDEX (cf_edit_guard_active)"},
+	f := &uploadGuardFixture{}
+	db := sql.OpenDB(uploadGuardConnector{f})
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := &uploadGuardFixture{columns: tc.columns}
-			db := sql.OpenDB(uploadGuardConnector{f})
-			defer db.Close()
-			tx, err := db.Begin()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if err := cfV2EditCheckUnscopedBranch(context.Background(), tx, "repo", "old", "new"); err != nil {
-				t.Fatal(err)
-			}
-			if len(f.queries) != 2 || !strings.Contains(f.queries[1], tc.marker) || !strings.Contains(f.queries[1], "FOR UPDATE") {
-				t.Fatalf("wrong final guard query: %v", f.queries)
-			}
-			if tc.name == "resource Checkout" && (strings.Contains(f.queries[1], "lease_until>") || !strings.Contains(f.queries[1], "ELSE NULL")) {
-				t.Fatalf("stale or orphan fence can disappear: %s", f.queries[1])
-			}
-		})
+	defer tx.Rollback()
+	if err := cfV2EditCheckUnscopedBranch(context.Background(), tx, "repo", "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	// Startup already qualified the schema: the commit path issues exactly one
+	// Guard query, with no information_schema read and no cf_resource join.
+	if len(f.queries) != 1 {
+		t.Fatalf("expected one guard query, got %v", f.queries)
+	}
+	query := f.queries[0]
+	if strings.Contains(query, "information_schema") || strings.Contains(query, "cf_resource") {
+		t.Fatalf("legacy or repeated metadata query on commit path: %s", query)
+	}
+	if !strings.Contains(query, "FORCE INDEX (cf_edit_guard_active)") || !strings.Contains(query, "lease_expires_at>") {
+		t.Fatalf("guard query lost its reviewed shape: %s", query)
 	}
 }
 
-func TestUploadGuardRefusesUnknownAmbiguousOrUnavailableState(t *testing.T) {
+func TestUploadGuardRefusesGuardFailures(t *testing.T) {
 	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
 	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
 	for _, f := range []*uploadGuardFixture{
-		{columns: []string{"repo_id", "guard_id"}},
-		// The previously accepted five-column subset is not the installed DDL.
-		{columns: []string{"repo_id", "path_hash", "path", "guard_id", "lease_expires_at"}},
-		{columns: append(append([]string{}, pathGuardColumns...), "resource_uid")},
-		{columns: append(append([]string{}, resourceGuardColumns...), "path")},
-		{columns: append(append([]string{}, resourceGuardColumns...), pathGuardColumns...)},
-		{columns: resourceGuardColumns, failMetadata: true},
-		{columns: resourceGuardColumns, failGuard: true},
-		{columns: resourceGuardColumns, paths: []driver.Value{nil}},
-		{columns: resourceGuardColumns, paths: []driver.Value{"relative/path"}},
+		{failGuard: true},
+		{paths: []driver.Value{nil}},
+		{paths: []driver.Value{"relative/path"}},
 	} {
 		db := sql.OpenDB(uploadGuardConnector{f})
 		tx, err := db.Begin()
