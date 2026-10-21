@@ -60,6 +60,20 @@ func TestCFEditScopedTicketValidation(t *testing.T) {
 	if _, err := cfEditClaimsFor(req); err == nil {
 		t.Fatal("expired ticket accepted")
 	}
+	// Hub mints 24h tickets; the cap has to live here too, otherwise a different
+	// issuer (or a future config slip) could hand out a ticket that never expires
+	// while still passing every other check.
+	mk := func(expiry time.Duration) *http.Request {
+		r := httptest.NewRequest("GET", "/cf-edit/v1/read", nil)
+		r.Header.Set("Authorization", "Bearer "+sign("exclusive-edit", "/design.step", expiry))
+		return r
+	}
+	if _, err := cfEditClaimsFor(mk(24 * time.Hour)); err != nil {
+		t.Fatalf("24h ticket rejected: %v", err)
+	}
+	if _, err := cfEditClaimsFor(mk(24*time.Hour + time.Minute)); err == nil {
+		t.Fatal("ticket beyond the 24h cap accepted")
+	}
 }
 func TestCFEditCredentialDigestDoesNotTrustUnrelatedActor(t *testing.T) {
 	c := &cfEditClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "user@auth.local"}}

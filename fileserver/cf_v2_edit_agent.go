@@ -107,7 +107,7 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 	t, err := jwt.NewParser(jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("cloudfile-v2-edit"), jwt.WithAudience("cloudfile-edit-agent")).ParseWithClaims(
 		pair[1], c, func(*jwt.Token) (interface{}, error) { return []byte(option.JWTPrivateKey), nil })
 	if err != nil || t == nil || !t.Valid || c.ExpiresAt == nil || c.IssuedAt == nil ||
-		c.ExpiresAt.Time.Sub(c.IssuedAt.Time) > 4*time.Hour ||
+		c.ExpiresAt.Time.Sub(c.IssuedAt.Time) > 24*time.Hour ||
 		c.IssuedAt.Time.After(time.Now().Add(30*time.Second)) ||
 		c.Subject == "" || len(c.Subject) > 255 || c.UID == "" || len(c.UID) > 225 || !cfEditID(c.RepoID) ||
 		!cfACLCanonical(c.FilePath) || c.FilePath == "/" || !cfEditHex(c.BaseID, 40) ||
