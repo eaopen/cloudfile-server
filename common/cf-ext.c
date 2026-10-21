@@ -93,10 +93,11 @@ cf_ext_init (void)
     /*
      * Capabilities register themselves here.
      *
-     * Each cf_*_init() reads its own CF switch and registers only when it is
-     * on, so a build with every switch off leaves this table empty and every
-     * hook below is a pass-through -- the server then behaves exactly like
-     * stock CE. Adding a capability is one line here plus its own cf-*.c;
+     * Current V2 ACL and directory sharing register by installed capability;
+     * they are not disabled by an obsolete feature flag. Optional external
+     * facilities retain their own real dependency checks. New native hooks
+     * must not skip current path authorization when V2 is installed.
+     * Adding a capability is one line here plus its own cf-*.c;
      * this file is CloudFile's own, so editing it costs nothing at sync time.
      */
     cf_acl_init ();
