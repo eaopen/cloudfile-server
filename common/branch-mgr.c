@@ -174,6 +174,20 @@ open_db (SeafBranchManager *mgr)
     return 0;
 }
 
+#if defined(SEAFILE_SERVER) && defined(FULL_FEATURE)
+static int
+lock_acl_branch (SeafDBTrans *trans, const char *repo_id)
+{
+    /* ACL writers lock master before reading ACL rows. A new repository may
+     * have no master yet; keep CE creation semantics in that case. */
+    gboolean error = FALSE;
+    seaf_db_trans_check_for_existence (
+        trans, "SELECT commit_id FROM Branch WHERE name='master' AND repo_id=? FOR UPDATE",
+        &error, 1, "string", repo_id);
+    return error ? -1 : 0;
+}
+#endif
+
 int
 seaf_branch_manager_add_branch (SeafBranchManager *mgr, SeafBranch *branch)
 {
@@ -205,7 +219,8 @@ seaf_branch_manager_add_branch (SeafBranchManager *mgr, SeafBranch *branch)
     if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
+        int rc = lock_acl_branch (trans, branch->repo_id);
+        if (rc == 0) rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans,
                 "REPLACE INTO Branch(name,repo_id,commit_id) VALUES(?,?,?)",
@@ -282,7 +297,8 @@ seaf_branch_manager_del_branch (SeafBranchManager *mgr,
     if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_v2_acl_final (trans, mgr->seaf, repo_id);
+        int rc = lock_acl_branch (trans, repo_id);
+        if (rc == 0) rc = cf_v2_acl_final (trans, mgr->seaf, repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans, "DELETE FROM Branch WHERE name=? AND repo_id=?",
                 2, "string", name, "string", repo_id);
@@ -325,7 +341,8 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr, SeafBranch *branch)
     if (seaf_db_type(mgr->seaf->db) == SEAF_DB_TYPE_MYSQL) {
         SeafDBTrans *trans = seaf_db_begin_transaction (mgr->seaf->db);
         if (!trans) return -1;
-        int rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
+        int rc = lock_acl_branch (trans, branch->repo_id);
+        if (rc == 0) rc = cf_v2_acl_final (trans, mgr->seaf, branch->repo_id);
         if (rc == 0)
             rc = seaf_db_trans_query (trans,
                 "UPDATE Branch SET commit_id=? WHERE name=? AND repo_id=?",
