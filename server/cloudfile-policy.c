@@ -238,6 +238,13 @@ static int memberships (json_t *items, const char *type, const char *provider,
     return 0;
 }
 
+typedef struct {
+    GArray *rules;
+    GPtrArray *owned;
+    GHashTable *paths;
+    gboolean valid;
+} RuleRows;
+
 static gboolean rule_row (SeafDBRow *row, void *data)
 {
     RuleRows *rows = data;

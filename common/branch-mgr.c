@@ -438,6 +438,16 @@ get_gc_id (SeafDBRow *row, void *data)
     return FALSE;
 }
 
+static gboolean
+scope_identifier (json_t *value)
+{
+    if (!json_is_string (value))
+        return FALSE;
+    const char *text = json_string_value (value);
+    return json_string_length (value) == strlen (text) && *text &&
+           g_utf8_validate (text, -1, NULL) && g_utf8_strlen (text, -1) <= 255;
+}
+
 /* Pre-release PolicyHost/JobStore scope barriers are retired.
  * Current V2 authorizes in native ACL/Guard and Go publish; no old
  * cf_background_job table or migration ledger can be consulted. */
