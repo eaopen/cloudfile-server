@@ -1288,7 +1288,9 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 // protocol, which carries no individual path proofs. It does not classify
 // libraries; qualified V2 file/dir access uses Authority instead.
 func syncRepoWideScopeDenied(ctx context.Context, repoID string) bool {
-	if seafileDB == nil { return true }
+	if seafileDB == nil {
+		return true
+	}
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	protected, err := cfACLProtected(deadline, seafileDB, repoID)
