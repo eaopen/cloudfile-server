@@ -106,10 +106,11 @@ filter_chunk (const char *repo, const char *dir, const char *user,
         json_t *check=json_pack("{s:s,s:s,s:s}",
                                 "path",path,"kind","dir","action","read");
         g_free(path);
-        if (!check || json_array_append_new(checks,check)) {
+        if (!check || json_array_append(checks,check)) {
             json_decref(check);
             goto done;
         }
+        json_decref(check);
     }
     unsigned size=(unsigned)json_array_size(checks);
     if (!size || size>512 ||
