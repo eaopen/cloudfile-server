@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,9 @@ func (*scopedConn) Close() error { return nil }
 func (*scopedConn) Begin() (driver.Tx, error) { return scopedTxn{}, nil }
 func (c *scopedConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) { return scopedTxn{}, nil }
 func (c *scopedConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
-	if query != scopedQuery || c.fails { return nil, errors.New("V2 ACL unavailable") }
+	if c.fails { return nil, errors.New("V2 ACL unavailable") }
+	if strings.Contains(query, "FROM VirtualRepo") { return &scopedRows{}, nil }
+	if query != scopedQuery { return nil, errors.New("unexpected SQL query") }
 	if !c.hasRule { return &scopedRows{}, nil }
 	return &scopedRows{id: "22222222-2222-2222-2222-222222222222"}, nil
 }

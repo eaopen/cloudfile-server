@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/haiwen/seafile-server/fileserver/option"
@@ -22,17 +23,38 @@ func checkLegacyLibrary(ctx context.Context, tx *sql.Tx, repoID string) error {
 	if tx == nil || len(repoID) != 36 {
 		return errCloudFileLegacyLibrary
 	}
-	var id string
+	// Native virtual repositories may refer to protected origin paths.
+	// Check both repository IDs under one transaction, in stable order.
+	ids := []string{repoID}
+	var origin sql.NullString
 	err := tx.QueryRowContext(ctx,
-		"SELECT repo_id FROM cf_dir_acl WHERE repo_id=? LIMIT 1 FOR UPDATE",
-		repoID).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil || id != "" {
+		"SELECT origin_repo FROM VirtualRepo WHERE repo_id=? FOR UPDATE",
+		repoID).Scan(&origin)
+	if err != nil && err != sql.ErrNoRows {
 		return errCloudFileLegacyLibrary
 	}
-	return errCloudFileLegacyLibrary
+	if err == nil {
+		if !origin.Valid || len(origin.String) != 36 {
+			return errCloudFileLegacyLibrary
+		}
+		if origin.String != repoID {
+			ids = append(ids, origin.String)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		var matched string
+		err := tx.QueryRowContext(ctx,
+			"SELECT repo_id FROM cf_dir_acl WHERE repo_id=? LIMIT 1 FOR UPDATE",
+			id).Scan(&matched)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		// Any directory ACL prevents unscoped native operations. A DB
+		// failure must never be mistaken for an unprotected repository.
+		return errCloudFileLegacyLibrary
+	}
+	return nil
 }
 
 func legacyLibraryAllowed(ctx context.Context, repoID string) error {
