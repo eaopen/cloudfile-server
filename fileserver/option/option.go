@@ -16,12 +16,6 @@ import (
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
 
-// Explicit startup-only trust for managed reads; absent means direct TLS only.
-var CloudFileManagedLibraryGuard bool
-
-// Temporary compatibility switch for native read tickets in managed libraries.
-// Native Seafile ticket checks still apply; CloudFile directory ACL does not.
-var CloudFileAllowLegacyManagedReads bool
 var CloudFileTrustedTLSProxies []*net.IPNet
 
 // Checkout is an explicit existing capability, not implied by a table name.
@@ -152,8 +146,6 @@ func LoadFileServerOptions(centralDir string) {
 	}
 	CloudMode = false
 	CloudFileTrustedTLSProxies = nil
-	CloudFileManagedLibraryGuard = false
-	CloudFileAllowLegacyManagedReads = false
 	CloudFileCheckoutEnabled = false
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
 		// Reuse CF_ENABLE_CHECKOUT -> [cloudfile] checkout_enabled from Docker.
@@ -163,20 +155,6 @@ func LoadFileServerOptions(centralDir string) {
 			CloudFileCheckoutEnabled, parseErr = key.Bool()
 			if parseErr != nil {
 				log.Fatal("Invalid CloudFile checkout_enabled")
-			}
-		}
-		if key, keyErr := section.GetKey("allow_legacy_managed_reads"); keyErr == nil {
-			var parseErr error
-			CloudFileAllowLegacyManagedReads, parseErr = key.Bool()
-			if parseErr != nil {
-				log.Fatal("Invalid CloudFile allow_legacy_managed_reads")
-			}
-		}
-		if key, keyErr := section.GetKey("managed_library_guard"); keyErr == nil {
-			var parseErr error
-			CloudFileManagedLibraryGuard, parseErr = key.Bool()
-			if parseErr != nil {
-				log.Fatal("Invalid CloudFile managed_library_guard")
 			}
 		}
 		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {

@@ -352,9 +352,6 @@ type UserInfo struct {
 }
 
 func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent string) (string, *appError) {
-	if legacyLibraryAllowed(context.Background(), repoID) != nil {
-		return "", &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
-	}
 	tokenString, err := utils.GenSeahubJWTToken()
 	if err != nil {
 		err := fmt.Errorf("failed to sign jwt token: %v", err)
@@ -401,17 +398,18 @@ func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent stri
 		return "", &appError{err, "", http.StatusInternalServerError}
 	}
 
+	// The authenticated actor and the actual file path are authoritative;
+	// directory rules in another subtree do not affect this read.
+	if op == "view" || op == "download" {
+		if denied := cfACLPath(repoID, info.User, filePath, "file", "read"); denied != nil {
+			return "", denied
+		}
+	}
 	return info.User, nil
 }
 
 func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, cryptKey *seafileCrypt, user string) *appError {
-	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced {
-		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
-			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
-		}
-		rsp = &cloudFileLegacyResponse{ResponseWriter: rsp, request: r, repoID: repo.ID}
-	}
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
 		msg := "Failed to get seafile"
@@ -499,12 +497,6 @@ type blockMap struct {
 
 func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
 	fileName string, operation string, byteRanges string, user string) *appError {
-	if _, enhanced := rsp.(*cloudFileGuardedResponse); !enhanced {
-		if legacyLibraryAllowed(r.Context(), repo.ID) != nil {
-			return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
-		}
-		rsp = &cloudFileLegacyResponse{ResponseWriter: rsp, request: r, repoID: repo.ID}
-	}
 
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
@@ -2314,11 +2306,6 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		return false, err
 	}
 
-	if checkLegacyLibrary(ctx, trans, repoID) != nil {
-		trans.Rollback()
-		return false, errCloudFileLegacyLibrary
-	}
-
 	var row *sql.Row
 	var sqlStr string
 	if checkGC {
@@ -3097,7 +3084,7 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	// GET/HEAD/Range only needs the native token and its expiry, not ACL SQL.
 	if !hasAuthorizedFileReadScope(accessInfo.op, webaccessMap) &&
 		accessInfo.op != "upload" && accessInfo.op != "update" {
-		if denied := cfACLUnscoped(repoID); denied != nil {
+		if denied := cfACLRequireRepoWideProof(repoID); denied != nil {
 			return nil, denied
 		}
 	}
@@ -3686,7 +3673,7 @@ func uploadBlksAPICB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func doUploadBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appError {
-	if denied := cfACLUnscoped(fsm.repoID); denied != nil {
+	if denied := cfACLRequireRepoWideProof(fsm.repoID); denied != nil {
 		return denied
 	}
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -3952,7 +3939,7 @@ func uploadRawBlksAPICB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func doUploadRawBlks(rsp http.ResponseWriter, r *http.Request, fsm *recvData) *appError {
-	if denied := cfACLUnscoped(fsm.repoID); denied != nil {
+	if denied := cfACLRequireRepoWideProof(fsm.repoID); denied != nil {
 		return denied
 	}
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -4197,7 +4184,13 @@ func queryShareLinkInfo(token, cookie, opType, ipAddr, userAgent string) (*Share
 		return nil, &appError{err, "", http.StatusInternalServerError}
 	}
 
-	if denied := cfACLUnscoped(info.RepoID); denied != nil {
+	// Public links were token-checked by Seahub. Only ACL rules crossing
+	// this actual target/tree can prevent its use.
+	target := info.FilePath
+	if target == "" {
+		target = info.ParentDir
+	}
+	if denied := cfACLPublicLinkScope(info.RepoID, target, info.ShareType != "f"); denied != nil {
 		return nil, denied
 	}
 	return info, nil
@@ -4233,9 +4226,6 @@ func accessLinkCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 
-	if legacyLibraryAllowed(r.Context(), info.RepoID) != nil {
-		return &appError{nil, "Legacy library access unavailable", http.StatusForbidden}
-	}
 	repoID := info.RepoID
 	filePath := normalizeUTF8Path(info.FilePath)
 	fileName := filepath.Base(filePath)

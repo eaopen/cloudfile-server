@@ -1284,26 +1284,15 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	return nil
 }
 
-// syncLegacyEntryDenied reports whether the legacy sync entry must refuse
-// repoID: a CloudFile managed library, a drifted managed schema or a failed
-// authority read all deny.
-//
-// It deliberately ignores option.CloudFileAllowLegacyManagedReads. That
-// switch is a temporary compatibility carve-out for existing native download
-// links; the sync protocol trades whole-library commits with no per-file
-// authorization point, so it must not ride the same exception.
-func syncLegacyEntryDenied(ctx context.Context, repoID string) bool {
-	if seafileDB == nil {
-		return true
-	}
+// syncRepoWideScopeDenied only checks the unscoped whole-repository CE sync
+// protocol, which carries no individual path proofs. It does not classify
+// libraries; qualified V2 file/dir access uses Authority instead.
+func syncRepoWideScopeDenied(ctx context.Context, repoID string) bool {
+	if seafileDB == nil { return true }
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	tx, err := seafileDB.BeginTx(deadline, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
-	if err != nil {
-		return true
-	}
-	defer tx.Rollback()
-	return checkLegacyLibrary(deadline, tx, repoID) != nil
+	protected, err := cfACLProtected(deadline, seafileDB, repoID)
+	return err != nil || protected
 }
 
 func checkPermission(repoID, user, op string, skipCache bool) *appError {
@@ -1314,11 +1303,9 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 		}
 	}
 	if info != nil {
-		// A cached grant must not outlive the boundary: a library enrolled as
-		// managed after the grant was cached would otherwise keep sync access
-		// for up to permExpireTime. Managed repositories always re-evaluate;
-		// ordinary revocations keep the documented two-hour window.
-		if !syncLegacyEntryDenied(context.Background(), repoID) {
+		// Cached whole-repository sync grants must be rechecked when a new
+		// directory rule could restrict their unscoped operation.
+		if !syncRepoWideScopeDenied(context.Background(), repoID) {
 			return nil
 		}
 		permCache.Delete(fmt.Sprintf("%s:%s:%s", repoID, user, op))
@@ -1361,7 +1348,7 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 }
 
 func validateToken(r *http.Request, repoID string, skipCache bool) (string, *appError) {
-	if denied := cfACLUnscoped(repoID); denied != nil {
+	if denied := cfACLRequireRepoWideProof(repoID); denied != nil {
 		return "", denied
 	}
 	token := r.Header.Get("Seafile-Repo-Token")

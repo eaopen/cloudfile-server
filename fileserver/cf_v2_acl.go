@@ -41,7 +41,9 @@ func cfACLProtectedNow(repoID string) (bool, error) {
 	return cfACLProtected(ctx, seafileDB, repoID)
 }
 
-func cfACLUnscoped(repoID string) *appError {
+// Only endpoints without an authenticated path scope may require proof of
+// whole-repository capability. This must not gate directory-aware operations.
+func cfACLRequireRepoWideProof(repoID string) *appError {
 	protected, err := cfACLProtectedNow(repoID)
 	if err != nil || protected {
 		return &appError{errCFACL, "Current path authorization required", http.StatusForbidden}
