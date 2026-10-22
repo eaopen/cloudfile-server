@@ -110,6 +110,7 @@ int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session, const c
 }
 
 #include <curl/curl.h>
+#include <jansson.h>
 #include <jwt.h>
 #include "commit-mgr.h"
 #include "diff-simple.h"
@@ -233,4 +234,160 @@ done:
     if (jwt) jwt_free(jwt);
     g_free(token);g_free(auth);g_free(url);
     return status;
+}
+
+/* ---------------------------------------------------- scoped final check */
+
+/* POST the change description to the Hub V2 authority. 0 only when the reply
+ * is a positive cf-acl-v1 verdict; every transport or parse problem denies. */
+static int
+authorize_change (struct _SeafileSession *session, json_t *request)
+{
+    int result = -1;
+    char *payload = NULL;
+    GString *body = g_string_new (NULL);
+    json_t *reply = NULL;
+
+    payload = json_dumps (request, JSON_COMPACT);
+    if (!payload) goto done;
+    if (cf_v2_acl_check_json (session, payload, body) != 200) goto done;
+    reply = json_loadb (body->str, body->len, JSON_REJECT_DUPLICATES, NULL);
+    if (reply &&
+        json_is_true (json_object_get (reply, "allowed")) &&
+        !g_strcmp0 (json_string_value (json_object_get (reply, "contract")),
+                    "cf-acl-v1"))
+        result = 0;
+
+done:
+    if (reply) json_decref (reply);
+    g_free (payload);
+    g_string_free (body, TRUE);
+    return result;
+}
+
+/* Folded-directory diffs never reach us (callers pass fold_dir_diff=FALSE),
+ * so the status letter alone tells files from directories. */
+static gboolean
+scoped_entry_is_dir (DiffEntry *de)
+{
+    return de->status == DIFF_STATUS_DIR_ADDED ||
+           de->status == DIFF_STATUS_DIR_DELETED ||
+           de->status == DIFF_STATUS_DIR_RENAMED;
+}
+
+static gboolean
+scoped_status_supported (DiffEntry *de)
+{
+    switch (de->status) {
+    case DIFF_STATUS_ADDED:
+    case DIFF_STATUS_MODIFIED:
+    case DIFF_STATUS_DELETED:
+    case DIFF_STATUS_RENAMED:
+    case DIFF_STATUS_DIR_ADDED:
+    case DIFF_STATUS_DIR_DELETED:
+    case DIFF_STATUS_DIR_RENAMED:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+int
+cf_v2_acl_final_scoped (SeafDBTrans *trans, struct _SeafileSession *session,
+                        const char *repo_id, const char *old_id,
+                        const char *new_id, const char *actor)
+{
+    if (!trans) return -1;
+
+    int state = cf_v2_acl_final (trans, session, repo_id);
+    if (state == 0) return 0;
+    if (state != -2) return -1;
+
+    /* Protected scope: qualify the concrete change. A missing actor or an
+     * unreadable commit pair never grants. The Hub authority re-reads the
+     * V2 store per path, so a forged commit author still needs real write
+     * permission on every touched path; it cannot borrow another user's
+     * grants. Fail closed on every ambiguity. */
+    if (!actor || !*actor || !old_id || !new_id) return -1;
+
+    SeafRepo *repo = seaf_repo_manager_get_repo (session->repo_mgr, repo_id);
+    if (!repo || repo->virtual_info) {
+        if (repo) seaf_repo_unref (repo);
+        return -1;
+    }
+
+    SeafCommit *old = seaf_commit_manager_get_commit (session->commit_mgr,
+                                                      repo_id, repo->version,
+                                                      old_id);
+    SeafCommit *next = seaf_commit_manager_get_commit (session->commit_mgr,
+                                                       repo_id, repo->version,
+                                                       new_id);
+    GList *changes = NULL;
+    json_t *checks = json_array ();
+    json_t *request = json_object ();
+    int result = -1;
+
+    if (!old || !next ||
+        diff_commit_roots (repo->store_id, repo->version,
+                           old->root_id, next->root_id,
+                           &changes, FALSE) < 0)
+        goto done;
+
+    for (GList *p = changes; p; p = p->next) {
+        DiffEntry *delta = p->data;
+        if (json_array_size (checks) >= 4096 ||
+            !scoped_status_supported (delta))
+            goto done;
+
+        const char *kind = scoped_entry_is_dir (delta) ? "dir" : "file";
+        const char *target = delta->name;
+
+        /* Rename writes the new entry; the source is checked separately
+         * below because removing the old name mutates its parent too. */
+        if ((delta->status == DIFF_STATUS_RENAMED ||
+             delta->status == DIFF_STATUS_DIR_RENAMED) &&
+            delta->new_name && *delta->new_name)
+            target = delta->new_name;
+
+        char *path = g_strconcat ("/", target, NULL);
+        if (!canonical (path)) { g_free (path); goto done; }
+        json_array_append_new (checks,
+                               json_pack ("{s:s,s:s,s:s}",
+                                          "path", path,
+                                          "kind", kind,
+                                          "action", "write"));
+        g_free (path);
+
+        if ((delta->status == DIFF_STATUS_RENAMED ||
+             delta->status == DIFF_STATUS_DIR_RENAMED) &&
+            delta->new_name && *delta->new_name &&
+            strcmp (delta->name, delta->new_name) != 0) {
+            char *src = g_strconcat ("/", delta->name, NULL);
+            if (!canonical (src)) { g_free (src); goto done; }
+            json_array_append_new (checks,
+                                   json_pack ("{s:s,s:s,s:s}",
+                                              "path", src,
+                                              "kind", kind,
+                                              "action", "write"));
+            g_free (src);
+        }
+    }
+
+    if (!json_array_size (checks)) goto done;
+
+    json_object_set_new (request, "repo_id", json_string (repo_id));
+    json_object_set_new (request, "username", json_string (actor));
+    json_object_set_new (request, "checks", checks);
+    checks = NULL;  /* ownership moved into request */
+
+    result = authorize_change (session, request);
+
+done:
+    if (request) json_decref (request);
+    if (checks) json_decref (checks);
+    g_list_free_full (changes, (GDestroyNotify)diff_entry_free);
+    if (old) seaf_commit_unref (old);
+    if (next) seaf_commit_unref (next);
+    seaf_repo_unref (repo);
+    return result;
 }
