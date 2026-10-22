@@ -39,7 +39,7 @@
  * Every call site is behind cf_fileop_active(), so a build with no capability
  * registered does one global read and changes nothing.
  *
- * Contract: cloudfile-docker/docs/fileop-lifecycle.md
+ * Contract: fileop-lifecycle.md
  */
 #include "cf-fileop.h"
 #include "cf-lock.h"
@@ -509,8 +509,7 @@ gen_new_commit_guarded (const char *repo_id,
                 gboolean handle_concurrent_update,
                 gboolean check_gc,
                 const char *last_gc_id,
-                GError **error,
-                const char *scopes_json)
+                GError **error)
 {
 #define MAX_RETRY_COUNT 10
 
@@ -631,11 +630,7 @@ retry:
     if (check_gc)
         gc_conflict = FALSE;
 
-    int published = scopes_json ?
-        seaf_branch_manager_test_and_update_branch_with_barriers (seaf->branch_mgr,
-            repo->head, current_head->commit_id, check_gc, last_gc_id,
-            repo->store_id, &gc_conflict, scopes_json, user) :
-        seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
+    int published = seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
             repo->head, current_head->commit_id, check_gc, last_gc_id,
             repo->store_id, &gc_conflict);
     if (published < 0)
@@ -704,7 +699,7 @@ gen_new_commit (const char *repo_id, SeafCommit *base, const char *new_root,
                 const char *last_gc_id, GError **error)
 {
     return gen_new_commit_guarded (repo_id, base, new_root, user, desc, new_commit_id,
-                                   handle_concurrent_update, check_gc, last_gc_id, error, NULL);
+                                   handle_concurrent_update, check_gc, last_gc_id, error);
 }
 
 static void
@@ -4781,113 +4776,15 @@ do_put_file (SeafRepo *repo,
 }
 
 static int
-cf_staged_sha256 (const char *path, char digest[65])
-{
-    FILE *file = g_fopen (path, "rb");
-    if (!file) return -1;
-    GChecksum *checksum = g_checksum_new (G_CHECKSUM_SHA256);
-    unsigned char buffer[65536];
-    size_t count;
-    while ((count = fread (buffer, 1, sizeof(buffer), file)) > 0)
-        g_checksum_update (checksum, buffer, count);
-    int result = ferror (file) ? -1 : 0;
-    if (fclose (file) != 0) result = -1;
-    if (result == 0)
-        g_strlcpy (digest, g_checksum_get_string (checksum), 65);
-    g_checksum_free (checksum);
-    return result;
-}
-
-/* The real Seafile file-object indexer consumes ordered, EXISTING blocks.
- * Re-check every block's bytes and hash before entering the existing guarded
- * Branch publisher. Neither raw blocks nor this helper authorize a file write.
- */
-static GList *
-cf_parse_cdc_blocks(const char *encoded, gint64 size)
-{
-    if (!encoded || strlen(encoded) > 262144 || size < 0 ||
-        size > G_GINT64_CONSTANT(17179869184))
-        return NULL;
-    json_t *list = json_loads(encoded, JSON_REJECT_DUPLICATES, NULL);
-    if (!json_is_array(list) || json_array_size(list) > 4096 ||
-        (size > 0 && !json_array_size(list)) ||
-        (size == 0 && json_array_size(list))) {
-        if (list) json_decref(list);
-        return NULL;
-    }
-    GList *blocks = NULL;
-    size_t i;
-    json_t *item;
-    json_array_foreach(list, i, item) {
-        const char *id = json_string_value(item);
-        if (!id || strlen(id) != 40 || strspn(id, "0123456789abcdef") != 40) {
-            string_list_free(blocks);
-            json_decref(list);
-            return NULL;
-        }
-        blocks = g_list_append(blocks, g_strdup(id));
-    }
-    json_decref(list);
-    return blocks;
-}
-
-static int
-cf_cdc_blocks_sha256(const char *store_id, int version, GList *ids,
-                     gint64 expected_size, char result[65])
-{
-    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
-    gint64 total = 0;
-    guint8 buffer[65536];
-    int rc = 0;
-    for (GList *p = ids; p; p = p->next) {
-        const char *id = p->data;
-        BlockHandle *handle = seaf_block_manager_open_block(seaf->block_mgr,
-                                           store_id, version, id, BLOCK_READ);
-        if (!handle) { rc = -1; break; }
-        BlockMetadata *meta = seaf_block_manager_stat_block_by_handle(seaf->block_mgr, handle);
-        if (!meta || meta->size <= 0 || meta->size > 10 * 1024 * 1024 ||
-            total > expected_size - meta->size) {
-            rc = -1;
-        } else {
-            GChecksum *raw = g_checksum_new(G_CHECKSUM_SHA1);
-            gint64 remain = meta->size;
-            while (remain > 0) {
-                int n = seaf_block_manager_read_block(seaf->block_mgr, handle,
-                           buffer, MIN((gint64)sizeof(buffer), remain));
-                if (n <= 0) { rc = -1; break; }
-                g_checksum_update(raw, buffer, n);
-                g_checksum_update(sum, buffer, n);
-                remain -= n;
-            }
-            if (!rc && strcmp(g_checksum_get_string(raw), id))
-                rc = -1;
-            g_checksum_free(raw);
-            if (!rc) total += meta->size;
-        }
-        if (meta) g_free(meta);
-        if (seaf_block_manager_close_block(seaf->block_mgr, handle) < 0)
-            rc = -1;
-        seaf_block_manager_block_handle_free(seaf->block_mgr, handle);
-        if (rc) break;
-    }
-    if (total != expected_size) rc = -1;
-    if (!rc) g_strlcpy(result, g_checksum_get_string(sum), 65);
-    g_checksum_free(sum);
-    return rc;
-}
-
-static int
 put_file_with_condition (SeafRepoManager *mgr,
                             const char *repo_id,
                             const char *temp_file_path,
-                            const char *blockids_json, gint64 block_file_size,
                             const char *parent_dir,
                             const char *file_name,
                             const char *user,
                             const char *head_id,
                             gint64 mtime,
                             gboolean strict_head,
-                            const char *scopes_json,
                             char **new_file_id,
                             GError **error)
 {
@@ -4903,34 +4800,8 @@ put_file_with_condition (SeafRepoManager *mgr,
     char *old_file_id = NULL, *fullpath = NULL;
     char *gc_id = NULL;
     int ret = 0;
-    gboolean create = FALSE;
     gboolean cf_prepared = FALSE;
-    gboolean controlled_edit = FALSE;
-    gboolean optimistic_edit = FALSE;
-    char *edit_scopes = NULL;
-    char edit_digest_before[65] = {0};
     char cf_commit_id[41] = "";
-    GList *ordered_blocks = NULL;
-    if (blockids_json) {
-        if (block_file_size == 0 && strcmp(blockids_json, "[]") != 0) {
-            g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                        "Empty CDC file requires canonical empty manifest");
-            return -1;
-        }
-        ordered_blocks = cf_parse_cdc_blocks(blockids_json, block_file_size);
-        if (!ordered_blocks && block_file_size != 0) {
-            g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                        "Invalid ordered CDC manifest");
-            return -1;
-        }
-    }
-    if (scopes_json) {
-        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
-        create = json_is_true (json_object_get (condition, "create"));
-        controlled_edit = json_is_object (json_object_get (condition, "editing"));
-        optimistic_edit = json_is_object (json_object_get (condition, "agent_upload"));
-        if (condition) json_decref (condition);
-    }
 
     if (strict_head && (!head_id || !is_object_id_valid (head_id))) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
@@ -4939,13 +4810,7 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
 
-    if (blockids_json && (!(controlled_edit || optimistic_edit) || !strict_head)) {
-        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                    "Guarded CDC publication required");
-        ret = -1;
-        goto out;
-    }
-    if (!blockids_json && (!temp_file_path || g_access(temp_file_path, R_OK) != 0)) {
+    if (!temp_file_path || g_access(temp_file_path, R_OK) != 0) {
         seaf_warning ("[put file] File %s doesn't exist or not readable.\n",
                       temp_file_path);
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
@@ -4955,13 +4820,6 @@ put_file_with_condition (SeafRepoManager *mgr,
     }
 
     GET_REPO_OR_FAIL(repo, repo_id);
-    if (blockids_json && (repo->encrypted || repo->version != 1 ||
-                          repo->virtual_info || repo->status != REPO_STATUS_NORMAL)) {
-        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                    "CDC requires a plain non-virtual v1 library");
-        ret = -1;
-        goto out;
-    }
     const char *base = head_id ? head_id : repo->head->commit_id;
     GET_COMMIT_OR_FAIL(head_commit, repo->id, repo->version, base);
 
@@ -4999,44 +4857,17 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
     
-    if (create) {
-        FAIL_IF_FILE_EXISTS(repo->store_id, repo->version,
+    FAIL_IF_FILE_NOT_EXISTS(repo->store_id, repo->version,
                             head_commit->root_id, canon_path, file_name, NULL);
-    } else {
-        FAIL_IF_FILE_NOT_EXISTS(repo->store_id, repo->version,
-                            head_commit->root_id, canon_path, file_name, NULL);
-    }
 
     /* The one entry point that already carries the caller's expected source
      * version: @head_id is optional upstream, so it is passed through as-is
      * and stays NULL when the caller did not supply one. P1 turns it into the
      * optimistic-concurrency check; here it is only carried. */
-    if (controlled_edit) {
-        /* Native root is an empty canonical directory; use the same absolute
-         * target as CF_FILEOP_PREPARE, including its leading slash. */
-        char *target = cf_path_join (canon_path, file_name);
-        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
-        const char *condition_path = json_string_value (json_object_get (condition, "path"));
-        json_t *edit = json_object_get (condition, "editing");
-        const char *condition_repo = json_string_value (json_object_get (edit, "repo_id"));
-        if (!target || !condition_path || strcmp (target, condition_path) ||
-            g_strcmp0 (condition_repo, repo_id)) {
-            if (condition) json_decref (condition);
-            g_free (target);
-            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                         "Editing path does not match native target");
-            ret = -1;
-            goto out;
-        }
-        json_decref (condition);
-        cf_lock_controlled_publish_enter (repo_id, target);
-        g_free (target);
-    }
     int prepared = CF_FILEOP_PREPARE (CF_OP_UPDATE_FILE, error,
                                      .repo_id = repo_id, .dir = canon_path,
                                      .name = file_name, .user = user,
                                      .expect_commit_id = head_id);
-    if (controlled_edit) cf_lock_controlled_publish_leave ();
     if (prepared < 0) {
         ret = -1;
         goto out;
@@ -5060,25 +4891,10 @@ put_file_with_condition (SeafRepoManager *mgr,
 
     gc_id = seaf_repo_get_current_gc_id (repo);
 
-    if ((controlled_edit || optimistic_edit) &&
-        (blockids_json ?
-         cf_cdc_blocks_sha256(repo->store_id, repo->version, ordered_blocks,
-                              block_file_size, edit_digest_before) :
-         cf_staged_sha256(temp_file_path, edit_digest_before)) < 0) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                     "Invalid prepared edit content");
-        ret = -1;
-        goto out;
-    }
-
     gint64 size;
-    if ((blockids_json ?
-         seaf_fs_manager_index_existed_file_blocks(seaf->fs_mgr,
-                  repo->store_id, repo->version, ordered_blocks, sha1,
-                  block_file_size) :
-         seaf_fs_manager_index_blocks (seaf->fs_mgr,
+    if (seaf_fs_manager_index_blocks (seaf->fs_mgr,
                   repo->store_id, repo->version, temp_file_path,
-                  sha1, &size, crypt, TRUE, FALSE, NULL)) < 0) {
+                  sha1, &size, crypt, TRUE, FALSE, NULL) < 0) {
         seaf_warning ("failed to index blocks");
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                      "Failed to index blocks");
@@ -5086,7 +4902,6 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
         
-    if (blockids_json) size = block_file_size;
     rawdata_to_hex(sha1, hex, 20);
     if (mtime <= 0) {
         mtime = (gint64)time(NULL);
@@ -5103,69 +4918,13 @@ put_file_with_condition (SeafRepoManager *mgr,
                                                   head_commit->root_id,
                                                   fullpath, NULL, NULL);
 
-    /* A Web local-edit task must compare the ORIGINAL downloaded File ID,
-     * not the newly fetched head or whichever file is currently at the path.
-     * The final guarded Branch CAS also checks the head atomically; this
-     * comparison covers both content-changing and identical-content saves.
-     * Ordinary explicit Web replacements without an Agent baseline retain
-     * their pre-existing contract, and managed Checkout stays authoritative. */
-    if (scopes_json && !controlled_edit) {
-        json_t *conditional = json_loads(scopes_json, JSON_REJECT_DUPLICATES, NULL);
-        json_t *expected = json_object_get(conditional, "expected_file_id");
-        if (expected && (!json_is_string(expected) ||
-                         !is_object_id_valid(json_string_value(expected)) ||
-                         !old_file_id ||
-                         strcmp(old_file_id, json_string_value(expected)))) {
-            if (conditional) json_decref(conditional);
-            g_set_error(error, SEAFILE_DOMAIN, CF_ERR_VERSION_MISMATCH,
-                        "Original local edit file version has changed");
-            ret = -1;
-            goto out;
-        }
-        if (conditional) json_decref(conditional);
-    }
-
-    if (controlled_edit || optimistic_edit) {
-        json_t *condition = json_loads (scopes_json, JSON_REJECT_DUPLICATES, NULL);
-        char content_digest[65] = {0};
-        if (!json_is_object (condition) || !old_file_id ||
-            json_object_get (condition, "native_file_id") ||
-            json_object_get (condition, "native_old_file_id") ||
-            json_object_get (condition, "native_digest") ||
-            json_object_get (condition, "native_size") ||
-            (blockids_json ?
-             cf_cdc_blocks_sha256(repo->store_id, repo->version,
-                 ordered_blocks, block_file_size, content_digest) :
-             cf_staged_sha256(temp_file_path, content_digest)) < 0 ||
-            strcmp (edit_digest_before, content_digest) ||
-            json_object_set_new (condition, "native_file_id", json_string (new_dent->id)) < 0 ||
-            json_object_set_new (condition, "native_old_file_id", json_string (old_file_id)) < 0 ||
-            json_object_set_new (condition, "native_digest", json_string (content_digest)) < 0 ||
-            json_object_set_new (condition, "native_size", json_integer (size)) < 0) {
-            if (condition) json_decref (condition);
-            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                         "Invalid prepared edit content");
-            ret = -1;
-            goto out;
-        }
-        edit_scopes = json_dumps (condition, JSON_COMPACT | JSON_SORT_KEYS);
-        json_decref (condition);
-        if (!edit_scopes) { ret = -1; goto out; }
-    }
-    const char *publish_scopes = edit_scopes ? edit_scopes : scopes_json;
-
     if (g_strcmp0(old_file_id, new_dent->id) == 0) {
         if (strict_head) {
             gboolean gc_conflict = FALSE;
             /* A no-op must still linearize against the live head. Never return
              * an old file ID merely because it matches the requested base. */
             seaf_branch_set_commit (repo->head, head_commit->commit_id);
-            int published = publish_scopes ?
-                seaf_branch_manager_test_and_update_branch_with_barriers (
-                    seaf->branch_mgr, repo->head, head_commit->commit_id,
-                    seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
-                    repo->store_id, &gc_conflict, publish_scopes, user) :
-                seaf_branch_manager_test_and_update_branch (
+            int published = seaf_branch_manager_test_and_update_branch (
                     seaf->branch_mgr, repo->head, head_commit->commit_id,
                     seaf_db_type (seaf->db) != SEAF_DB_TYPE_SQLITE, gc_id,
                     repo->store_id, &gc_conflict);
@@ -5183,8 +4942,7 @@ put_file_with_condition (SeafRepoManager *mgr,
         goto out;
     }
 
-    root_id = create ? do_post_file (repo, head_commit->root_id, canon_path, new_dent) :
-                      do_put_file (repo, head_commit->root_id, canon_path, new_dent);
+    root_id =                      do_put_file (repo, head_commit->root_id, canon_path, new_dent);
     if (!root_id) {
         seaf_warning ("[put file] Failed to put file %s to %s in repo %s.\n",
                       file_name, canon_path, repo->id);
@@ -5195,9 +4953,9 @@ put_file_with_condition (SeafRepoManager *mgr,
     }
 
     /* Commit. */
-    snprintf(buf, SEAF_PATH_MAX, create ? "Added \"%s\"" : "Modified \"%s\"", file_name);
-    if (gen_new_commit_guarded (repo_id, head_commit, root_id, user, buf, cf_commit_id,
-                               !strict_head, TRUE, gc_id, error, publish_scopes) < 0) {
+    snprintf(buf, SEAF_PATH_MAX, "Modified \"%s\"", file_name);
+    if (gen_new_commit (repo_id, head_commit, root_id, user, buf, cf_commit_id,
+                               !strict_head, TRUE, gc_id, error) < 0) {
         ret = -1;
         goto out;
     }
@@ -5233,8 +4991,6 @@ out:
     g_free (old_file_id);
     g_free (fullpath);
     g_free (gc_id);
-    string_list_free(ordered_blocks);
-    free (edit_scopes);
 
     if (ret == 0) {
         update_repo_size (repo_id);
@@ -5249,8 +5005,8 @@ seaf_repo_manager_put_file (SeafRepoManager *mgr, const char *repo_id,
                            const char *file_name, const char *user, const char *head_id,
                            gint64 mtime, char **new_file_id, GError **error)
 {
-    return put_file_with_condition (mgr, repo_id, temp_file_path, NULL, 0, parent_dir,
-                                    file_name, user, head_id, mtime, FALSE, NULL, new_file_id, error);
+    return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
+                                    file_name, user, head_id, mtime, FALSE, new_file_id, error);
 }
 
 int
@@ -5261,39 +5017,8 @@ seaf_repo_manager_put_file_if_head (SeafRepoManager *mgr, const char *repo_id,
 {
     /* Internal version primitive, not a substitute for CloudFile's final
      * authorization, lifecycle, barrier and lease checks. */
-    return put_file_with_condition (mgr, repo_id, temp_file_path, NULL, 0, parent_dir,
-                                    file_name, user, head_id, mtime, TRUE, NULL, new_file_id, error);
-}
-
-int
-seaf_repo_manager_put_file_with_barriers (SeafRepoManager *mgr, const char *repo_id,
-    const char *temp_file_path, const char *parent_dir, const char *file_name,
-    const char *user, const char *head_id, const char *scopes_json,
-    char **new_file_id, GError **error)
-{
-    if (!scopes_json) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "CloudFile scopes required");
-        return -1;
-    }
-    return put_file_with_condition (mgr, repo_id, temp_file_path, NULL, 0, parent_dir,
-                                    file_name, user, head_id, 0, TRUE, scopes_json, new_file_id, error);
-}
-
-int
-seaf_repo_manager_put_file_blocks_with_barriers (SeafRepoManager *mgr,
-    const char *repo_id, const char *blockids_json, gint64 size,
-    const char *parent_dir, const char *file_name, const char *user,
-    const char *head_id, const char *scopes_json, char **new_file_id,
-    GError **error)
-{
-    if (!blockids_json || !scopes_json) {
-        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                    "CDC requires ordered blocks and guarded conditions");
-        return -1;
-    }
-    return put_file_with_condition(mgr, repo_id, NULL, blockids_json, size,
-           parent_dir, file_name, user, head_id, 0, TRUE, scopes_json,
-           new_file_id, error);
+    return put_file_with_condition (mgr, repo_id, temp_file_path, parent_dir,
+                                    file_name, user, head_id, mtime, TRUE, new_file_id, error);
 }
 
 static char *

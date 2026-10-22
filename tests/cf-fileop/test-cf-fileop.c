@@ -3,7 +3,7 @@
 /*
  * Run the shared write-lifecycle case set against the C seam.
  *
- * The same cloudfile-docker/docs/fileop-cases.json drives the Go suite in
+ * The same cloudfile-docker/tests/cases/fileop-cases.json drives the Go suite in
  * fileserver/cf_fileop_test.go. If a case fails here it must be fixed in the
  * spec first, then in both implementations -- never in one of them alone.
  *

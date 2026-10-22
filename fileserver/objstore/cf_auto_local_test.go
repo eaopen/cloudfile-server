@@ -12,7 +12,7 @@ import (
 func TestAutoLocalSharedCases(t *testing.T) {
 	source := os.Getenv("CF_AUTO_STORAGE_CASES")
 	if source == "" {
-		source = "../../../cloudfile-docker/docs/features/automatic-local-storage-cases.json"
+		source = "../../../cloudfile-docker/tests/cases/automatic-local-storage-cases.json"
 	}
 	body, err := os.ReadFile(source)
 	if err != nil {

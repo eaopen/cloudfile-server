@@ -14,11 +14,16 @@ CfV2ACLTransfer *cf_v2_acl_transfer_begin(struct _SeafileSession *session,
     const char *source, const char *destination);
 void cf_v2_acl_transfer_free(CfV2ACLTransfer *guard);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2ACLTransfer, cf_v2_acl_transfer_free)
+/* Public-link token is checked by Seahub; this rechecks only the link path.
+ * 0=authorized target, 1=denied/unsupported target, -1=policy unavailable.
+ * Missing SQL/DB must never be presented as a user's permission denial. */
+int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
+                                const char *repo, const char *path,
+                                gboolean subtree);
 int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id);
 int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session,
                     const char *repo_id);
-int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
-    const char *repo_id, const char *old_id, const char *new_id, const char *actor);
+
 /* Transport only: one internal-JWT POST to /cloudfile/acl/check/. Returns the
  * HTTP status, or -1 when the channel is unusable. @body is reset and holds the
  * reply on 200. The single implementation of that handshake; cf-v2-share.c

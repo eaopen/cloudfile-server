@@ -21,7 +21,10 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/utils"
 )
 
-var errCFACL = errors.New("CF-ACL: denied or current authority unavailable")
+var (
+	errCFACL = errors.New("CF-ACL: access denied or invalid scope")
+	errCFACLUnavailable = errors.New("CF-ACL: current authority unavailable")
+)
 
 type cfACLQuery interface {
 	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
@@ -45,7 +48,10 @@ func cfACLProtectedNow(repoID string) (bool, error) {
 // whole-repository capability. This must not gate directory-aware operations.
 func cfACLRequireRepoWideProof(repoID string) *appError {
 	protected, err := cfACLProtectedNow(repoID)
-	if err != nil || protected {
+	if err != nil {
+		return &appError{errCFACLUnavailable, "ACL unavailable", http.StatusServiceUnavailable}
+	}
+	if protected {
 		return &appError{errCFACL, "Current path authorization required", http.StatusForbidden}
 	}
 	return nil
@@ -86,38 +92,54 @@ func cfACLAuthorize(ctx context.Context, repoID, user string, checks []cfACLChec
 		Checks   []cfACLCheck `json:"checks"`
 	}{user, repoID, checks})
 	if err != nil {
-		return errCFACL
+		return errCFACLUnavailable
 	}
 	token, err := utils.GenSeahubJWTToken()
 	if err != nil {
-		return errCFACL
+		return errCFACLUnavailable
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(option.SeahubURL, "/")+"/cloudfile/acl/check/", bytes.NewReader(body))
 	if err != nil {
-		return errCFACL
+		return errCFACLUnavailable
 	}
 	req.Header.Set("Authorization", "Token "+token)
 	req.Header.Set("Content-Type", "application/json")
 	rsp, err := cfACLClient.Do(req)
 	if err != nil {
-		return errCFACL
+		return errCFACLUnavailable
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
-		return errCFACL
+		if rsp.StatusCode >= 400 && rsp.StatusCode < 500 && rsp.StatusCode != http.StatusTooManyRequests {
+			return errCFACL
+		}
+		return errCFACLUnavailable
 	}
 	data, err := io.ReadAll(io.LimitReader(rsp.Body, 4097))
 	if err != nil || len(data) > 4096 {
-		return errCFACL
+		return errCFACLUnavailable
 	}
 	var result struct {
 		Allowed  bool   `json:"allowed"`
 		Contract string `json:"contract"`
 	}
-	if json.Unmarshal(data, &result) != nil || !result.Allowed || result.Contract != "cf-acl-v1" {
+	if json.Unmarshal(data, &result) != nil || result.Contract != "cf-acl-v1" {
+		return errCFACLUnavailable
+	}
+	if !result.Allowed {
 		return errCFACL
 	}
 	return nil
+}
+
+// A policy denial and a policy-service outage both refuse access, but callers
+// must see 403 versus 503 respectively. Never downgrade an unavailable
+// authority into a permission decision or allow via the CE fallback.
+func cfACLPathFailure(err error) *appError {
+	if errors.Is(err, errCFACLUnavailable) {
+		return &appError{errCFACLUnavailable, "ACL unavailable", http.StatusServiceUnavailable}
+	}
+	return &appError{errCFACL, "Current path authorization denied", http.StatusForbidden}
 }
 
 func cfACLPath(repoID, user, value, kind, action string) *appError {
@@ -129,7 +151,7 @@ func cfACLPath(repoID, user, value, kind, action string) *appError {
 		return nil
 	}
 	if err = cfACLAuthorize(context.Background(), repoID, user, []cfACLCheck{{value, kind, action}}); err != nil {
-		return &appError{errCFACL, "Current path authorization denied", http.StatusForbidden}
+		return cfACLPathFailure(err)
 	}
 	return nil
 }

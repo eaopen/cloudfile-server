@@ -3,22 +3,18 @@
 
 > 用途：给 server 维护者提供可复现的本地门禁、完整 CI 路径和已知验证缺口。
 > 适用版本：CloudFile `dev`，面向 Seafile CE 14 扩展分支。
-> 状态：已完成；真实 S3 与完整 C 构建需 Linux/CI 环境。
+> 状态：轻量检查不代表真实权限验收；完整 C 构建和原生集成需匹配源码的 Linux 产物。
 
 ## 快速门禁
 
 需要 Go 1.22、Python 3、C 编译器、`pkg-config` 和 glib 开发包。ACL 与 fileop
-用例默认从相邻 `cloudfile-docker/docs/` 读取共享 JSON；不使用并排 checkout 时，
+用例默认从相邻 `cloudfile-docker/tests/cases/` 读取共享 JSON；不使用并排 checkout 时，
 分别设置 `CF_ACL_CASES` 和 `CF_FILEOP_CASES`。
 
 ```bash
-./tests/cf-acl/run.sh
 ./tests/cf-fileop/run.sh
 python3 tests/cf-lock/run.py
-./tests/cf-permission-many/run.sh
 ./tests/cf-dir-share/run.sh
-# 目录分页另需 valac / libjansson 开发包
-./tests/cf-dir-page/run.sh
 
 cd fileserver
 go build ./...
@@ -33,14 +29,23 @@ go test -count=1 -run 'Cf[A-Z]' .
 
 | 命令 | 覆盖 | 不覆盖 |
 |---|---|---|
-| `tests/cf-acl/run.sh` | ACL 解析、继承、优先级、权限不放宽不变量 | 数据库查询、RPC 和进程集成 |
-| `tests/cf-dir-page/run.sh` | 生产 C 扫描、RPC、ACL 过滤及相邻 Hub 端点的共享分页用例 | 存储/数据库与进程间 RPC 使用 fixture，不等于部署 E2E |
 | `tests/cf-fileop/run.sh` | 路径/操作词汇、provider 分发、空 provider 透传、C 写入口字段与参数形状 | 运行时变量值是否传对、完整 seaf-server 编译 |
-| `tests/cf-permission-many/run.sh` | 批量权限传输、标量/入口一致性、`check_permission_by_path` 在"无库权限 + 目录共享"下的回退与失败语义 | Hub 的 V2 裁决本身（用 stub 能力），不是部署 E2E |
 | `tests/cf-dir-share/run.sh` | 目录共享资格的请求形状、路径规范化、r/rw 映射，以及拒绝/故障/缺字段的判别 | 真实 Hub HTTP、JWT 与进程间调用（channel 为 stub） |
 | Go `Cf*` 测试 | C/Go 词汇、JSON 字段、错误码、共享用例 | MySQL 依赖的上游测试 |
 | `tests/cf-s3/run.sh` | C commit/fs/block S3 backend 与错误语义 | 未设置端点时会跳过，不构成 S3 验收 |
 | `ci/run.py` | 上游构建、MySQL、C/Go fileserver 和 pytest | 需要 Linux 与完整依赖链 |
+
+## 当前权限集成入口
+
+现有 `tests/test_cf_v2_acl_native.py` 运行真实 C/Go、MariaDB、Hub Authority 和内部
+DRF 裁决接口；登录与主体 TTL 使用测试适配器，不代表真实 SSO 或 DEV 验收。
+它替代退役权限引擎的测试入口，不能用 Docker 的 CE 文件 smoke 替代目录 ACL 验收。
+
+在隔离 Linux 环境使用同一固定源码组合编译的产物，设置 `CF_ACL_NATIVE_SOURCE`、
+`CF_ACL_HUB_SOURCE`、`CF_ACL_C_BINARY`、`CF_ACL_GO_BINARY` 及隔离数据库连接后执行
+`python3 tests/test_cf_v2_acl_native.py`。构建仍使用 Docker 仓
+`build/cloudfile_14.0/build-in-docker.sh` 和固定 SHA 收据；不可用旧二进制证明新代码。
+本轮未新增用例，尚无本轮完整原生集成通过证据。
 
 ## S3 集成测试
 
@@ -75,8 +80,8 @@ Go 测试会创建独立临时 bucket 并清理；C 测试需要提前创建隔�
 
 | Workflow / job | 触发 | 实际入口 |
 |---|---|---|
-| `.github/workflows/cloudfile-checks.yml` / `checks` | `dev` push、PR、手工 | 相邻三仓布局后运行 `cloudfile-docker/tools/run-checks.sh` |
-| `.github/workflows/cloudfile-checks.yml` / `build-c` | 同上 | `ci/install-deps.sh` 后运行 `ci/run.py`，真正编译完整 C 代码 |
+| `.github/workflows/cloudfile-checks.yml` / `checks` | 手工 workflow_dispatch | 相邻三仓布局后运行 `cloudfile-docker/tools/run-checks.sh` |
+| `.github/workflows/cloudfile-checks.yml` / `build-c` | 手工 workflow_dispatch | `ci/install-deps.sh` 后运行 `ci/cloudfile-run.py`，真正编译完整 C 代码 |
 | `.github/workflows/ci.yml` / `build` | push、PR | 上游 `ci/run.py` 路径 |
 | `.github/workflows/golangci-lint.yml` | push、PR | fileserver 与 notification-server 的 golangci-lint |
 

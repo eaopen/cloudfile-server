@@ -663,11 +663,21 @@ http_tx_manager_query_share_link_info (const char *token, const char *cookie, co
     }
 
     info = parse_share_link_info (rsp_content, rsp_size);
-    if (info && cf_v2_acl_unscoped(seaf, seafile_share_link_info_get_repo_id(info)) < 0) {
-        g_object_unref(info);
-        info = NULL;
-        *status = 403;
-        *err_msg = g_strdup("Current path authorization required");
+    if (info) {
+        char *repo_id=NULL,*file_path=NULL,*parent_dir=NULL,*share_type=NULL;
+        g_object_get(info,"repo_id",&repo_id,"file_path",&file_path,
+                     "parent_dir",&parent_dir,"share_type",&share_type,NULL);
+        gboolean file=share_type && !strcmp(share_type,"f");
+        const char *target=file ? file_path : parent_dir;
+        int scope=cf_v2_acl_public_link_scope(seaf,repo_id,target,!file);
+        if (scope!=0) {
+            g_object_unref(info);
+            info=NULL;
+            *status=scope<0 ? 503 : 403;
+            *err_msg=g_strdup(scope<0 ? "Share-link ACL unavailable" :
+                               "Share-link target not authorized");
+        }
+        g_free(repo_id);g_free(file_path);g_free(parent_dir);g_free(share_type);
     }
 
 out:

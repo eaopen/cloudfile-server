@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -84,5 +85,48 @@ func TestCFACLNativeProtocolRechecksAndFailsClosed(t *testing.T) {
 	}
 	if cfACLAuthorize(context.Background(), "repo", "", checks) == nil {
 		t.Fatal("accepted missing actor")
+	}
+}
+
+func TestCfACLAuthorityFailuresRemainDistinct(t *testing.T) {
+	oldURL, oldKey := option.SeahubURL, option.JWTPrivateKey
+	defer func() { option.SeahubURL, option.JWTPrivateKey = oldURL, oldKey }()
+	option.JWTPrivateKey = "fixture-jwt-key-not-a-real-deployment-secret"
+	status := http.StatusOK
+	body := `{"allowed":true,"contract":"cf-acl-v1"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	option.SeahubURL = server.URL
+	checks := []cfACLCheck{{"/shared/file", "file", "read"}}
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   error
+		code   int
+	}{
+		{http.StatusOK, `{"allowed":true,"contract":"cf-acl-v1"}`, nil, 0},
+		{http.StatusForbidden, `{"code":"ACL_DENIED"}`, errCFACL, http.StatusForbidden},
+		{http.StatusServiceUnavailable, `{"code":"ACL_UNAVAILABLE"}`, errCFACLUnavailable, http.StatusServiceUnavailable},
+		{http.StatusTooManyRequests, "rate limited", errCFACLUnavailable, http.StatusServiceUnavailable},
+		{http.StatusOK, "{broken", errCFACLUnavailable, http.StatusServiceUnavailable},
+		{http.StatusOK, `{"allowed":false,"contract":"cf-acl-v1"}`, errCFACL, http.StatusForbidden},
+	} {
+		status, body = tc.status, tc.body
+		err := cfACLAuthorize(context.Background(), "repo", "current-user", checks)
+		if tc.want == nil {
+			if err != nil {
+				t.Fatalf("status %d should grant: %v", tc.status, err)
+			}
+			continue
+		}
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("status %d gave %v, want %v", tc.status, err, tc.want)
+		}
+		if result := cfACLPathFailure(err); result == nil || result.Code != tc.code {
+			t.Fatalf("status %d should map to %d, got %v", tc.status, tc.code, result)
+		}
 	}
 }

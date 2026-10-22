@@ -185,6 +185,16 @@ load_config (SeafileSession *session, const char *config_file_path)
     if (use_go_fileserver && g_strcmp0 (use_go_fileserver, "true") == 0) {
         session->go_fileserver = TRUE; 
     }
+#ifdef FULL_FEATURE
+    /* V2's scoped byte and final-commit paths live in the Go fileserver.
+     * The native C HTTP server only accepts unscoped sync; it cannot act as
+     * an alternative V2 web/fileserver and must not silently replace Go. */
+    if (!session->go_fileserver) {
+        seaf_warning("CloudFile V2 requires ENABLE_GO_FILESERVER=true.\n");
+        ret = -1;
+        goto out;
+    }
+#endif
 
 out:
     if (ret < 0) {

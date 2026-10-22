@@ -40,7 +40,7 @@
 //	               regression against stock CE.
 //	active      -- a capability is registered. Ask, and fail closed.
 //
-// Contract: cloudfile-docker/docs/fileop-lifecycle.md
+// Contract: fileop-lifecycle.md
 
 package main
 
@@ -55,7 +55,7 @@ import (
 )
 
 // Operation vocabulary. Must stay identical to common/cf-fileop.h; the shared
-// case set in cloudfile-docker/docs/fileop-cases.json checks both ends.
+// case set in cloudfile-docker/tests/cases/fileop-cases.json checks both ends.
 const (
 	cfOpCreateFile   = "create-file"
 	cfOpUpdateFile   = "update-file"

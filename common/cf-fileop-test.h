@@ -39,7 +39,7 @@
  *   fileop_test_journal            append one line per event here; empty
  *                                  means do not journal
  *
- * Contract: cloudfile-docker/docs/fileop-lifecycle.md
+ * Contract: fileop-lifecycle.md
  */
 
 #ifndef CF_FILEOP_TEST_H

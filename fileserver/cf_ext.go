@@ -17,11 +17,10 @@
 // Seahub asks the same question via is_repo_syncable so it can show a useful
 // error. This check exists because a modified client can simply skip that.
 //
-// 2026-10-15, v0.9-only: the [cloudfile] dir_acl_enabled switch no longer
-// gates this call. Once the deployment has the managed schema installed the
-// legacy sync entry must be refused for managed libraries, and an off switch
-// must not reopen them. The C side answers 0/"" for non-managed repositories,
-// so plain CE keeps native behaviour.
+// Current V2 scope rule: this native CE sync protocol exchanges whole-repo
+// objects without proving individual paths. If restricted descendants may
+// exist, deny that sync operation; ordinary path-scoped Web/API access remains
+// available. This is an operation limitation, never repository enrollment.
 
 package main
 

@@ -247,6 +247,8 @@ validate_token (HttpServer *htp_server, evhtp_request_t *req,
                 const char *repo_id, char **username,
                 gboolean skip_cache)
 {
+    /* This token is used by the native whole-repository sync/block protocol,
+     * which cannot prove individual file paths; not a repository class. */
     if (cf_v2_acl_unscoped(seaf, repo_id) < 0) {
         evhtp_send_reply(req, EVHTP_RES_FORBIDDEN);
         return EVHTP_RES_FORBIDDEN;

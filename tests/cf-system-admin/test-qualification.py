@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / 'common/user-mgr.c').read_text()
-CASES = Path(os.environ.get('CF_TEST_DOCKER_ROOT', ROOT.parent / 'cloudfile-docker')) / 'docs/system-admin-content-cases.json'
+CASES = Path(os.environ.get('CF_TEST_DOCKER_ROOT', ROOT.parent / 'cloudfile-docker')) / 'tests/cases/system-admin-content-cases.json'
 
 
 def function(name):

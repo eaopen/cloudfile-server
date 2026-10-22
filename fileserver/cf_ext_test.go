@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// 2026-10-15, v0.9-only: the [cloudfile] dir_acl_enabled switch no longer
-// gates the legacy sync entry. A managed library must be refused even when
-// that old switch is off, so there is no "disabled" pass-through to assert.
+// Native CE sync without a path proof is gated by its own operation scope.
+// These tests must not reintroduce "managed library" classification.
 func withRestrictedPathStub(t *testing.T,
 	stub func(string, string) (interface{}, error)) {
 	t.Helper()

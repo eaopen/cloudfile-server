@@ -391,8 +391,6 @@ func rpcClientInit() {
 func newHTTPRouter() *mux.Router {
 	r := mux.NewRouter()
 	r.HandleFunc("/protocol-version{slash:\\/?}", handleProtocolVersion)
-	r.Handle("/cloudfile/read", appHandler(cloudFileReadCB))
-	r.Handle("/cloudfile/files/{.*}/{.*}", appHandler(cloudFileBrowserReadCB))
 	r.Handle("/files/{.*}/{.*}", appHandler(accessCB))
 	r.Handle("/blks/{.*}/{.*}", appHandler(accessBlksCB))
 	r.Handle("/zip/{.*}", appHandler(accessZipCB))

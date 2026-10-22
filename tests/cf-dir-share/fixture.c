@@ -21,11 +21,11 @@ static int seaf_db_type(SeafDB *db) { (void)db; return db_kind; }
 static gboolean seaf_db_statement_exists(SeafDB *db, const char *sql, gboolean *error, int n)
 {
     (void)db; (void)n;
-    /* The current V2 contract has exactly these three extension tables;
-     * a legacy-only installation must never make the new grant active. */
+    /* The share-qualification adapter checks the minimum V2 identity/ACL
+     * dependencies. The complete CloudFile extension schema has five tables. */
     if (!strstr(sql, "SELECT 1 FROM information_schema.tables") ||
         !strstr(sql, "'cf_library_storage'") || !strstr(sql, "'cf_dir_acl'") ||
-        !strstr(sql, "'cf_sso_group_map'") || strstr(sql, "cf_managed_library") ||
+        !strstr(sql, "'cf_sso_group_map'") ||
         !strstr(sql, "COUNT(DISTINCT table_name)=3"))
         return FALSE;
     if (schema_fault) { *error = TRUE; return FALSE; }
