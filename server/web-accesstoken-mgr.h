@@ -42,6 +42,12 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 char *seaf_web_at_manager_get_scoped_download_token (SeafWebAccessTokenManager *mgr,
     const char *repo_id, const char *path, const char *obj_id,
     const char *username, int use_onetime, GError **error);
+/* The upload counterpart of the ticket above: binds the ticket to the target
+ * directory so an ACL-managed library can be written through the same
+ * path-qualified flow instead of the unbound legacy ticket. */
+char *seaf_web_at_manager_get_scoped_upload_token (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *obj_id, const char *path,
+    const char *username, int use_onetime, GError **error);
 /* Atomically claims a path-bound ticket and rechecks current native target and
  * authority. No legacy fallback. Returned metadata is not a long-lived grant
  * or a per-block read guard; fileserver release must still be connected. */

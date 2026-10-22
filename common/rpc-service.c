@@ -1712,6 +1712,31 @@ seafile_web_get_scoped_download_token (const char *repo_id,
 }
 
 char *
+seafile_web_get_scoped_upload_token (const char *repo_id, const char *path,
+    const char *username, int use_onetime, GError **error)
+{
+    /* Same canonical check as the download ticket: an absolute, normalized
+     * directory path with no traversal. */
+    if (!repo_id || !is_uuid_valid (repo_id) || !cf_download_path_valid (path) ||
+        !username || !*username || (use_onetime != 0 && use_onetime != 1)) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Invalid scoped upload request");
+        return NULL;
+    }
+    /* Keep the legacy upload payload so the fileserver takes the same branch;
+     * the token map stores the authority binding separately in @path. */
+    json_t *obj = json_pack ("{s:s}", "parent_dir", path);
+    if (!obj) return NULL;
+    char *obj_id = json_dumps (obj, JSON_COMPACT);
+    json_decref (obj);
+    if (!obj_id) return NULL;
+    char *token = seaf_web_at_manager_get_scoped_upload_token (
+        seaf->web_at_mgr, repo_id, obj_id, path, username, use_onetime, error);
+    free (obj_id);
+    return token;
+}
+
+char *
 seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
     const char *head_id, const char *object_id, const char *op,
     const char *username, const char *conditions, GError **error)

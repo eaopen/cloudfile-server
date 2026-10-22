@@ -46,6 +46,16 @@ class SeafileAPI(object):
             repo_id, path, username, 1 if use_onetime else 0)
         return json.loads(raw) if raw else None
 
+    def get_scoped_upload_token(self, repo_id, path, username, use_onetime=False):
+        """Mint only after Hub Authority grants write access to this directory.
+
+        The ticket is bound to @path, so the fileserver can tell an authorized
+        upload from an unbound legacy ticket. Keep this off every public HTTP
+        route: the Hub endpoint adjudicates first and only then calls here.
+        """
+        return seafserv_threaded_rpc.web_get_scoped_upload_token(
+            repo_id, path, username, 1 if use_onetime else 0)
+
     def query_fileserver_access_token(self, token):
         """Get the WebAccess object
 

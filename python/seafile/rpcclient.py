@@ -914,6 +914,11 @@ class SeafServerThreadedRpcClient(NamedPipeClient):
         pass
     web_get_scoped_download_token = seafile_web_get_scoped_download_token
 
+    @searpc_func("string", ["string", "string", "string", "int"])
+    def seafile_web_get_scoped_upload_token(repo_id, path, username, use_onetime=0):
+        pass
+    web_get_scoped_upload_token = seafile_web_get_scoped_upload_token
+
     # Privileged legacy calls retain their separate protocol.
 
     @searpc_func("string", ["string", "string", "string", "string", "string", "string", "string"])

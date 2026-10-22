@@ -629,6 +629,12 @@ static void start_rpc_service (const char *seafile_dir,
         seafile_web_get_scoped_download_token,
         "seafile_web_get_scoped_download_token",
         searpc_signature_string__string_string_string_int());
+    /* Upload counterpart: the token is bound to the target directory, which is
+     * the only qualification an ACL-managed library accepts. */
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+        seafile_web_get_scoped_upload_token,
+        "seafile_web_get_scoped_upload_token",
+        searpc_signature_string__string_string_string_int());
     /* Privileged named-pipe RPC only. No public HTTP download registration. */
     searpc_server_register_function ("seafserv-threaded-rpcserver",
         seafile_cloudfile_issue_read_ticket, "seafile_cloudfile_issue_read_ticket",

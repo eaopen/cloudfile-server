@@ -267,6 +267,18 @@ seaf_web_at_manager_get_scoped_download_token (SeafWebAccessTokenManager *mgr,
     return issue_access_token (mgr, repo_id, obj_id, "download", username,
                                use_onetime, path, error);
 }
+
+char *
+seaf_web_at_manager_get_scoped_upload_token (SeafWebAccessTokenManager *mgr,
+    const char *repo_id, const char *obj_id, const char *path,
+    const char *username, int use_onetime, GError **error)
+{
+    /* obj_id stays the legacy upload payload ({"parent_dir": ...}) so the
+     * fileserver keeps taking the same branch; only the authority binding is
+     * new. */
+    return issue_access_token (mgr, repo_id, obj_id, "upload", username,
+                               use_onetime, path, error);
+}
 #endif
 
 SeafileWebAccess *

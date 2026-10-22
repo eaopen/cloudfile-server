@@ -512,6 +512,9 @@ seafile_web_query_access_token (const char *token, GError **error);
 char *seafile_web_get_scoped_download_token (
     const char *repo_id, const char *path, const char *username,
     int use_onetime, GError **error);
+char *seafile_web_get_scoped_upload_token (
+    const char *repo_id, const char *path, const char *username,
+    int use_onetime, GError **error);
 char *seafile_cloudfile_issue_read_ticket (const char *repo_id, const char *path,
     const char *head_id, const char *object_id, const char *op,
     const char *username, const char *conditions, GError **error);
