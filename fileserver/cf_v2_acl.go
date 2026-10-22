@@ -22,7 +22,7 @@ import (
 )
 
 var (
-	errCFACL = errors.New("CF-ACL: access denied or invalid scope")
+	errCFACL            = errors.New("CF-ACL: access denied or invalid scope")
 	errCFACLUnavailable = errors.New("CF-ACL: current authority unavailable")
 )
 
