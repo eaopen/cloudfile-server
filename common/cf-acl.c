@@ -92,6 +92,9 @@ filter_chunk (const char *repo, const char *dir, const char *user,
     json_t *req=json_object(), *checks=json_array(), *reply=NULL;
     GString *body=g_string_new(NULL);
     char *payload=NULL;
+    /* Same order as checks: an entry without an Authority kind is skipped,
+     * so position i of permissions no longer maps to position i of begin. */
+    GList *included=NULL;
     if (!req || !checks || !body || !repo || !dir || !user) goto done;
     for (GList *p=begin; p && count > 0; p=p->next, --count) {
         GObject *item=p->data;
@@ -99,10 +102,17 @@ filter_chunk (const char *repo, const char *dir, const char *user,
         int mode=0;
         g_object_get(item,"obj_name",&name,"mode",&mode,NULL);
         if (!name || !*name || strchr(name,'/') ||
-            !strcmp(name,".") || !strcmp(name,"..") ||
-            (!S_ISDIR(mode) && !S_ISREG(mode))) {
+            !strcmp(name,".") || !strcmp(name,"..")) {
             g_free(name);
             goto done;
+        }
+        /* A dirent that is neither a regular file nor a directory (a native
+         * symlink, for example) has no Authority kind. Skip that child only:
+         * aborting the chunk would hide every sibling on the page. A hidden
+         * child simply gets no permission below, like a denied sibling. */
+        if (!S_ISDIR(mode) && !S_ISREG(mode)) {
+            g_free(name);
+            continue;
         }
         char *path=g_build_filename(dir,name,NULL);
         g_free(name);
@@ -117,9 +127,13 @@ filter_chunk (const char *repo, const char *dir, const char *user,
             goto done;
         }
         json_decref(check);
+        included=g_list_append(included,item);
     }
     unsigned size=(unsigned)json_array_size(checks);
-    if (!size || size>512 ||
+    /* Every child was skipped: nothing to authorize, the page stays empty
+     * instead of failing closed over the whole directory. */
+    if (!size) { result=0; goto done; }
+    if (size>512 ||
         json_object_set_new(req,"repo_id",json_string(repo)) ||
         json_object_set_new(req,"username",json_string(user)) ||
         json_object_set_new(req,"partial",json_true()) ||
@@ -131,14 +145,14 @@ filter_chunk (const char *repo, const char *dir, const char *user,
     if (!json_is_true(json_object_get(reply,"allowed")) ||
         g_strcmp0(json_string_value(json_object_get(reply,"contract")),"cf-acl-v1") ||
         !json_is_array(permissions) || json_array_size(permissions)!=size) goto done;
-    GList *p=begin;
+    GList *p=included;
     for (unsigned i=0;i<size;++i,p=p->next) {
         const char *permission=json_string_value(json_array_get(permissions,i));
         if (!json_is_null(json_array_get(permissions,i)) &&
             (!permission || (strcmp(permission,"r") && strcmp(permission,"rw"))))
             goto done;
     }
-    p=begin;
+    p=included;
     for (unsigned i=0;i<size;++i,p=p->next) {
         const char *permission=json_string_value(json_array_get(permissions,i));
         if (permission) {
@@ -149,6 +163,7 @@ filter_chunk (const char *repo, const char *dir, const char *user,
     }
     result=0;
 done:
+    g_list_free(included);
     json_decref(reply);json_decref(req);json_decref(checks);
     g_free(payload);
     if(body)g_string_free(body,TRUE);
