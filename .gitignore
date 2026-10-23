@@ -97,3 +97,4 @@ tests/conf/PeerMgr
 __pycache__/
 .cache/
 .codegraph
+.idea/
