@@ -529,7 +529,7 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (strcmp (old_commit_id, commit_id) != 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return -1;
+        return SEAF_BRANCH_UPDATE_HEAD_CONFLICT;
     }
 
     /* Branch is locked before consulting the current authority. ACL writers
@@ -564,7 +564,7 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (acl_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return -2;
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
     }
 
     sql = "UPDATE Branch SET commit_id = ? "
