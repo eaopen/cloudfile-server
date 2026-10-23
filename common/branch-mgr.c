@@ -13,6 +13,7 @@
 #ifdef FULL_FEATURE
 #include "notif-mgr.h"
 #include "cf-v2-acl.h"
+#include "commit-mgr.h"
 #include "repo-mgr.h"
 #include "fs-mgr.h"
 #include "utils.h"
@@ -534,9 +535,32 @@ test_and_update_branch (SeafBranchManager *mgr,
     /* Branch is locked before consulting the current authority. ACL writers
      * acquire this same lock, serializing SQL changes with publication.
      * Hub decisions retain their configured, bounded cache lifetime.
-     * Native whole-repository commits have no actor/path scope: require
-     * repository-wide proof, never accept retired scope credentials. */
+     * Native whole-repository commits carry no actor/path scope in the RPC
+     * seam (del/move/rename/mkdir pass no guard context), so when the plain
+     * final check reports a protected scope, qualify the concrete change
+     * against the V2 authority instead of refusing outright. The commit
+     * author acts as the actor; the Hub re-checks per-path write permission
+     * against the V2 store, so a forged author cannot borrow grants. */
     int acl_result = cf_v2_acl_final(trans, mgr->seaf, branch->repo_id);
+    if (acl_result == -2) {
+        char *actor = NULL;
+        SeafRepo *acl_repo = seaf_repo_manager_get_repo (mgr->seaf->repo_mgr,
+                                                         branch->repo_id);
+        if (acl_repo) {
+            SeafCommit *head = seaf_commit_manager_get_commit (
+                mgr->seaf->commit_mgr, branch->repo_id,
+                acl_repo->version, branch->commit_id);
+            if (head) {
+                actor = g_strdup (head->creator_name);
+                seaf_commit_unref (head);
+            }
+            seaf_repo_unref (acl_repo);
+        }
+        acl_result = cf_v2_acl_final_scoped (trans, mgr->seaf, branch->repo_id,
+                                             old_commit_id, branch->commit_id,
+                                             actor ? actor : "");
+        g_free (actor);
+    }
     if (acl_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
