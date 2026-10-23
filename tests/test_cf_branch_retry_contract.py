@@ -22,6 +22,8 @@ class BranchRetryContract(unittest.TestCase):
                           "test_and_update_branch (SeafBranchManager *mgr,",
                           "\nint\nseaf_branch_manager_test_and_update_branch (")
         self.assertIn("#define SEAF_BRANCH_UPDATE_HEAD_CONFLICT (-3)", hdr)
+        self.assertIn("if (head_rows != 1)", branch)
+        self.assertIn("return SEAF_BRANCH_UPDATE_ERROR;", branch)
         self.assertIn("return SEAF_BRANCH_UPDATE_HEAD_CONFLICT;", branch)
         self.assertIn("return SEAF_BRANCH_UPDATE_ACL_DENIED;", branch)
         self.assertIn("return -1;", branch)  # SQL/transaction failure stays distinct
