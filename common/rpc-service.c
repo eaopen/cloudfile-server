@@ -1675,6 +1675,26 @@ cf_download_path_valid (const char *path)
     return ok && strcmp (path, "/") != 0;
 }
 
+/* Upload targets a directory, so the library root "/" is legitimate here;
+ * the download ticket keeps cf_download_path_valid's root exclusion. */
+static gboolean
+cf_upload_dir_valid (const char *path)
+{
+    if (!path || path[0] != '/' || strlen (path) > 4096 ||
+        !g_utf8_validate (path, -1, NULL) || strstr (path, "//") ||
+        strchr (path, '\\') || (strlen (path) > 1 && path[strlen (path)-1] == '/'))
+        return FALSE;
+    gchar **parts = g_strsplit (path, "/", -1);
+    gboolean ok = TRUE;
+    for (int i = 0; parts[i] && ok; ++i)
+        if (!strcmp (parts[i], ".") || !strcmp (parts[i], ".."))
+            ok = FALSE;
+    for (const unsigned char *c = (const unsigned char *)path; *c; ++c)
+        if (*c < 32 || *c == 127) ok = FALSE;
+    g_strfreev (parts);
+    return ok;
+}
+
 /* Keep the clean CE14 mint contract; callers authorize before this private RPC. */
 char *
 seafile_web_get_scoped_download_token (const char *repo_id,
@@ -1715,9 +1735,9 @@ char *
 seafile_web_get_scoped_upload_token (const char *repo_id, const char *path,
     const char *username, int use_onetime, GError **error)
 {
-    /* Same canonical check as the download ticket: an absolute, normalized
-     * directory path with no traversal. */
-    if (!repo_id || !is_uuid_valid (repo_id) || !cf_download_path_valid (path) ||
+    /* An absolute, normalized directory path with no traversal. Unlike the
+     * download ticket, the library root "/" is a valid upload target. */
+    if (!repo_id || !is_uuid_valid (repo_id) || !cf_upload_dir_valid (path) ||
         !username || !*username || (use_onetime != 0 && use_onetime != 1)) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                      "Invalid scoped upload request");
