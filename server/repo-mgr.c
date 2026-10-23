@@ -4294,6 +4294,7 @@ seaf_repo_manager_edit_repo (const char *repo_id,
     SeafRepo *repo = NULL;
     SeafCommit *commit = NULL, *parent = NULL;
     int ret = 0;
+    int retry_cnt = 0;
 
     if (!name && !description) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
@@ -4312,10 +4313,9 @@ retry:
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS, "No such library");
         return -1;
     }
-    if (!name)
-        name = repo->name;
-    if (!description)
-        description = repo->desc;
+    /* Do not retain a previous head's metadata across a HEAD-conflict retry. */
+    const char *effective_name = name ? name : repo->name;
+    const char *effective_description = description ? description : repo->desc;
 
     /*
      * We only change repo_name or repo_desc, so just copy the head commit
@@ -4330,14 +4330,16 @@ retry:
         ret = -1;
         goto out;
     }
-    if (!user) {
-        user = parent->creator_name;
-    }
+    /* Idempotent metadata writes must never create a commit or take ACL locks. */
+    if (g_strcmp0 (parent->repo_name, effective_name) == 0 &&
+        g_strcmp0 (parent->repo_desc, effective_description) == 0)
+        goto out;
+    const char *effective_user = user ? user : parent->creator_name;
 
     commit = seaf_commit_new (NULL,
                               repo->id,
                               parent->root_id,
-                              user,
+                              effective_user,
                               EMPTY_SHA1,
                               "Changed library name or description",
                               0);
@@ -4345,9 +4347,9 @@ retry:
     seaf_repo_to_commit (repo, commit);
 
     g_free (commit->repo_name);
-    commit->repo_name = g_strdup(name);
+    commit->repo_name = g_strdup(effective_name);
     g_free (commit->repo_desc);
-    commit->repo_desc = g_strdup(description);
+    commit->repo_desc = g_strdup(effective_description);
 
     if (seaf_commit_manager_add_commit (seaf->commit_mgr, commit) < 0) {
         ret = -1;
@@ -4355,17 +4357,27 @@ retry:
     }
 
     seaf_branch_set_commit (repo->head, commit->commit_id);
-    if (seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
-                                                    repo->head,
-                                                    parent->commit_id,
-                                                    FALSE, NULL, NULL, NULL) < 0) {
-        seaf_repo_unref (repo);
-        seaf_commit_unref (commit);
-        seaf_commit_unref (parent);
-        repo = NULL;
-        commit = NULL;
-        parent = NULL;
-        goto retry;
+    int published = seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
+                                                                 repo->head,
+                                                                 parent->commit_id,
+                                                                 FALSE, NULL, NULL, NULL);
+    if (published < 0) {
+        if (published == SEAF_BRANCH_UPDATE_HEAD_CONFLICT && retry_cnt < 3) {
+            ++retry_cnt;
+            seaf_repo_unref (repo);
+            seaf_commit_unref (commit);
+            seaf_commit_unref (parent);
+            repo = NULL;
+            commit = parent = NULL;
+            g_usleep (g_random_int_range (10, 51) * 1000);
+            goto retry;
+        }
+        g_set_error (error, SEAFILE_DOMAIN,
+                     published == SEAF_BRANCH_UPDATE_HEAD_CONFLICT ?
+                     SEAF_ERR_CONCURRENT_UPLOAD : SEAF_ERR_GENERAL,
+                     "Library metadata update rejected or unavailable");
+        ret = -1;
+        goto out;
     }
 
     seaf_repo_manager_update_repo_info (seaf->repo_mgr, repo_id, repo->head->commit_id);
