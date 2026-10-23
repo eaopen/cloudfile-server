@@ -52,6 +52,11 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr,
                                    SeafBranch *branch);
 
 #ifdef SEAFILE_SERVER
+/* Only a changed HEAD is retryable. Policy or SQL failure must stop
+ * immediately; the caller cannot recover it by creating more commits. */
+#define SEAF_BRANCH_UPDATE_ERROR         (-1)
+#define SEAF_BRANCH_UPDATE_ACL_DENIED    (-2)
+#define SEAF_BRANCH_UPDATE_HEAD_CONFLICT (-3)
 /**
  * Atomically test whether the current head commit id on @branch
  * is the same as @old_commit_id and update branch in db.
