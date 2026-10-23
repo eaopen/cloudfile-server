@@ -635,7 +635,7 @@ retry:
             repo->store_id, &gc_conflict);
     if (published < 0)
     {
-        if (published == -2) {
+        if (published == SEAF_BRANCH_UPDATE_ACL_DENIED) {
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                          "CloudFile authority unavailable or fenced");
             ret = -1;
@@ -645,6 +645,12 @@ retry:
             seaf_warning ("Head branch update for repo %s conflicts with GC.\n",
                           repo->id);
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GC_CONFLICT, "GC Conflict");
+            ret = -1;
+            goto out;
+        }
+        if (published != SEAF_BRANCH_UPDATE_HEAD_CONFLICT) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "Branch update failed (not a HEAD conflict)");
             ret = -1;
             goto out;
         }
@@ -4930,8 +4936,9 @@ put_file_with_condition (SeafRepoManager *mgr,
                     repo->store_id, &gc_conflict);
             if (published < 0) {
                 g_set_error (error, SEAFILE_DOMAIN,
-                             published == -2 ? SEAF_ERR_GENERAL :
-                             (gc_conflict ? SEAF_ERR_GC_CONFLICT : SEAF_ERR_CONCURRENT_UPLOAD),
+                             gc_conflict ? SEAF_ERR_GC_CONFLICT :
+                             (published == SEAF_BRANCH_UPDATE_HEAD_CONFLICT ?
+                              SEAF_ERR_CONCURRENT_UPLOAD : SEAF_ERR_GENERAL),
                              "Conditional no-op could not be committed");
                 ret = -1;
                 goto out;
@@ -6849,10 +6856,11 @@ seaf_repo_manager_revert_on_server (SeafRepoManager *mgr,
                                     const char *user_name,
                                     GError **error)
 {
-    SeafRepo *repo;
+    SeafRepo *repo = NULL;
     SeafCommit *commit = NULL, *new_commit = NULL;
     char desc[512];
     int ret = 0;
+    int retry_cnt = 0;
     gboolean cf_prepared = FALSE;
 
     /* Outside the retry label: rewinding the whole library is one operation no
@@ -6869,7 +6877,8 @@ retry:
     if (!repo) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                      "No such repo");
-        return -1;
+        ret = -1;
+        goto out;
     }
 
     commit = seaf_commit_manager_get_commit (seaf->commit_mgr,
@@ -6903,17 +6912,27 @@ retry:
     }
 
     seaf_branch_set_commit (repo->head, new_commit->commit_id);
-    if (seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
-                                                    repo->head,
-                                                    new_commit->parent_id,
-                                                    FALSE, NULL, NULL, NULL) < 0)
-    {
-        seaf_repo_unref (repo);
-        seaf_commit_unref (commit);
-        seaf_commit_unref (new_commit);
-        repo = NULL;
-        commit = new_commit = NULL;
-        goto retry;
+    int published = seaf_branch_manager_test_and_update_branch (seaf->branch_mgr,
+                                                                 repo->head,
+                                                                 new_commit->parent_id,
+                                                                 FALSE, NULL, NULL, NULL);
+    if (published < 0) {
+        if (published == SEAF_BRANCH_UPDATE_HEAD_CONFLICT && retry_cnt < 3) {
+            ++retry_cnt;
+            seaf_repo_unref (repo);
+            seaf_commit_unref (commit);
+            seaf_commit_unref (new_commit);
+            repo = NULL;
+            commit = new_commit = NULL;
+            g_usleep (g_random_int_range (10, 51) * 1000);
+            goto retry;
+        }
+        g_set_error (error, SEAFILE_DOMAIN,
+                     published == SEAF_BRANCH_UPDATE_HEAD_CONFLICT ?
+                     SEAF_ERR_CONCURRENT_UPLOAD : SEAF_ERR_GENERAL,
+                     "Revert branch update rejected or unavailable");
+        ret = -1;
+        goto out;
     }
 
     CF_FILEOP_COMMITTED (CF_OP_REVERT_REPO,

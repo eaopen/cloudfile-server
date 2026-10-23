@@ -518,18 +518,20 @@ test_and_update_branch (SeafBranchManager *mgr,
     default:
         g_return_val_if_reached (-1);
     }
-    if (seaf_db_trans_foreach_selected_row (trans, sql,
-                                            get_commit_id, commit_id,
-                                            2, "string", branch->name,
-                                            "string", branch->repo_id) < 0) {
+    int head_rows = seaf_db_trans_foreach_selected_row (trans, sql,
+                                                          get_commit_id, commit_id,
+                                                          2, "string", branch->name,
+                                                          "string", branch->repo_id);
+    /* A missing/corrupt Branch row is not a confirmed HEAD race. */
+    if (head_rows != 1) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return -1;
+        return SEAF_BRANCH_UPDATE_ERROR;
     }
     if (strcmp (old_commit_id, commit_id) != 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return -1;
+        return SEAF_BRANCH_UPDATE_HEAD_CONFLICT;
     }
 
     /* Branch is locked before consulting the current authority. ACL writers
@@ -564,7 +566,7 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (acl_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return -2;
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
     }
 
     sql = "UPDATE Branch SET commit_id = ? "
