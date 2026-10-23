@@ -23,6 +23,9 @@ jobs:
       - name: Block retired managed-library code and contracts
         run: python3 tests/test_v2_no_managed_library.py
 
+      - name: Run cheap C-source ACL and Branch retry contracts
+        run: python3 -m unittest discover -s tests -p 'test_cf_*.py'
+
       - name: Validate only changed source
         shell: bash
         run: |
