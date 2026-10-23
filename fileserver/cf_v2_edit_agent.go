@@ -116,17 +116,50 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 	}
 	return c, nil
 }
+// Every refusal here is mapped to one HTTP code by the handler, so the reason
+// has to travel with the error: an unsupported repo, an unavailable authority
+// and an actual denial need different answers from the caller.
+var (
+	errEditRepoMissing = errors.New("missing repo")
+	errEditUnsupported = errors.New("unsupported repo")
+	errEditACLUnavail  = errors.New("acl unavailable")
+	errEditACLDenied   = errors.New("current path authorization denied")
+	errEditDenied      = errors.New("current permission denied")
+)
+
 func cfEditAuthorize(c *cfEditClaims, write bool) (*repomgr.Repo, error) {
 	repo := repomgr.Get(c.RepoID)
-	if repo == nil || repo.VirtualInfo != nil || repo.IsEncrypted || repo.Version != 1 {
-		return nil, errors.New("unsupported repo")
+	if repo == nil {
+		return nil, errEditRepoMissing
+	}
+	if repo.VirtualInfo != nil || repo.IsEncrypted || repo.Version != 1 {
+		return nil, errEditUnsupported
 	}
 	action, perm := "read", "download"
 	if write {
 		action, perm = "write", "upload"
 	}
-	if checkPermission(repo.ID, c.Subject, perm, true) != nil || cfACLPath(repo.ID, c.Subject, c.FilePath, "file", action) != nil {
-		return nil, errors.New("current permission denied")
+	// Modified 2026-10-23: a managed library is authorized by the V2 path ACL
+	// alone, exactly like the ordinary read/write paths in fileop.go; only an
+	// unprotected library falls back to the legacy whole-repo permission. The
+	// previous `checkPermission(...) || cfACLPath(...)` required BOTH, so a user
+	// who is granted rw by the ACL but has no Seafile share row was refused with
+	// 403 PERMISSION_DENIED and 本地查看 died at the native read.
+	protected, err := cfACLProtectedNow(repo.ID)
+	if err != nil {
+		return nil, errEditACLUnavail
+	}
+	if protected {
+		if denied := cfACLPath(repo.ID, c.Subject, c.FilePath, "file", action); denied != nil {
+			if denied.Code == http.StatusServiceUnavailable {
+				return nil, errEditACLUnavail
+			}
+			return nil, errEditACLDenied
+		}
+		return repo, nil
+	}
+	if checkPermission(repo.ID, c.Subject, perm, true) != nil {
+		return nil, errEditDenied
 	}
 	return repo, nil
 }
@@ -617,6 +650,22 @@ func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
 		(route == "publish" && action == "optimistic")
 }
 
+// Let the caller tell the three refusals apart without leaking policy detail.
+func cfEditAuthFail(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errEditRepoMissing):
+		cfEditFail(w, 404, "REPO_MISSING")
+	case errors.Is(err, errEditUnsupported):
+		cfEditFail(w, 409, "UNSUPPORTED_REPO")
+	case errors.Is(err, errEditACLUnavail):
+		cfEditFail(w, 503, "ACL_UNAVAILABLE")
+	case errors.Is(err, errEditACLDenied):
+		cfEditFail(w, 403, "ACL_DENIED")
+	default:
+		cfEditFail(w, 403, "PERMISSION_DENIED")
+	}
+}
+
 func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 	c, err := cfEditClaimsFor(r)
 	if err != nil {
@@ -635,7 +684,7 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 	write := route != "read" && route != "status"
 	repo, err := cfEditAuthorize(c, write)
 	if err != nil {
-		cfEditFail(w, 403, "PERMISSION_DENIED")
+		cfEditAuthFail(w, err)
 		return
 	}
 	switch route {
