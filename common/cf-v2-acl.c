@@ -3,9 +3,13 @@
 #include "seafile-session.h"
 #include "repo-mgr.h"
 
+/* Final ACL proof must use the (repo_id, path_hash, ...) PRIMARY prefix.
+ * The old OR/IN VirtualRepo query chose acl_shared_subject, scanning and
+ * X-locking unrelated libraries under REPEATABLE READ. No new index needed. */
 static const char *query =
-    "SELECT 1 FROM cf_dir_acl WHERE repo_id=? OR repo_id IN "
-    "(SELECT origin_repo FROM VirtualRepo WHERE repo_id=?) LIMIT 1";
+    "SELECT 1 FROM cf_dir_acl FORCE INDEX (PRIMARY) WHERE repo_id=? LIMIT 1";
+static const char *origin_query =
+    "SELECT origin_repo FROM VirtualRepo WHERE repo_id=?";
 
 static gboolean found(SeafDBRow *row, void *data)
 {
@@ -13,20 +17,55 @@ static gboolean found(SeafDBRow *row, void *data)
     return FALSE;
 }
 
-static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char *repo_id)
+static gboolean origin_found(SeafDBRow *row, void *data)
 {
-    if (!session || !session->db || !repo_id ||
-        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
+    const char *origin = seaf_db_row_get_column_text(row, 0);
+    *(char **)data = g_strdup(origin);
+    return FALSE;
+}
+
+static int check_scope(SeafDBTrans *trans, struct _SeafileSession *session,
+                       const char *repo_id)
+{
     gboolean protected = FALSE;
     /* A prior barrier read may have established a REPEATABLE READ snapshot.
      * Use a locking/current read after Branch, never that older snapshot. */
     char *current_query = trans ? g_strconcat(query, " FOR UPDATE", NULL) : NULL;
     int count = trans ? seaf_db_trans_foreach_selected_row(trans, current_query, found, &protected,
-                            2, "string", repo_id, "string", repo_id) :
+                            1, "string", repo_id) :
                        seaf_db_statement_foreach_row(session->db, query, found, &protected,
-                            2, "string", repo_id, "string", repo_id);
+                            1, "string", repo_id);
     g_free(current_query);
     return count < 0 ? -1 : protected ? -2 : 0;
+}
+
+static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char *repo_id)
+{
+    if (!session || !session->db || !repo_id ||
+        seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL) return -1;
+
+    int result = check_scope(trans, session, repo_id);
+    if (result != 0) return result;
+
+    /* Preserve CE VirtualRepo origin qualification without combining two
+     * repository keys in a single optimizer-dependent ACL locking scan.
+     * VirtualRepo.repo_id already has a unique index. Do not infer an
+     * unprotected scope from a failed or malformed origin lookup. */
+    char *origin = NULL;
+    int count = trans ? seaf_db_trans_foreach_selected_row(trans, origin_query,
+                            origin_found, &origin, 1, "string", repo_id) :
+                       seaf_db_statement_foreach_row(session->db, origin_query,
+                            origin_found, &origin, 1, "string", repo_id);
+    if (count < 0 || count > 1 ||
+        (count == 1 && (!origin || strlen(origin) != 36 ||
+                        strcmp(origin, repo_id) == 0))) {
+        g_free(origin);
+        return -1;
+    }
+    if (count == 1)
+        result = check_scope(trans, session, origin);
+    g_free(origin);
+    return result;
 }
 
 /* Native transfer and Hub ACL mutations share per-library advisory locks.
