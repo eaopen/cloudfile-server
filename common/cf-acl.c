@@ -1,6 +1,7 @@
 /* CloudFile V2 native permission seam; no library enrollment or class. */
 #include "common.h"
 #include <string.h>
+#include <sys/stat.h>
 #include <jansson.h>
 #include "log.h"
 #include "seafile-session.h"
@@ -95,16 +96,21 @@ filter_chunk (const char *repo, const char *dir, const char *user,
     for (GList *p=begin; p && count > 0; p=p->next, --count) {
         GObject *item=p->data;
         char *name=NULL;
-        g_object_get(item,"obj_name",&name,NULL);
+        int mode=0;
+        g_object_get(item,"obj_name",&name,"mode",&mode,NULL);
         if (!name || !*name || strchr(name,'/') ||
-            !strcmp(name,".") || !strcmp(name,"..")) {
+            !strcmp(name,".") || !strcmp(name,"..") ||
+            (!S_ISDIR(mode) && !S_ISREG(mode))) {
             g_free(name);
             goto done;
         }
         char *path=g_build_filename(dir,name,NULL);
         g_free(name);
+        /* File rights follow the containing directory; a directory entry
+         * follows its own path. Both use Hub's same Authority rule snapshot. */
+        const char *kind=S_ISDIR(mode) ? "dir" : "file";
         json_t *check=json_pack("{s:s,s:s,s:s}",
-                                "path",path,"kind","dir","action","read");
+                                "path",path,"kind",kind,"action","read");
         g_free(path);
         if (!check || json_array_append(checks,check)) {
             json_decref(check);
