@@ -534,6 +534,21 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
                                    const char *storage_id,
                                    GError **error);
 
+/* Trusted CF allocation API; the upstream entry point above keeps UUID-key
+ * behavior and does not change other CE callers. */
+char *
+seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
+                                   const char *repo_name,
+                                   const char *repo_desc,
+                                   const char *owner_email,
+                                   const char *passwd,
+                                   int enc_version,
+                                   const char *pwd_hash_algo,
+                                   const char *pwd_hash_params,
+                                   const char *storage_id,
+                                   const char *repo_key,
+                                   GError **error);
+
 char *
 seaf_repo_manager_create_enc_repo (SeafRepoManager *mgr,
                                    const char *repo_id,
