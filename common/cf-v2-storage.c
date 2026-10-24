@@ -290,8 +290,14 @@ cf_v2_storage_copy (const char *src, const char *dst)
     if (close (output) < 0)
         ret = -1;
     output = -1;
-    if (ret == 0)
-        ret = g_rename (temporary, dst);
+    if (ret == 0) {
+        /* Stage and publish on the destination volume without replacing an
+         * object another writer may have published during this copy. Both
+         * paths are on the same volume, so link() is atomic and no-clobber. */
+        ret = link (temporary, dst);
+        if (ret < 0 && errno == EEXIST)
+            ret = 0;
+    }
 out:
     if (input >= 0)
         close (input);
