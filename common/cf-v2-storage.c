@@ -171,9 +171,9 @@ out:
     return result;
 }
 
-/* New libraries always have a UUID physical directory and ONE native route.
- * Seafile itself owns Repo/Branch/Owner/Trash/GC state. The old
- * cf_library_storage table remains readable for already existing V2 repos. */
+/* New libraries have one native route and one immutable UUID safety marker.
+ * Seafile owns Repo/Branch/Owner/Trash/GC: no extra activate state machine.
+ * Existing V2 custom-directory rows remain readable without migration. */
 int
 cf_v2_storage_reserve (const char *repo_id)
 {
@@ -204,6 +204,11 @@ cf_v2_storage_reserve (const char *repo_id)
             "SELECT 1 FROM GarbageRepos WHERE repo_id=?", &db_error,
             4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) ||
         db_error ||
+        /* Immutable safety marker, not a second route or lifecycle engine.
+         * Prevent an accidentally lost RepoStorageId from looking like CE. */
+        seaf_db_trans_query (trans,
+            "INSERT INTO cf_library_storage (repo_key,repo_id,state) VALUES (?,?,'active')",
+            2, "string", repo_id, "string", repo_id) < 0 ||
         seaf_db_trans_query (trans,
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
             2, "string", repo_id, "string", storage_id) < 0)
