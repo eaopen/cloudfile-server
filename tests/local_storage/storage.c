@@ -68,7 +68,7 @@ seaf_db_trans_query (SeafDBTrans *trans, const char *sql, int n, ...)
     g_assert_true (strstr (sql, "INSERT INTO RepoStorageId") != NULL ||
                    strstr (sql, "INSERT INTO cf_library_storage") != NULL);
     sql_inserts++;
-    return fail_insert ? -1 : 0;
+    return fail_insert && sql_inserts == fail_insert ? -1 : 0;
 }
 
 int
@@ -148,6 +148,9 @@ test_uuid_v2_and_legacy_routes (const char *base)
     g_assert_null (cf_v2_store_dir (native, repo));
     route_row (NULL, "historical-key", "active", FALSE, TRUE);
     g_assert_null (cf_v2_store_dir (native, repo));
+    route_row (NULL, repo, "active", FALSE, TRUE);
+    /* Lost new V2 native route is not mistaken for an original CE repo. */
+    g_assert_null (cf_v2_store_dir (native, repo));
     route_row (NULL, NULL, NULL, TRUE, TRUE);
     g_assert_null (cf_v2_store_dir (native, repo));
     route_row ("auto-local:missing-dir", NULL, NULL, TRUE, FALSE);
@@ -183,6 +186,23 @@ test_uuid_allocation_faults (const char *base)
     g_assert_cmpint (sql_inserts, ==, 1);
     g_assert_cmpint (rollbacks, ==, 1);
     g_assert_false (g_file_test (directory, G_FILE_TEST_EXISTS));
+
+    /* Either half of the one transaction can fail without publishing a
+     * partial route or orphaning the physical UUID directory. */
+    const char *other_repo = "33333333-3333-4333-8333-333333333333";
+    char *other = g_build_filename (root, other_repo, NULL);
+    sql_inserts = commits = rollbacks = 0;
+    fail_insert = 2;
+    g_assert_cmpint (cf_v2_storage_reserve (other_repo), ==, -1);
+    g_assert_cmpint (sql_inserts, ==, 2);
+    g_assert_false (g_file_test (other, G_FILE_TEST_EXISTS));
+
+    sql_inserts = commits = rollbacks = 0;
+    fail_insert = 0;
+    g_assert_cmpint (cf_v2_storage_reserve (other_repo), ==, 0);
+    g_assert_cmpint (sql_inserts, ==, 2);
+    g_assert_true (g_file_test (other, G_FILE_TEST_IS_DIR));
+    g_free (other);
 
     sql_inserts = commits = rollbacks = 0;
     fail_insert = 0;
