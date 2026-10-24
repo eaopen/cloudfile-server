@@ -63,9 +63,10 @@ seaf_db_trans_check_for_existence (SeafDBTrans *trans, const char *sql,
 int
 seaf_db_trans_query (SeafDBTrans *trans, const char *sql, int n, ...)
 {
-    /* Normal V2 creation must only allocate RepoStorageId. */
-    g_assert_nonnull (strstr (sql, "INSERT INTO RepoStorageId"));
-    g_assert_null (strstr (sql, "cf_library_storage"));
+    /* A single transaction writes the native route and the minimal UUID
+     * safety marker. Neither of them stores a business alias or active job. */
+    g_assert_true (strstr (sql, "INSERT INTO RepoStorageId") != NULL ||
+                   strstr (sql, "INSERT INTO cf_library_storage") != NULL);
     sql_inserts++;
     return fail_insert ? -1 : 0;
 }
