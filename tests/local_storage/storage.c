@@ -137,7 +137,6 @@ test_uuid_v2_and_legacy_routes (const char *base)
     expected = g_build_filename (native, repo, NULL);
     g_assert_cmpstr (actual, ==, expected);
     g_free (actual);
-    g_free (expected);
 
     route_row (NULL, "native-11111111-1111-4111-8111-111111111111",
                "retired", FALSE, TRUE);
