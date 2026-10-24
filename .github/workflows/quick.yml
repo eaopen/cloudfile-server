@@ -59,3 +59,25 @@ jobs:
               }
             fi
           done < <(git diff --name-only HEAD^ HEAD -- '*.go')
+
+  # Temporary narrow verification for Server PR #36 only. Do not turn
+  # routine CloudFile PRs into native builds; remove this slice before merge.
+  storage-pr36-targeted:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/storage-stable-repo-key-20261024'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare native test headers (not full Seafile build)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev pkg-config
+      - name: Compile and exercise C object storage seams
+        run: bash tests/local_storage/run.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fileserver/go.mod
+          cache-dependency-path: fileserver/go.sum
+      - name: Run only V2 objstore Go regressions
+        working-directory: fileserver
+        run: go test ./objstore -run '^TestV2' -count=1 -v
