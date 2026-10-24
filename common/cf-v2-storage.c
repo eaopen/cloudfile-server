@@ -80,10 +80,15 @@ key_valid (const char *key)
     return TRUE;
 }
 
+/* RepoStorageId is the only physical route. The historical CloudFile registry
+ * is consulted solely if the native route is absent, to avoid interpreting a
+ * lost auto-local mapping as an old CE repo. No new V2 repo writes that table. */
 typedef struct {
     char *storage_id;
-    char *key;
-    char *state;
+    char *legacy_key;
+    char *legacy_state;
+    gboolean route_row_present;
+    gboolean native_repo_present;
 } Route;
 
 static gboolean
@@ -91,8 +96,10 @@ read_route (SeafDBRow *row, void *data)
 {
     Route *route = data;
     route->storage_id = g_strdup (seaf_db_row_get_column_text (row, 0));
-    route->key = g_strdup (seaf_db_row_get_column_text (row, 1));
-    route->state = g_strdup (seaf_db_row_get_column_text (row, 2));
+    route->route_row_present = seaf_db_row_get_column_text (row, 1) != NULL;
+    route->legacy_key = g_strdup (seaf_db_row_get_column_text (row, 2));
+    route->legacy_state = g_strdup (seaf_db_row_get_column_text (row, 3));
+    route->native_repo_present = seaf_db_row_get_column_text (row, 4) != NULL;
     return TRUE;
 }
 
@@ -101,41 +108,53 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
 {
     Route route = {0};
     char *root = NULL, *key_dir = NULL, *obj_type = NULL, *result = NULL;
-    /* Preserve native offline export. Automatic-root discovery for export is
-     * a separate follow-up; never add a SQL prerequisite to native recovery. */
+    const char *key;
+
     if (!cf_v2_storage_enabled ())
         return g_build_filename (native_obj_dir, repo_id, NULL);
-    /* A configured managed root must never revert to native storage when
-     * database initialization fails: reads and writes would diverge. */
-    if (!seaf->db || !repo_id || !is_uuid_valid (repo_id) ||
-        !(root = storage_root ()))
+    if (!seaf->db || !repo_id || !is_uuid_valid (repo_id))
         return NULL;
-    /* One query distinguishes unmapped native libraries from corrupt routes.
-     * No cache: separate C/Go processes must see the same committed binding. */
+
+    /* The route itself is the only object location selector. Native lookup
+     * and historical markers are needed only when RepoStorageId is absent.
+     * A legacy V2 row with a missing route must NEVER become a native write. */
     if (seaf_db_statement_foreach_row (seaf->db,
-            "SELECT s.storage_id,c.repo_key,c.state FROM (SELECT ? AS repo_id) i "
+            "SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"
+            "COALESCE(r.repo_id,t.repo_id,g.repo_id) "
+            "FROM (SELECT ? AS repo_id) i "
             "LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "
-            "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id",
+            "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "
+            "LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "
+            "LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "
+            "LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL",
             read_route, &route, 1, "string", repo_id) != 1)
         goto out;
-    /* Registered pre-V2 native libraries retain their original object tree.
-     * "native-<UUID>" is a reserved metadata marker, never a new storage
-     * destination. Do not silently interpret a broken V2 route as native. */
-    if (!route.storage_id && (!route.key ||
-        ((g_strcmp0 (route.state, "active") == 0 ||
-          g_strcmp0 (route.state, "retired") == 0) &&
-         g_str_has_prefix (route.key, "native-") &&
-         strcmp (route.key + strlen ("native-"), repo_id) == 0))) {
-        result = g_build_filename (native_obj_dir, repo_id, NULL);
+
+    if (!route.route_row_present) {
+        char *expected = g_strconcat ("native-", repo_id, NULL);
+        gboolean recognized = route.native_repo_present &&
+            (!route.legacy_key ||
+             (g_strcmp0 (route.legacy_key, expected) == 0 &&
+              (g_strcmp0 (route.legacy_state, "active") == 0 ||
+               g_strcmp0 (route.legacy_state, "retired") == 0)));
+        g_free (expected);
+        if (recognized)
+            result = g_build_filename (native_obj_dir, repo_id, NULL);
         goto out;
     }
-    if (!route.storage_id || !key_valid (route.key) ||
-        !g_str_has_prefix (route.storage_id, AUTO_PREFIX) ||
-        strcmp (route.storage_id + strlen (AUTO_PREFIX), route.key) != 0 ||
-        (g_strcmp0 (route.state, "reserved") && g_strcmp0 (route.state, "active") &&
-         g_strcmp0 (route.state, "retired")))
+
+    key = route.storage_id && g_str_has_prefix (route.storage_id, AUTO_PREFIX) ?
+        route.storage_id + strlen (AUTO_PREFIX) : NULL;
+    if (!key_valid (key))
         goto out;
-    key_dir = g_build_filename (root, route.key, NULL);
+
+    /* Newly created V2 uses key == repo_id. Old V2 can still use the stored
+     * legacy custom suffix. Both resolve with the same path code and no JOIN
+     * or lifecycle state is needed to pick the directory. */
+    root = storage_root ();
+    if (!root)
+        goto out;
+    key_dir = g_build_filename (root, key, NULL);
     if (!real_directory (key_dir))
         goto out;
     obj_type = g_path_get_basename (native_obj_dir);
@@ -144,79 +163,83 @@ out:
     if (!result)
         seaf_warning ("V2 refused unresolved storage for %.36s.\n", repo_id);
     g_free (route.storage_id);
-    g_free (route.key);
-    g_free (route.state);
+    g_free (route.legacy_key);
+    g_free (route.legacy_state);
     g_free (root);
     g_free (key_dir);
     g_free (obj_type);
     return result;
 }
 
+/* New libraries always have a UUID physical directory and ONE native route.
+ * Seafile itself owns Repo/Branch/Owner/Trash/GC state. The old
+ * cf_library_storage table remains readable for already existing V2 repos. */
 int
 cf_v2_storage_reserve (const char *repo_id)
 {
     char *root, *directory, *storage_id;
-    SeafDBTrans *trans;
-    gboolean db_error = FALSE;
+    SeafDBTrans *trans = NULL;
+    gboolean db_error = FALSE, directory_created = FALSE;
     int ret = -1;
+
     if (!cf_v2_storage_enabled ())
         return 0;
-    if (!is_uuid_valid (repo_id) || !(root = storage_root ()))
+    if (!seaf->db || !is_uuid_valid (repo_id) || !(root = storage_root ()))
         return -1;
+
     directory = g_build_filename (root, repo_id, NULL);
     storage_id = g_strconcat (AUTO_PREFIX, repo_id, NULL);
+    /* Refuse adoption of any existing directory, even if the DB is empty. */
+    if (g_mkdir (directory, 0700) < 0)
+        goto out;
+    directory_created = TRUE;
+
     trans = seaf_db_begin_transaction (seaf->db);
     if (!trans)
-        goto out;
-    /* Never repin an existing library, tombstone, or caller-supplied UUID.
-     * UNIQUE(repo_id) serializes concurrent reservations of the same UUID. */
+        goto rollback;
     if (seaf_db_trans_check_for_existence (trans,
             "SELECT 1 FROM RepoStorageId WHERE repo_id=? UNION ALL "
             "SELECT 1 FROM Repo WHERE repo_id=? UNION ALL "
             "SELECT 1 FROM RepoTrash WHERE repo_id=? UNION ALL "
             "SELECT 1 FROM GarbageRepos WHERE repo_id=?", &db_error,
-            4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) || db_error ||
-        seaf_db_trans_query (trans,
-            "INSERT INTO cf_library_storage (repo_key,repo_id,state) VALUES (?,?,'reserved')",
-            2, "string", repo_id, "string", repo_id) < 0 ||
+            4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) ||
+        db_error ||
         seaf_db_trans_query (trans,
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
             2, "string", repo_id, "string", storage_id) < 0)
         goto rollback;
-    /* Existing untracked directories are not adopted. A failed reservation
-     * leaves its directory untouched for operator inspection. */
-    if (g_mkdir (directory, 0700) < 0 || !real_directory (directory) ||
-        seaf_db_commit (trans) < 0)
-        goto rollback;
+
+    if (seaf_db_commit (trans) < 0) {
+        /* Commit could have persisted before its acknowledgement was lost.
+         * Never delete this directory automatically in an uncertain state. */
+        seaf_db_rollback (trans);
+        directory_created = FALSE;
+        goto close;
+    }
     ret = 0;
     goto close;
 rollback:
-    seaf_db_rollback (trans);
+    if (trans)
+        seaf_db_rollback (trans);
+    if (directory_created && g_rmdir (directory) < 0)
+        seaf_warning ("Failed to remove empty V2 allocation directory %.36s.\n", repo_id);
 close:
-    seaf_db_trans_close (trans);
+    if (trans)
+        seaf_db_trans_close (trans);
 out:
-    g_free (storage_id);
     g_free (directory);
+    g_free (storage_id);
     g_free (root);
     return ret;
 }
 
-int
-cf_v2_storage_activate (const char *repo_id)
-{
-    if (!cf_v2_storage_enabled ())
-        return 0;
-    return seaf_db_statement_query (seaf->db,
-        "UPDATE cf_library_storage SET state='active' WHERE repo_id=? AND state='reserved'",
-        1, "string", repo_id);
-}
-
+/* Historical registry state is updated for existing libraries only. New
+ * UUID-path libraries have no CloudFile lifecycle marker to maintain. */
 int
 cf_v2_storage_retire (const char *repo_id)
 {
     if (!cf_v2_storage_enabled ())
         return 0;
-    /* Keep both key and native route for cold GC and never reuse the key. */
     return seaf_db_statement_query (seaf->db,
         "UPDATE cf_library_storage SET state='retired' WHERE repo_id=?",
         1, "string", repo_id);
