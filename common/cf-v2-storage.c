@@ -158,6 +158,7 @@ cf_v2_storage_reserve_with_key (const char *repo_id, const char *requested_key)
     char *root, *directory, *storage_id;
     SeafDBTrans *trans;
     gboolean db_error = FALSE;
+    gboolean directory_created = FALSE;
     int ret = -1;
     if (!cf_v2_storage_enabled ())
         return requested_key ? -1 : 0;
@@ -186,14 +187,25 @@ cf_v2_storage_reserve_with_key (const char *repo_id, const char *requested_key)
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
             2, "string", repo_id, "string", storage_id) < 0)
         goto rollback;
-    /* Existing untracked directories are not adopted. A failed reservation
-     * leaves its directory untouched for operator inspection. */
-    if (g_mkdir (directory, 0700) < 0 || !real_directory (directory) ||
-        seaf_db_commit (trans) < 0)
+    /* Existing untracked directories are not adopted. When SQL work before
+     * COMMIT fails, only our newly created EMPTY directory may be removed. */
+    if (g_mkdir (directory, 0700) < 0)
         goto rollback;
+    directory_created = TRUE;
+    if (!real_directory (directory))
+        goto rollback;
+    if (seaf_db_commit (trans) < 0)
+        goto uncertain_commit;
     ret = 0;
     goto close;
 rollback:
+    seaf_db_rollback (trans);
+    if (directory_created && g_rmdir (directory) < 0)
+        seaf_warning ("V2 left an unremoved allocation directory: %.80s.\n", key);
+    goto close;
+uncertain_commit:
+    /* The server may have persisted this transaction before losing its
+     * response. Never remove a directory whose binding might be committed. */
     seaf_db_rollback (trans);
 close:
     seaf_db_trans_close (trans);
@@ -215,9 +227,17 @@ cf_v2_storage_activate (const char *repo_id)
 {
     if (!cf_v2_storage_enabled ())
         return 0;
-    return seaf_db_statement_query (seaf->db,
-        "UPDATE cf_library_storage SET state='active' WHERE repo_id=? AND state='reserved'",
-        1, "string", repo_id);
+    if (seaf_db_statement_query (seaf->db,
+            "UPDATE cf_library_storage SET state='active' WHERE repo_id=? AND state='reserved'",
+            1, "string", repo_id) < 0)
+        return -1;
+    /* An UPDATE returning 0 does not prove that a row existed or transitioned.
+     * Accept already-active as an idempotent success; never accept no binding. */
+    gboolean db_error = FALSE;
+    gboolean active = seaf_db_statement_exists (seaf->db,
+        "SELECT 1 FROM cf_library_storage WHERE repo_id=? AND state='active'",
+        &db_error, 1, "string", repo_id);
+    return active && !db_error ? 0 : -1;
 }
 
 int
