@@ -9,6 +9,7 @@
 #include "utils.h"
 #include "log.h"
 #include "cf-v2-storage.h"
+#include "cf-auto-storage.h"
 
 #define AUTO_PREFIX "auto-local:"
 
@@ -67,19 +68,6 @@ storage_root (void)
     return root;
 }
 
-static gboolean
-key_valid (const char *key)
-{
-    size_t i, len = key ? strlen (key) : 0;
-    if (!len || len > 80)
-        return FALSE;
-    for (i = 0; i < len; ++i)
-        if (!g_ascii_islower (key[i]) && !g_ascii_isdigit (key[i]) &&
-            !(key[i] == '-' && i > 0 && i + 1 < len))
-            return FALSE;
-    return TRUE;
-}
-
 typedef struct {
     char *storage_id;
     char *key;
@@ -129,7 +117,7 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
         result = g_build_filename (native_obj_dir, repo_id, NULL);
         goto out;
     }
-    if (!route.storage_id || !key_valid (route.key) ||
+    if (!route.storage_id || !cf_auto_key_valid (route.key) ||
         !g_str_has_prefix (route.storage_id, AUTO_PREFIX) ||
         strcmp (route.storage_id + strlen (AUTO_PREFIX), route.key) != 0 ||
         (g_strcmp0 (route.state, "reserved") && g_strcmp0 (route.state, "active") &&
@@ -153,18 +141,22 @@ out:
 }
 
 int
-cf_v2_storage_reserve (const char *repo_id)
+cf_v2_storage_reserve_with_key (const char *repo_id, const char *requested_key)
 {
+    const char *key = requested_key ? requested_key : repo_id;
     char *root, *directory, *storage_id;
     SeafDBTrans *trans;
     gboolean db_error = FALSE;
     int ret = -1;
     if (!cf_v2_storage_enabled ())
-        return 0;
-    if (!is_uuid_valid (repo_id) || !(root = storage_root ()))
+        return requested_key ? -1 : 0;
+    /* User-facing labels are never paths. Validate before touching disk/SQL.
+     * RepoStorageId is the one actual route authority; key is immutable. */
+    if (!is_uuid_valid (repo_id) || !cf_auto_key_valid (key) ||
+        !(root = storage_root ()))
         return -1;
-    directory = g_build_filename (root, repo_id, NULL);
-    storage_id = g_strconcat (AUTO_PREFIX, repo_id, NULL);
+    directory = g_build_filename (root, key, NULL);
+    storage_id = g_strconcat (AUTO_PREFIX, key, NULL);
     trans = seaf_db_begin_transaction (seaf->db);
     if (!trans)
         goto out;
@@ -178,7 +170,7 @@ cf_v2_storage_reserve (const char *repo_id)
             4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) || db_error ||
         seaf_db_trans_query (trans,
             "INSERT INTO cf_library_storage (repo_key,repo_id,state) VALUES (?,?,'reserved')",
-            2, "string", repo_id, "string", repo_id) < 0 ||
+            2, "string", key, "string", repo_id) < 0 ||
         seaf_db_trans_query (trans,
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
             2, "string", repo_id, "string", storage_id) < 0)
@@ -199,6 +191,12 @@ out:
     g_free (directory);
     g_free (root);
     return ret;
+}
+
+int
+cf_v2_storage_reserve (const char *repo_id)
+{
+    return cf_v2_storage_reserve_with_key (repo_id, NULL);
 }
 
 int
