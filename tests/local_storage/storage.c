@@ -49,6 +49,126 @@ gboolean is_uuid_valid (const char *id)
         id[18] == '-' && id[23] == '-';
 }
 
+/* Transaction fault seams call the native allocator unchanged. Never use
+ * these in production: each test runs with an in-memory fake SQL result only. */
+struct SeafDBTrans { int unused; };
+static struct SeafDBTrans fake_trans;
+static int fake_commit_fails, fake_insert_fails, fake_commit_called, fake_rollback_called;
+static int fake_insert_count, fake_active, fake_activation_query_fails;
+
+SeafDBTrans *
+seaf_db_begin_transaction (SeafDB *db) { return &fake_trans; }
+
+gboolean
+seaf_db_trans_check_for_existence (SeafDBTrans *trans, const char *sql,
+                                   gboolean *db_err, int n, ...)
+{
+    *db_err = FALSE;
+    return FALSE;
+}
+
+int
+seaf_db_trans_query (SeafDBTrans *trans, const char *sql, int n, ...)
+{
+    fake_insert_count++;
+    return fake_insert_fails && fake_insert_count == fake_insert_fails ? -1 : 0;
+}
+
+int
+seaf_db_commit (SeafDBTrans *trans)
+{
+    fake_commit_called++;
+    return fake_commit_fails ? -1 : 0;
+}
+
+int
+seaf_db_rollback (SeafDBTrans *trans)
+{
+    fake_rollback_called++;
+    return 0;
+}
+
+void
+seaf_db_trans_close (SeafDBTrans *trans) { }
+
+int
+seaf_db_statement_query (SeafDB *db, const char *sql, int n, ...)
+{
+    if (fake_activation_query_fails)
+        return -1;
+    return 0;
+}
+
+gboolean
+seaf_db_statement_exists (SeafDB *db, const char *sql, gboolean *db_err, int n, ...)
+{
+    *db_err = FALSE;
+    return fake_active;
+}
+
+static void
+reset_reservation_faults (void)
+{
+    fake_commit_fails = fake_insert_fails = fake_commit_called = 0;
+    fake_rollback_called = fake_insert_count = fake_active = fake_activation_query_fails = 0;
+}
+
+static void
+test_native_storage_reservation (const char *fixture)
+{
+    const char *repo = "11111111-1111-4111-8111-111111111111";
+    char *root = g_build_filename (fixture, "reserved-managed", NULL);
+    char *keydir = g_build_filename (root, "my-key", NULL);
+    g_assert_cmpint (g_mkdir (root, 0700), ==, 0);
+    GKeyFile *cfg = g_key_file_new ();
+    g_key_file_set_string (cfg, "cloudfile_v2", "auto_local_root", root);
+    SeafileSession session = {0};
+    session.config = cfg;
+    session.db = (SeafDB *)0x1;
+    seaf = &session;
+
+    /* A failed SQL INSERT rolls back before the directory exists. */
+    reset_reservation_faults ();
+    fake_insert_fails = 2;
+    g_assert_cmpint (cf_v2_storage_reserve_with_key (repo, "my-key"), ==, -1);
+    g_assert_cmpint (fake_rollback_called, ==, 1);
+    g_assert_cmpint (fake_commit_called, ==, 0);
+    g_assert_false (g_file_test (keydir, G_FILE_TEST_EXISTS));
+
+    /* COMMIT acknowledgement can be lost after successful persistence;
+     * the freshly created directory is deliberately kept for inspection. */
+    reset_reservation_faults ();
+    fake_commit_fails = 1;
+    g_assert_cmpint (cf_v2_storage_reserve_with_key (repo, "my-key"), ==, -1);
+    g_assert_cmpint (fake_commit_called, ==, 1);
+    g_assert_true (g_file_test (keydir, G_FILE_TEST_IS_DIR));
+
+    /* Never adopt or delete this untracked directory on a second attempt. */
+    reset_reservation_faults ();
+    g_assert_cmpint (cf_v2_storage_reserve_with_key (repo, "my-key"), ==, -1);
+    g_assert_true (g_file_test (keydir, G_FILE_TEST_IS_DIR));
+
+    /* A new, valid key succeeds when both SQL inserts and COMMIT succeed. */
+    reset_reservation_faults ();
+    g_assert_cmpint (cf_v2_storage_reserve_with_key (repo, "another-key"), ==, 0);
+    g_assert_cmpint (fake_commit_called, ==, 1);
+    g_assert_true (g_file_test (g_build_filename (root, "another-key", NULL), G_FILE_TEST_IS_DIR));
+
+    /* Activation requires an actual active row; a successful UPDATE with
+     * no corresponding row is not a success. Already-active is idempotent. */
+    fake_active = 0;
+    g_assert_cmpint (cf_v2_storage_activate (repo), ==, -1);
+    fake_active = 1;
+    g_assert_cmpint (cf_v2_storage_activate (repo), ==, 0);
+    fake_activation_query_fails = 1;
+    g_assert_cmpint (cf_v2_storage_activate (repo), ==, -1);
+
+    seaf = NULL;
+    g_key_file_free (cfg);
+    g_free (root);
+    g_free (keydir);
+}
+
 static void
 route_fixture (const char *storage_id, const char *key, const char *state,
                gboolean has_route_row, gboolean has_native_repo)
@@ -163,6 +283,7 @@ int main (int argc, char **argv) {
     const char *backends[] = {"s3", "multiple", "multi", "unknown"};
     g_assert_cmpint (argc, ==, 2);
     test_native_storage_routes (argv[1]);
+    test_native_storage_reservation (argv[1]);
     check_config ("[storage]\nenable_storage_classes=true\n[block_backend]\nname=s3\n", TRUE);
     check_config ("[cloudfile_v2]\nauto_local_root=/unused\n", TRUE);
     check_config ("[cloudfile_v2]\nauto_local_root=\n[storage]\nenable_storage_classes=true\n", FALSE);
