@@ -19,6 +19,7 @@
 #include "cf-ext.h"
 #include "cf-auto-storage.h"
 #include "cf-storage.h"
+#include "cf-v2-storage.h"
 #include "log.h"
 #include "repo-mgr.h"
 #include "seaf-db.h"
@@ -105,10 +106,14 @@ cf_create_repo_json (const char *request_json, GError **error)
     passwd = json_string_value (json_object_get (req, "passwd"));
     storage_id = json_string_value (json_object_get (req, "storage_id"));
     repo_key = json_string_value (json_object_get (req, "repo_key"));
-    /* Historical per-library repo_key pinning is not a V2 product API. */
-    if (repo_key) {
+    /* This RPC is a trusted allocation primitive. Hub restricts explicit
+     * keys to administrators; reject malformed payloads and any mixed class. */
+    if (json_object_get (req, "repo_key") &&
+        (!json_is_string (json_object_get (req, "repo_key")) ||
+         !repo_key || !repo_key[0] ||
+         (storage_id && storage_id[0]) || !cf_v2_storage_enabled ())) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                     "repo_key storage pinning retired; use V2 automatic storage.");
+                     "repo_key requires V2 local storage and no storage class.");
         json_decref (req);
         return NULL;
     }
@@ -121,12 +126,12 @@ cf_create_repo_json (const char *request_json, GError **error)
         enc_version = 2;
     }
 
-    repo_id = seaf_repo_manager_create_new_repo (
+    repo_id = seaf_repo_manager_create_new_repo_with_key (
         seaf->repo_mgr, name, desc ? desc : "", owner,
         passwd && passwd[0] ? passwd : NULL,
         enc_version, pwd_hash_algo, pwd_hash_params,
         storage_id && storage_id[0] ? storage_id : NULL,
-        error);
+        repo_key, error);
     json_decref (req);
     return repo_id;
 }
