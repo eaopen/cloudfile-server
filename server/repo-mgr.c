@@ -3968,12 +3968,8 @@ create_repo_common (SeafRepoManager *mgr,
 
     seaf_repo_manager_update_repo_info (mgr, repo->id, repo->head->commit_id);
 
-    if (cf_v2_storage_activate (repo_id) < 0) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
-                     "Failed to activate library storage.");
-        goto out;
-    }
-
+    /* Leave storage reserved until the caller has also recorded RepoOwner.
+     * A crash here is diagnosable; it must not be reported as a complete repo. */
     ret = 0;
 out:
     if (repo)
@@ -4067,6 +4063,11 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
                      "Failed to set repo owner.");
         goto bad;
     }
+    if (cf_v2_storage_activate (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to activate library storage.");
+        goto bad;
+    }
 
     return repo_id;
     
@@ -4135,6 +4136,11 @@ seaf_repo_manager_create_enc_repo (SeafRepoManager *mgr,
         seaf_warning ("Failed to set repo owner.\n");
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                      "Failed to set repo owner.");
+        return NULL;
+    }
+    if (cf_v2_storage_activate (repo_id) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                     "Failed to activate library storage.");
         return NULL;
     }
 
