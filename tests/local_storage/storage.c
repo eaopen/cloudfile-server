@@ -4,7 +4,7 @@
 #include <glib/gstdio.h>
 #include <sys/stat.h>
 #include "utils.h"
-static int fail_sync, fail_copy;
+static int fail_sync, fail_copy, inject_competing_writer;
 static const char *destination;
 static int test_fsync (int fd) {
     if (fail_sync) { errno = EIO; return -1; }
@@ -240,6 +240,11 @@ ssize_t writen (int output, const void *buffer, size_t count) {
     g_assert_cmpint (staged, ==, 1);
     g_assert_false (g_file_test (destination, G_FILE_TEST_EXISTS));
     ssize_t n = write (output, buffer, count);
+    if (inject_competing_writer) {
+        /* Simulate a second worker winning between EXDEV and publication. */
+        inject_competing_writer = 0;
+        g_assert_true (g_file_set_contents (destination, "other writer", -1, NULL));
+    }
     if (fail_copy) { errno = EIO; return -1; }
     return n;
 }
@@ -310,6 +315,16 @@ int main (int argc, char **argv) {
         assert_clean (cross);
     }
     fail_sync = fail_copy = 0;
+    inject_competing_writer = 1;
+    g_assert_cmpint (cf_v2_storage_copy (src, dst), ==, 0);
+    g_assert_cmpint (inject_competing_writer, ==, 0);
+    char *first_writer = NULL;
+    g_assert_true (g_file_get_contents (dst, &first_writer, NULL, NULL));
+    g_assert_cmpstr (first_writer, ==, "other writer");
+    g_free (first_writer);
+    g_unlink (dst);
+    assert_clean (cross);
+
     g_assert_cmpint (cf_v2_storage_copy ("/does-not-exist", dst), ==, -1);
     assert_clean (cross);
     g_rmdir (cross);
