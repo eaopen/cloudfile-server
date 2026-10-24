@@ -4000,6 +4000,36 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
     const char *algo = pwd_hash_algo;
     const char *params = pwd_hash_params;
 
+    /* A stable key is also a narrow replay handle for an unencrypted
+     * completed library. Do not mint another UUID after a lost RPC response.
+     * Incomplete/reserved or mismatching records are not a success. */
+    if (repo_key && cf_v2_storage_enabled ()) {
+        char *previous = seaf_db_statement_get_string (seaf->db,
+            "SELECT c.repo_id FROM cf_library_storage c "
+            "JOIN RepoStorageId s ON s.repo_id=c.repo_id "
+            "JOIN Repo r ON r.repo_id=c.repo_id "
+            "WHERE c.repo_key=? AND c.state='active' "
+            "AND s.storage_id=CONCAT('auto-local:', c.repo_key)",
+            1, "string", repo_key);
+        if (previous) {
+            SeafRepo *old_repo = seaf_repo_manager_get_repo (mgr, previous);
+            char *old_owner = seaf_repo_manager_get_repo_owner (mgr, previous);
+            gboolean same = old_repo && old_owner && (!passwd || !passwd[0]) &&
+                !old_repo->encrypted &&
+                g_strcmp0 (old_repo->name, repo_name) == 0 &&
+                g_strcmp0 (old_repo->desc, repo_desc ? repo_desc : "") == 0 &&
+                g_ascii_strcasecmp (old_owner, owner_email) == 0;
+            seaf_repo_unref (old_repo);
+            g_free (old_owner);
+            if (same)
+                return previous;
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                         "repo_key already belongs to another library definition.");
+            g_free (previous);
+            return NULL;
+        }
+    }
+
     repo_id = gen_uuid ();
 
     if (repo_key && !cf_v2_storage_enabled ()) {
