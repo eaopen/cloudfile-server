@@ -4008,7 +4008,7 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
             "SELECT c.repo_id FROM cf_library_storage c "
             "JOIN RepoStorageId s ON s.repo_id=c.repo_id "
             "JOIN Repo r ON r.repo_id=c.repo_id "
-            "WHERE c.repo_key=? AND c.state='active' "
+            "WHERE c.repo_key=? AND c.state IN ('active','reserved') "
             "AND s.storage_id=CONCAT('auto-local:', c.repo_key)",
             1, "string", repo_key);
         if (previous) {
@@ -4022,8 +4022,16 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
             if (old_repo)
                 seaf_repo_unref (old_repo);
             g_free (old_owner);
-            if (same)
-                return previous;
+            if (same) {
+                /* A crash after RepoOwner but before activation is safe to
+                 * finish: all native facts are already present and match. */
+                if (cf_v2_storage_activate (previous) == 0)
+                    return previous;
+                g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                             "Failed to verify recovered library storage.");
+                g_free (previous);
+                return NULL;
+            }
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                          "repo_key already belongs to another library definition.");
             g_free (previous);
