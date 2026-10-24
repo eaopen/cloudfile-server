@@ -82,7 +82,8 @@ key_valid (const char *key)
 
 /* RepoStorageId is the only physical route. The historical CloudFile registry
  * is consulted solely if the native route is absent, to avoid interpreting a
- * lost auto-local mapping as an old CE repo. No new V2 repo writes that table. */
+ * lost auto-local mapping as an old CE repo. The allocation marker is not a
+ * second routing source or a parallel Repo/Branch lifecycle. */
 typedef struct {
     char *storage_id;
     char *legacy_key;
@@ -238,8 +239,8 @@ out:
     return ret;
 }
 
-/* Historical registry state is updated for existing libraries only. New
- * UUID-path libraries have no CloudFile lifecycle marker to maintain. */
+/* Mark existing allocation for cold GC; this is not a separate activation
+ * stage and does not decide the physical storage directory. */
 int
 cf_v2_storage_retire (const char *repo_id)
 {
