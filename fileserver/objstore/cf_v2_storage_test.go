@@ -58,10 +58,10 @@ func TestV2NativeFallbackRequiresRealSeafileRepo(t *testing.T) {
 	value := func(text string) sql.NullString { return sql.NullString{String: text, Valid: true} }
 	nothing := sql.NullString{}
 	for _, row := range []struct {
-		name                  string
-		route, key, state     sql.NullString
-		routeOwner, native    sql.NullString
-		allow                 bool
+		name               string
+		route, key, state  sql.NullString
+		routeOwner, native sql.NullString
+		allow              bool
 	}{
 		{"valid legacy CE", nothing, nothing, nothing, nothing, value(repoID), true},
 		{"unknown UUID", nothing, nothing, nothing, nothing, nothing, false},
