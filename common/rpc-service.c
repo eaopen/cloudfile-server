@@ -29,6 +29,7 @@
 #include "cf-fileop-json.h"
 #include "cf-lock.h"
 #include "cf-storage.h"
+#include "cf-v2-storage.h"
 #include "cf-dir-page.h"
 #include "cf-permission-many.h"
 #endif
@@ -4432,6 +4433,12 @@ char *
 seafile_cf_get_storage_classes (GError **error)
 {
 #ifdef SEAFILE_SERVER
+    /* V2's one mounted filesystem parent is an automatic local class.
+     * Publish no path or credentials; local-only needs no S3 switch. */
+    if (cf_v2_storage_enabled ())
+        return g_strdup ("[{\"storage_id\":\"auto-local\","
+                         "\"storage_name\":\"Automatic local directories\","
+                         "\"is_auto\":true,\"is_default\":true}]");
     if (!cf_storage_enabled ())
         return g_strdup ("[]");
     return cf_get_storage_classes_json (error);
@@ -4444,15 +4451,15 @@ char *
 seafile_cf_create_repo (const char *request_json, GError **error)
 {
 #ifdef SEAFILE_SERVER
-    if (!cf_storage_enabled ()) {
+    if (!cf_storage_enabled () && !cf_v2_storage_enabled ()) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
-                     "Storage classes are disabled.");
+                     "Storage allocation is disabled.");
         return NULL;
     }
     return cf_create_repo_json (request_json, error);
 #else
     g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
-                 "Storage classes are disabled.");
+                 "Storage allocation is disabled.");
     return NULL;
 #endif
 }
