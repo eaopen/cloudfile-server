@@ -3834,6 +3834,7 @@ create_repo_common (SeafRepoManager *mgr,
                     const char *salt,
                     int enc_version,
                     RepoCryptInfo *crypt_info,
+                    const char *repo_key,
                     GError **error)
 {
     SeafRepo *repo = NULL;
@@ -3893,7 +3894,7 @@ create_repo_common (SeafRepoManager *mgr,
      * API callers alike. Keep the historical class allocator only for
      * deployments without a V2 root; never mix both allocation schemas. */
     if (cf_v2_storage_enabled ()) {
-        if (cf_v2_storage_reserve (repo_id) < 0) {
+        if (cf_v2_storage_reserve_with_key (repo_id, repo_key) < 0) {
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                          "Failed to reserve library storage.");
             return -1;
@@ -3986,7 +3987,7 @@ out:
 }
 
 char *
-seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
+seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
                                    const char *repo_name,
                                    const char *repo_desc,
                                    const char *owner_email,
@@ -3995,6 +3996,7 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
                                    const char *pwd_hash_algo,
                                    const char *pwd_hash_params,
                                    const char *storage_id,
+                                   const char *repo_key,
                                    GError **error)
 {
     char *repo_id = NULL;
@@ -4003,6 +4005,13 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
     const char *params = pwd_hash_params;
 
     repo_id = gen_uuid ();
+
+    if (repo_key && !cf_v2_storage_enabled ()) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Explicit repo_key requires V2 automatic local storage.");
+        g_free (repo_id);
+        return NULL;
+    }
 
     /* The V2 default root is automatic, with no per-library class selector.
      * Do not persist an old cf_library_storage_key pin alongside the V2
@@ -4043,12 +4052,12 @@ seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
     if (passwd) {
         RepoCryptInfo *crypt_info = repo_crypt_info_new (magic, pwd_hash, algo, params);
         rc = create_repo_common (mgr, repo_id, repo_name, repo_desc, owner_email,
-                                 random_key, salt, enc_version, crypt_info, error);
+                                 random_key, salt, enc_version, crypt_info, repo_key, error);
         g_free (crypt_info);
     }
     else
         rc = create_repo_common (mgr, repo_id, repo_name, repo_desc, owner_email,
-                                 NULL, NULL, -1, NULL, error);
+                                 NULL, NULL, -1, NULL, repo_key, error);
     if (rc < 0)
         goto bad;
 
@@ -4065,6 +4074,24 @@ bad:
     if (repo_id)
         g_free (repo_id);
     return NULL;
+}
+
+/* Preserve the upstream create API: standard CE creates use UUID as key. */
+char *
+seaf_repo_manager_create_new_repo (SeafRepoManager *mgr,
+                                   const char *repo_name,
+                                   const char *repo_desc,
+                                   const char *owner_email,
+                                   const char *passwd,
+                                   int enc_version,
+                                   const char *pwd_hash_algo,
+                                   const char *pwd_hash_params,
+                                   const char *storage_id,
+                                   GError **error)
+{
+    return seaf_repo_manager_create_new_repo_with_key (
+        mgr, repo_name, repo_desc, owner_email, passwd, enc_version,
+        pwd_hash_algo, pwd_hash_params, storage_id, NULL, error);
 }
 
 char *
@@ -4098,7 +4125,7 @@ seaf_repo_manager_create_enc_repo (SeafRepoManager *mgr,
 
     RepoCryptInfo *crypt_info = repo_crypt_info_new (magic, pwd_hash, pwd_hash_algo, pwd_hash_params);
     if (create_repo_common (mgr, repo_id, repo_name, repo_desc, owner_email,
-                            random_key, salt, enc_version, crypt_info, error) < 0) {
+                            random_key, salt, enc_version, crypt_info, NULL, error) < 0) {
         g_free (crypt_info);
         return NULL;
     }
