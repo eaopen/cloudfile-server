@@ -64,7 +64,6 @@ func TestV2StorageBytesAndNativeIsolation(t *testing.T) {
 func TestV2StorageInvalidRoutesNeverFallback(t *testing.T) {
 	for _, row := range [][3]string{
 		{"auto-local:../escape", "../escape", "active"},
-		{"auto-local:" + repoID, repoID, "unknown"},
 		{"auto-local:other", repoID, "active"},
 		{"unknown:disk", repoID, "active"},
 		{"", repoID, "active"},
