@@ -77,10 +77,10 @@ func v2Lookup(repoID string) (string, string, string, error) {
 func validateV2Lookup(repoID string, route, key, state, routeOwner, nativeRepo sql.NullString) error {
 	registeredNative := !route.Valid && key.Valid && state.Valid &&
 		key.String == "native-"+repoID && (state.String == "active" || state.String == "retired")
-	if ((!route.Valid && key.Valid && !registeredNative) ||
+	if (!route.Valid && key.Valid && !registeredNative) ||
 		(route.Valid && !key.Valid) ||
 		(routeOwner.Valid && !route.Valid) ||
-		(!route.Valid && !nativeRepo.Valid)) {
+		(!route.Valid && !nativeRepo.Valid) {
 		return fmt.Errorf("V2 storage binding is incomplete or native repo is missing")
 	}
 	if (route.Valid && route.String == "") || (key.Valid && key.String == "") {
