@@ -54,17 +54,28 @@ func v2Lookup(repoID string) (string, string, string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var route, key, state sql.NullString
+	var route, key, state, routeOwner, nativeRepo sql.NullString
 	err := v2StorageDB.QueryRowContext(ctx,
-		"SELECT s.storage_id,c.repo_key,c.state FROM (SELECT ? AS repo_id) i "+
+		"SELECT s.storage_id,c.repo_key,c.state,s.repo_id,"+
+			"COALESCE(r.repo_id,t.repo_id,g.repo_id) "+
+			"FROM (SELECT ? AS repo_id) i "+
 			"LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "+
-			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id", repoID).Scan(&route, &key, &state)
+			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id "+
+			"LEFT JOIN Repo r ON r.repo_id=i.repo_id "+
+			"LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id "+
+			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id", repoID).
+		Scan(&route, &key, &state, &routeOwner, &nativeRepo)
 	// SQL NULL is distinct from a corrupt empty value. A registered
 	// pre-V2 library has no RepoStorageId and an explicit native-UUID marker.
 	registeredNative := !route.Valid && key.Valid && state.Valid &&
 		key.String == "native-"+repoID && (state.String == "active" || state.String == "retired")
-	if err == nil && (!route.Valid && key.Valid && !registeredNative || route.Valid && !key.Valid) {
-		err = fmt.Errorf("V2 storage binding is incomplete")
+	if err == nil && ((!route.Valid && key.Valid && !registeredNative) ||
+		(route.Valid && !key.Valid) ||
+		(routeOwner.Valid && !route.Valid) ||
+		(!route.Valid && !nativeRepo.Valid)) {
+		// Legacy native fallback is only safe for an actual CE Repo, trash
+		// or garbage entry. A broken native route row is never a fallback.
+		err = fmt.Errorf("V2 storage binding is incomplete or native repo is missing")
 	}
 	if err == nil && (route.Valid && route.String == "" || key.Valid && key.String == "") {
 		err = fmt.Errorf("V2 storage binding is empty")
