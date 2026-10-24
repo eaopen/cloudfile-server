@@ -58,17 +58,23 @@ func v2Lookup(repoID string) (string, string, string, error) {
 	// RepoStorageId alone selects the physical route. Look at the legacy
 	// registry and Seafile native lifecycle only if there is NO route:
 	// otherwise a missing historical auto-local mapping could silently write
-	// to the wrong (native) path. New UUID V2 has no CloudFile registry row.
+	// to the wrong (native) path. New UUID V2 carries a native route plus an
+	// immutable safety marker, never a second routing source.
+	//
+	// VirtualRepo is a native resource too: its row exists before the initial
+	// commit while the Repo row is written afterwards, so folder-share
+	// sub-libraries must still resolve to the native tree.
 	var route, routeOwner, legacyKey, legacyState, nativeRepo sql.NullString
 	err := v2StorageDB.QueryRowContext(ctx,
 		"SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"+
-			"COALESCE(r.repo_id,t.repo_id,g.repo_id) "+
+			"COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "+
 			"FROM (SELECT ? AS repo_id) i "+
 			"LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "+
 			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "+
 			"LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "+
 			"LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "+
-			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL", repoID).
+			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL "+
+			"LEFT JOIN VirtualRepo v ON v.repo_id=i.repo_id AND s.repo_id IS NULL", repoID).
 		Scan(&route, &routeOwner, &legacyKey, &legacyState, &nativeRepo)
 	if err != nil {
 		return "", "", "", err

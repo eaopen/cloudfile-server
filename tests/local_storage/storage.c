@@ -35,6 +35,9 @@ seaf_db_statement_foreach_row (SeafDB *db, const char *sql,
                                SeafDBRowFunc fn, void *data, int n, ...)
 {
     g_assert_nonnull (strstr (sql, "RepoStorageId"));
+    /* A folder-share sub-library writes its first commit while only the
+     * VirtualRepo row exists; the native-existence join must include it. */
+    g_assert_nonnull (strstr (sql, "VirtualRepo"));
     struct SeafDBRow row = {0};
     for (int i = 0; i < 5; i++)
         row.cell[i] = row_cells[i];

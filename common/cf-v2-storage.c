@@ -118,16 +118,22 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
 
     /* The route itself is the only object location selector. Native lookup
      * and historical markers are needed only when RepoStorageId is absent.
-     * A legacy V2 row with a missing route must NEVER become a native write. */
+     * A legacy V2 row with a missing route must NEVER become a native write.
+     *
+     * VirtualRepo counts as an existing native resource: its row is inserted
+     * before its initial commit, while the Repo row is written afterwards.
+     * Without that fact a folder-share (sub-library) commit would be refused
+     * even though it belongs in the native tree, exactly like CE. */
     if (seaf_db_statement_foreach_row (seaf->db,
             "SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"
-            "COALESCE(r.repo_id,t.repo_id,g.repo_id) "
+            "COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "
             "FROM (SELECT ? AS repo_id) i "
             "LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "
             "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "
             "LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "
             "LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "
-            "LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL",
+            "LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL "
+            "LEFT JOIN VirtualRepo v ON v.repo_id=i.repo_id AND s.repo_id IS NULL",
             read_route, &route, 1, "string", repo_id) != 1)
         goto out;
 
