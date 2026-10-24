@@ -4019,7 +4019,8 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
                 g_strcmp0 (old_repo->name, repo_name) == 0 &&
                 g_strcmp0 (old_repo->desc, repo_desc ? repo_desc : "") == 0 &&
                 g_ascii_strcasecmp (old_owner, owner_email) == 0;
-            seaf_repo_unref (old_repo);
+            if (old_repo)
+                seaf_repo_unref (old_repo);
             g_free (old_owner);
             if (same)
                 return previous;
