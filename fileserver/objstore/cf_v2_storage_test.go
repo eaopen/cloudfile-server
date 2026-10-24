@@ -64,7 +64,6 @@ func TestV2StorageBytesAndNativeIsolation(t *testing.T) {
 func TestV2StorageInvalidRoutesNeverFallback(t *testing.T) {
 	for _, row := range [][3]string{
 		{"auto-local:../escape", "../escape", "active"},
-		{"auto-local:" + repoID, repoID, "unknown"},
 		{"auto-local:other", repoID, "active"},
 		{"unknown:disk", repoID, "active"},
 		{"", repoID, "active"},
@@ -147,7 +146,6 @@ func TestV2RegisteredNativeLibraryUsesOriginalObjects(t *testing.T) {
 	for _, broken := range [][3]string{
 		{"", "native-other", "active"},
 		{"", "native-" + repoID, "reserved"},
-		{"auto-local:" + repoID, "native-" + repoID, "active"},
 		{"", repoID, "active"},
 	} {
 		b.lookup = func(string) (string, string, string, error) {
@@ -156,6 +154,38 @@ func TestV2RegisteredNativeLibraryUsesOriginalObjects(t *testing.T) {
 		if _, err := b.resolve(repoID); err == nil {
 			t.Fatalf("accepted inconsistent historical binding: %v", broken)
 		}
+	}
+}
+
+func TestV2RouteIsAuthoritativeWithoutRegistryRow(t *testing.T) {
+	for _, kind := range []string{"commits", "fs", "blocks"} {
+		t.Run(kind, func(t *testing.T) {
+			b, root := v2Fixture(t, kind)
+			oldRepo := "a2222222-2222-4222-8222-222222222222"
+			oldKey := "historical-user-key"
+			if err := os.Mkdir(filepath.Join(root, oldKey), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// A fresh UUID-path library has only its native route, and a
+			// historic V2 library's suffix is its immutable original path.
+			for _, row := range []struct{ id, route, physical string }{
+				{repoID, "auto-local:" + repoID, repoID},
+				{oldRepo, "auto-local:" + oldKey, oldKey},
+			} {
+				b.lookup = func(string) (string, string, string, error) {
+					return row.route, "", "", nil
+				}
+				data := []byte(row.route)
+				if err := b.write(row.id, objID, bytes.NewReader(data), true); err != nil {
+					t.Fatal(err)
+				}
+				got, err := os.ReadFile(filepath.Join(root, row.physical, "storage", kind,
+					row.id, objID[:2], objID[2:]))
+				if err != nil || !bytes.Equal(got, data) {
+					t.Fatalf("physical route mismatch for %s: %v", row.id, err)
+				}
+			}
+		})
 	}
 }
 

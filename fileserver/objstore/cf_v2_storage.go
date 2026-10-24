@@ -54,22 +54,38 @@ func v2Lookup(repoID string) (string, string, string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var route, key, state sql.NullString
+
+	// RepoStorageId alone selects the physical route. Look at the legacy
+	// registry and Seafile native lifecycle only if there is NO route:
+	// otherwise a missing historical auto-local mapping could silently write
+	// to the wrong (native) path. New UUID V2 has no CloudFile registry row.
+	var route, routeOwner, legacyKey, legacyState, nativeRepo sql.NullString
 	err := v2StorageDB.QueryRowContext(ctx,
-		"SELECT s.storage_id,c.repo_key,c.state FROM (SELECT ? AS repo_id) i "+
+		"SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"+
+			"COALESCE(r.repo_id,t.repo_id,g.repo_id) "+
+			"FROM (SELECT ? AS repo_id) i "+
 			"LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "+
-			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id", repoID).Scan(&route, &key, &state)
-	// SQL NULL is distinct from a corrupt empty value. A registered
-	// pre-V2 library has no RepoStorageId and an explicit native-UUID marker.
-	registeredNative := !route.Valid && key.Valid && state.Valid &&
-		key.String == "native-"+repoID && (state.String == "active" || state.String == "retired")
-	if err == nil && (!route.Valid && key.Valid && !registeredNative || route.Valid && !key.Valid) {
-		err = fmt.Errorf("V2 storage binding is incomplete")
+			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "+
+			"LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "+
+			"LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "+
+			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL", repoID).
+		Scan(&route, &routeOwner, &legacyKey, &legacyState, &nativeRepo)
+	if err != nil {
+		return "", "", "", err
 	}
-	if err == nil && (route.Valid && route.String == "" || key.Valid && key.String == "") {
-		err = fmt.Errorf("V2 storage binding is empty")
+	if routeOwner.Valid {
+		if !route.Valid || route.String == "" {
+			return "", "", "", fmt.Errorf("V2 route row has no storage ID")
+		}
+		return route.String, "", "", nil
 	}
-	return route.String, key.String, state.String, err
+	nativeMarker := !legacyKey.Valid ||
+		(legacyKey.String == "native-"+repoID &&
+			(legacyState.String == "active" || legacyState.String == "retired"))
+	if !nativeRepo.Valid || !nativeMarker {
+		return "", "", "", fmt.Errorf("unresolved native Seafile library")
+	}
+	return "", legacyKey.String, legacyState.String, nil
 }
 
 func newV2StorageBackend(confPath string, native *fsBackend) (storageBackend, error) {
@@ -104,29 +120,35 @@ func (b *v2StorageBackend) resolve(repoID string) (*fsBackend, error) {
 	if _, err := uuid.Parse(repoID); err != nil || len(repoID) != 36 {
 		return nil, fmt.Errorf("invalid V2 storage repository ID")
 	}
-	if err := v2RealDirectory(b.root); err != nil {
-		return nil, err
-	}
-	route, key, state, err := b.lookup(repoID)
+	route, legacyKey, legacyState, err := b.lookup(repoID)
 	if err != nil {
 		return nil, err
 	}
-	if route == "" && key == "" {
-		return b.native, nil
+	if route == "" {
+		// Existing CE repos (including Trash/GC) remain on their original
+		// filesystem. Production lookup has already checked real CE facts.
+		if legacyKey == "" || (legacyKey == "native-"+repoID &&
+			(legacyState == "active" || legacyState == "retired")) {
+			return b.native, nil
+		}
+		return nil, fmt.Errorf("unresolved historical native binding")
 	}
-	if route == "" && key == "native-"+repoID && (state == "active" || state == "retired") {
-		return b.native, nil
+	if !strings.HasPrefix(route, "auto-local:") {
+		return nil, fmt.Errorf("unsupported V2 storage route")
 	}
-	if !v2KeyValid(key) || !strings.HasPrefix(route, "auto-local:") || route != "auto-local:"+key ||
-		(state != "reserved" && state != "active" && state != "retired") {
-		return nil, fmt.Errorf("unresolved V2 storage binding")
+	key := strings.TrimPrefix(route, "auto-local:")
+	if !v2KeyValid(key) {
+		return nil, fmt.Errorf("invalid V2 storage directory key")
 	}
+	if err := v2RealDirectory(b.root); err != nil {
+		return nil, err
+	}
+	// Current V2 writes UUID as the key. A previously created V2 repo may
+	// still have a custom physical key encoded in its immutable native route.
 	keyDir := filepath.Join(b.root, key)
 	if err := v2RealDirectory(keyDir); err != nil {
 		return nil, err
 	}
-	// Native code retains its own fs/block identifiers, including virtual repo
-	// origin IDs. Only the physical root changes. No per-request pool or cache.
 	return &fsBackend{objDir: filepath.Join(keyDir, "storage", b.native.objType),
 		objType: b.native.objType}, nil
 }
