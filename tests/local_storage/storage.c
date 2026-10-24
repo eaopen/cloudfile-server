@@ -96,6 +96,8 @@ test_native_storage_routes (const char *fixture)
     route_fixture (NULL, NULL, NULL, TRUE, TRUE);
     g_assert_null (cf_v2_store_dir (native, repo));
 
+    g_free (expected);
+
     /* First Commit is written while reserved, before Repo is committed.
      * Virtual files MUST pass the origin store_id here, not the virtual UUID. */
     route_fixture ("auto-local:key-a", "key-a", "reserved", TRUE, FALSE);
