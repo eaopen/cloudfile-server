@@ -1,0 +1,21 @@
+name: One-off V2 native storage copy race verification
+
+on:
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  native-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install C test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev pkg-config
+      - name: Run production C object staging and cross-volume race regression
+        run: ./tests/local_storage/run.sh
