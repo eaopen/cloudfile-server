@@ -27,30 +27,30 @@ func v2Fixture(t *testing.T, objType string) (*v2StorageBackend, string) {
 // A trusted explicit repo_key is not a UUID; the physical object identifiers
 // still use the actual repo UUID under that managed key's storage directory.
 func TestV2StorageStableNonUUIDKey(t *testing.T) {
-    b, root := v2Fixture(t, "blocks")
-    key := "project-alpha"
-    if err := os.Mkdir(filepath.Join(root, key), 0700); err != nil {
-        t.Fatal(err)
-    }
-    b.lookup = func(string) (string, string, string, error) {
-        return "auto-local:" + key, key, "active", nil
-    }
-    if err := b.write(repoID, objID, strings.NewReader("routed"), true); err != nil {
-        t.Fatal(err)
-    }
-    physical := filepath.Join(root, key, "storage", "blocks", repoID, objID[:2], objID[2:])
-    if data, err := os.ReadFile(physical); err != nil || string(data) != "routed" {
-        t.Fatalf("explicit key did not route bytes: %v", err)
-    }
-    if _, err := os.Stat(filepath.Join(root, repoID, "storage", "blocks", repoID)); !os.IsNotExist(err) {
-        t.Fatal("explicit key wrote into UUID default root")
-    }
-    b.lookup = func(string) (string, string, string, error) {
-        return "auto-local:other", key, "active", nil
-    }
-    if err := b.write(repoID, objID, strings.NewReader("wrong"), false); err == nil {
-        t.Fatal("mismatched key and route was accepted")
-    }
+	b, root := v2Fixture(t, "blocks")
+	key := "project-alpha"
+	if err := os.Mkdir(filepath.Join(root, key), 0700); err != nil {
+		t.Fatal(err)
+	}
+	b.lookup = func(string) (string, string, string, error) {
+		return "auto-local:" + key, key, "active", nil
+	}
+	if err := b.write(repoID, objID, strings.NewReader("routed"), true); err != nil {
+		t.Fatal(err)
+	}
+	physical := filepath.Join(root, key, "storage", "blocks", repoID, objID[:2], objID[2:])
+	if data, err := os.ReadFile(physical); err != nil || string(data) != "routed" {
+		t.Fatalf("explicit key did not route bytes: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, repoID, "storage", "blocks", repoID)); !os.IsNotExist(err) {
+		t.Fatal("explicit key wrote into UUID default root")
+	}
+	b.lookup = func(string) (string, string, string, error) {
+		return "auto-local:other", key, "active", nil
+	}
+	if err := b.write(repoID, objID, strings.NewReader("wrong"), false); err == nil {
+		t.Fatal("mismatched key and route was accepted")
+	}
 }
 
 func TestV2StorageBytesAndNativeIsolation(t *testing.T) {
