@@ -66,12 +66,12 @@ func TestV2NativeFallbackRequiresRealSeafileRepo(t *testing.T) {
 		{"valid legacy CE", nothing, nothing, nothing, nothing, value(repoID), true},
 		{"unknown UUID", nothing, nothing, nothing, nothing, nothing, false},
 		{"NULL native route row", nothing, nothing, nothing, value(repoID), value(repoID), false},
-		{"registered native", nothing, value("native-"+repoID), value("active"), nothing, value(repoID), true},
-		{"retired CE for GC", nothing, value("native-"+repoID), value("retired"), nothing, value(repoID), true},
-		{"native marker without repo", nothing, value("native-"+repoID), value("active"), nothing, nothing, false},
+		{"registered native", nothing, value("native-" + repoID), value("active"), nothing, value(repoID), true},
+		{"retired CE for GC", nothing, value("native-" + repoID), value("retired"), nothing, value(repoID), true},
+		{"native marker without repo", nothing, value("native-" + repoID), value("active"), nothing, nothing, false},
 		{"mismatched native marker", nothing, value("native-other"), value("active"), nothing, value(repoID), false},
-		{"unregistered auto-local binding", value("auto-local:"+repoID), nothing, value("reserved"), value(repoID), nothing, false},
-		{"reserved new V2 before Repo insert", value("auto-local:"+repoID), value(repoID), value("reserved"), value(repoID), nothing, true},
+		{"unregistered auto-local binding", value("auto-local:" + repoID), nothing, value("reserved"), value(repoID), nothing, false},
+		{"reserved new V2 before Repo insert", value("auto-local:" + repoID), value(repoID), value("reserved"), value(repoID), nothing, true},
 		{"empty routed storage ID", value(""), value(repoID), value("active"), value(repoID), value(repoID), false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
