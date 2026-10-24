@@ -59,3 +59,22 @@ jobs:
               }
             fi
           done < <(git diff --name-only HEAD^ HEAD -- '*.go')
+
+  uuid-v2-atomic-proof:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/v2-uuid-only-storage-20261024'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test native C UUID route and both SQL fault points
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev pkg-config
+          bash tests/local_storage/run.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fileserver/go.mod
+          cache-dependency-path: fileserver/go.sum
+      - name: Test Go V2 object route
+        working-directory: fileserver
+        run: go test ./objstore -run '^TestV2' -count=1
