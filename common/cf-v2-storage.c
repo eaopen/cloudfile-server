@@ -72,6 +72,8 @@ typedef struct {
     char *storage_id;
     char *key;
     char *state;
+    gboolean route_row_present;
+    gboolean native_repo_present;
 } Route;
 
 static gboolean
@@ -81,6 +83,8 @@ read_route (SeafDBRow *row, void *data)
     route->storage_id = g_strdup (seaf_db_row_get_column_text (row, 0));
     route->key = g_strdup (seaf_db_row_get_column_text (row, 1));
     route->state = g_strdup (seaf_db_row_get_column_text (row, 2));
+    route->route_row_present = seaf_db_row_get_column_text (row, 3) != NULL;
+    route->native_repo_present = seaf_db_row_get_column_text (row, 4) != NULL;
     return TRUE;
 }
 
@@ -98,18 +102,25 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
     if (!seaf->db || !repo_id || !is_uuid_valid (repo_id) ||
         !(root = storage_root ()))
         return NULL;
-    /* One query distinguishes unmapped native libraries from corrupt routes.
-     * No cache: separate C/Go processes must see the same committed binding. */
+    /* One query resolves storage and confirms native CE existence. Missing
+     * mapping does NOT mean any arbitrary UUID may use the native data tree.
+     * Keep original CE Repo/Trash/Garbage storage paths intact. */
     if (seaf_db_statement_foreach_row (seaf->db,
-            "SELECT s.storage_id,c.repo_key,c.state FROM (SELECT ? AS repo_id) i "
+            "SELECT s.storage_id,c.repo_key,c.state,s.repo_id,"
+            "COALESCE(r.repo_id,t.repo_id,g.repo_id) "
+            "FROM (SELECT ? AS repo_id) i "
             "LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "
-            "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id",
+            "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id "
+            "LEFT JOIN Repo r ON r.repo_id=i.repo_id "
+            "LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id "
+            "LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id",
             read_route, &route, 1, "string", repo_id) != 1)
         goto out;
     /* Registered pre-V2 native libraries retain their original object tree.
      * "native-<UUID>" is a reserved metadata marker, never a new storage
      * destination. Do not silently interpret a broken V2 route as native. */
-    if (!route.storage_id && (!route.key ||
+    if (!route.storage_id && !route.route_row_present &&
+        route.native_repo_present && (!route.key ||
         ((g_strcmp0 (route.state, "active") == 0 ||
           g_strcmp0 (route.state, "retired") == 0) &&
          g_str_has_prefix (route.key, "native-") &&
