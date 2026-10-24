@@ -24,6 +24,7 @@
 #include "seaf-utils.h"
 #include "cf-storage.h"
 #include "cf-v2-storage.h"
+#include "cf-auto-storage.h"
 
 #define REAP_TOKEN_INTERVAL 300 /* 5 mins */
 #define DECRYPTED_TOKEN_TTL 3600 /* 1 hour */
@@ -4000,6 +4001,16 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
     const char *algo = pwd_hash_algo;
     const char *params = pwd_hash_params;
 
+    /* Validate BEFORE looking up a completed key: a replay must never bypass
+     * the native storage-class and managed-directory constraints. */
+    if (repo_key && (!cf_v2_storage_enabled () ||
+                     !cf_auto_key_valid (repo_key) ||
+                     (storage_id && storage_id[0]))) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                     "Explicit repo_key requires a valid V2 local key without storage class.");
+        return NULL;
+    }
+
     /* A stable key is also a narrow replay handle for an unencrypted
      * completed library. Do not mint another UUID after a lost RPC response.
      * Incomplete/reserved or mismatching records are not a success. */
@@ -4040,13 +4051,6 @@ seaf_repo_manager_create_new_repo_with_key (SeafRepoManager *mgr,
     }
 
     repo_id = gen_uuid ();
-
-    if (repo_key && !cf_v2_storage_enabled ()) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
-                     "Explicit repo_key requires V2 automatic local storage.");
-        g_free (repo_id);
-        return NULL;
-    }
 
     /* The V2 default root is automatic, with no per-library class selector.
      * Do not persist an old cf_library_storage_key pin alongside the V2
