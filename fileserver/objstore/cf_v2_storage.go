@@ -65,22 +65,28 @@ func v2Lookup(repoID string) (string, string, string, error) {
 			"LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id "+
 			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id", repoID).
 		Scan(&route, &key, &state, &routeOwner, &nativeRepo)
-	// SQL NULL is distinct from a corrupt empty value. A registered
-	// pre-V2 library has no RepoStorageId and an explicit native-UUID marker.
+	if err == nil {
+		err = validateV2Lookup(repoID, route, key, state, routeOwner, nativeRepo)
+	}
+	return route.String, key.String, state.String, err
+}
+
+// The legacy native fallback is valid for existing Seafile libraries only.
+// Preserve all native Repo/Trash/Garbage storage locations without treating
+// an arbitrary unmapped UUID or corrupt SQL row as a new filesystem library.
+func validateV2Lookup(repoID string, route, key, state, routeOwner, nativeRepo sql.NullString) error {
 	registeredNative := !route.Valid && key.Valid && state.Valid &&
 		key.String == "native-"+repoID && (state.String == "active" || state.String == "retired")
-	if err == nil && ((!route.Valid && key.Valid && !registeredNative) ||
+	if ((!route.Valid && key.Valid && !registeredNative) ||
 		(route.Valid && !key.Valid) ||
 		(routeOwner.Valid && !route.Valid) ||
 		(!route.Valid && !nativeRepo.Valid)) {
-		// Legacy native fallback is only safe for an actual CE Repo, trash
-		// or garbage entry. A broken native route row is never a fallback.
-		err = fmt.Errorf("V2 storage binding is incomplete or native repo is missing")
+		return fmt.Errorf("V2 storage binding is incomplete or native repo is missing")
 	}
-	if err == nil && (route.Valid && route.String == "" || key.Valid && key.String == "") {
-		err = fmt.Errorf("V2 storage binding is empty")
+	if (route.Valid && route.String == "") || (key.Valid && key.String == "") {
+		return fmt.Errorf("V2 storage binding is empty")
 	}
-	return route.String, key.String, state.String, err
+	return nil
 }
 
 func newV2StorageBackend(confPath string, native *fsBackend) (storageBackend, error) {
