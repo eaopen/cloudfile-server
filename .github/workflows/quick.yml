@@ -59,3 +59,17 @@ jobs:
               }
             fi
           done < <(git diff --name-only HEAD^ HEAD -- '*.go')
+
+  # One-shot native path test, not a full build. Remove after evidence.
+  storage-c-route-proof:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/storage-stable-repo-key-20261024'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare light C headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev pkg-config
+      - name: Exercise real native C route and object storage without Hub
+        run: bash tests/local_storage/run.sh
