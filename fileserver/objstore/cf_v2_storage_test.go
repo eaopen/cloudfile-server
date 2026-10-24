@@ -2,6 +2,7 @@ package objstore
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"io"
 	"os"
@@ -50,6 +51,35 @@ func TestV2StorageStableNonUUIDKey(t *testing.T) {
 	}
 	if err := b.write(repoID, objID, strings.NewReader("wrong"), false); err == nil {
 		t.Fatal("mismatched key and route was accepted")
+	}
+}
+
+func TestV2NativeFallbackRequiresRealSeafileRepo(t *testing.T) {
+	value := func(text string) sql.NullString { return sql.NullString{String: text, Valid: true} }
+	nothing := sql.NullString{}
+	for _, row := range []struct {
+		name                  string
+		route, key, state     sql.NullString
+		routeOwner, native    sql.NullString
+		allow                 bool
+	}{
+		{"valid legacy CE", nothing, nothing, nothing, nothing, value(repoID), true},
+		{"unknown UUID", nothing, nothing, nothing, nothing, nothing, false},
+		{"NULL native route row", nothing, nothing, nothing, value(repoID), value(repoID), false},
+		{"registered native", nothing, value("native-"+repoID), value("active"), nothing, value(repoID), true},
+		{"retired CE for GC", nothing, value("native-"+repoID), value("retired"), nothing, value(repoID), true},
+		{"native marker without repo", nothing, value("native-"+repoID), value("active"), nothing, nothing, false},
+		{"mismatched native marker", nothing, value("native-other"), value("active"), nothing, value(repoID), false},
+		{"unregistered auto-local binding", value("auto-local:"+repoID), nothing, value("reserved"), value(repoID), nothing, false},
+		{"reserved new V2 before Repo insert", value("auto-local:"+repoID), value(repoID), value("reserved"), value(repoID), nothing, true},
+		{"empty routed storage ID", value(""), value(repoID), value("active"), value(repoID), value(repoID), false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := validateV2Lookup(repoID, row.route, row.key, row.state, row.routeOwner, row.native)
+			if (err == nil) != row.allow {
+				t.Fatalf("allowed=%v want=%v: %v", err == nil, row.allow, err)
+			}
+		})
 	}
 }
 
