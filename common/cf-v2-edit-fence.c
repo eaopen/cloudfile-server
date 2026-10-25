@@ -8,6 +8,7 @@
 #include "common.h"
 #include "commit-mgr.h"
 #include "diff-simple.h"
+#include "log.h"
 #include "repo-mgr.h"
 #include "seafile-session.h"
 
