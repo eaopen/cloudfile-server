@@ -34,9 +34,9 @@ func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
 // Caller must already hold Branch(master) FOR UPDATE in this same transaction.
 // SQL errors and native diff failures deny, never silently fall back to CE.
 func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-	// Ordinary upload must not depend on Guard schema or SQL when Checkout
-	// is disabled. Enabled-but-unavailable is an error, never a bypass.
-	if !option.CloudFileCheckoutEnabled {
+	// OFF libraries never query Guard, allocate Guard locks, or diff commits.
+	// Enabled-but-unavailable Checkout remains fail-closed for selected libraries.
+	if !option.CheckoutEnabledForRepo(repoID) {
 		return nil
 	}
 	if !option.V2GuardAvailable {
