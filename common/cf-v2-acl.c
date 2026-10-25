@@ -111,16 +111,18 @@ static int proof_repo(SeafDBTrans *trans, struct _SeafileSession *session,
     const guchar separator = 0;
     g_checksum_update(ctx->digest, (const guchar *)repo_id, strlen(repo_id));
     g_checksum_update(ctx->digest, &separator, 1);
-    guint start = ctx->count;
+    /* One bounded scan per repository, including a virtual library's origin.
+     * Never stop an origin scan because the first scope already had rows. */
+    ctx->count = 0;
     int rows = trans
         ? seaf_db_trans_foreach_selected_row(trans, locking, proof_row, ctx,
                                               1, "string", repo_id)
         : seaf_db_statement_foreach_row(session->db, sql, proof_row, ctx,
                                        1, "string", repo_id);
     g_free(locking);
-    if (rows < 0 || ctx->invalid || ctx->count - start > 4096)
+    if (rows < 0 || ctx->invalid || ctx->count > 4096)
         return -1;
-    if (has_rules && ctx->count != start)
+    if (has_rules && ctx->count != 0)
         *has_rules = TRUE;
     return 0;
 }
