@@ -31,21 +31,46 @@ func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
 	return false
 }
 
-// Caller must already hold Branch(master) FOR UPDATE in this same transaction.
-// SQL errors and native diff failures deny, never silently fall back to CE.
-func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-	// OFF libraries never query Guard, allocate Guard locks, or diff commits.
-	// Enabled-but-unavailable Checkout remains fail-closed for selected libraries.
+// Calculate the candidate change set before opening the final Branch
+// transaction. OFF libraries do nothing. OPTIONAL repositories must be
+// verifiable; a malformed candidate fails closed without acquiring a lock.
+func cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID string) ([]*diff.DiffEntry, error) {
+	if !option.CheckoutEnabledForRepo(repoID) {
+		return nil, nil
+	}
+	if !option.V2GuardAvailable {
+		return nil, errCFEditGuard
+	}
+	if oldCommitID == newCommitID {
+		return []*diff.DiffEntry{}, nil
+	}
+	oldCommit, err := commitmgr.Load(repoID, oldCommitID)
+	if err != nil {
+		return nil, errCFEditGuard
+	}
+	newCommit, err := commitmgr.Load(repoID, newCommitID)
+	if err != nil {
+		return nil, errCFEditGuard
+	}
+	var changes []*diff.DiffEntry
+	if err := diff.DiffCommits(oldCommit, newCommit, &changes, false); err != nil {
+		return nil, errCFEditGuard
+	}
+	if changes == nil {
+		return []*diff.DiffEntry{}, nil
+	}
+	return changes, nil
+}
+
+// The final native transaction only inspects the current Guard rows and
+// precomputed candidate changes; it never loads commits or redoes the diff.
+func cfV2EditCheckPreparedBranch(ctx context.Context, tx *sql.Tx, repoID string, changes []*diff.DiffEntry) error {
 	if !option.CheckoutEnabledForRepo(repoID) {
 		return nil
 	}
-	if !option.V2GuardAvailable {
+	if !option.V2GuardAvailable || changes == nil {
 		return errCFEditGuard
 	}
-	// The startup gate qualified the installed 15-column/4-index path store
-	// when Checkout was enabled, so the final transaction uses the reviewed
-	// query directly instead of re-reading information_schema on every commit.
-	// Runtime drift still denies: a failed query returns errCFEditGuard.
 	rows, err := tx.QueryContext(ctx, cfEditGuardFenceSQL, repoID)
 	if err != nil {
 		return errCFEditGuard
@@ -63,28 +88,13 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 		}
 		if len(paths) >= 8192 {
 			rows.Close()
-			return errCFEditGuard // bounded scope; large cases require a targeted policy
+			return errCFEditGuard
 		}
 		paths = append(paths, path)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return errCFEditGuard
-	}
-	if len(paths) == 0 || oldCommitID == newCommitID {
-		return nil
-	}
-	oldCommit, err := commitmgr.Load(repoID, oldCommitID)
-	if err != nil {
-		return errCFEditGuard
-	}
-	newCommit, err := commitmgr.Load(repoID, newCommitID)
-	if err != nil {
-		return errCFEditGuard
-	}
-	var changes []*diff.DiffEntry
-	if err := diff.DiffCommits(oldCommit, newCommit, &changes, false); err != nil {
 		return errCFEditGuard
 	}
 	for _, change := range changes {
@@ -95,6 +105,22 @@ func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCom
 		}
 	}
 	return nil
+}
+
+// Retained for the isolated Guard SQL tests. All production Branch update
+// callers must prepare first and use cfV2EditCheckPreparedBranch.
+func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
+	if !option.CheckoutEnabledForRepo(repoID) {
+		return nil
+	}
+	if !option.V2GuardAvailable {
+		return errCFEditGuard
+	}
+	changes, err := cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID)
+	if err != nil {
+		return err
+	}
+	return cfV2EditCheckPreparedBranch(ctx, tx, repoID, changes)
 }
 
 // Reviewed V2 fence query. Only this path-keyed store is supported; the
