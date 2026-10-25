@@ -447,6 +447,11 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		cfEditFail(w, 405, "METHOD")
 		return
 	}
+	if option.CheckoutEnabledForRepo(repo.ID) && !option.V2GuardAvailable {
+		// Unknown is not "unlocked": recovery must not decide from a false negative.
+		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
+		return
+	}
 	id, _, err := cfEditActual(repo, repo.HeadCommitID, c.FilePath)
 	if err != nil {
 		cfEditFail(w, 404, "FILE_MISSING")
@@ -692,7 +697,9 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	// OFF repositories do not depend on the Guard schema. OPTIONAL repositories
 	// must refuse all writes when Guard is unavailable, including optimistic edits.
-	if selected && !option.V2GuardAvailable && route != "read" && route != "status" {
+	// Status is refused too: unknown lock state must never look like "no lock",
+	// otherwise the Agent could treat a live Guard as absent during recovery.
+	if selected && !option.V2GuardAvailable && route != "read" {
 		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
 		return
 	}

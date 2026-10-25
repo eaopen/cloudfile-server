@@ -38,5 +38,26 @@ class CheckoutPolicyContract(unittest.TestCase):
         self.assertIn('checkout_policy_state == 2', source)
 
 
+    def test_native_branch_cas_calls_the_guard_fence_before_update(self):
+        source = (ROOT / 'common/branch-mgr.c').read_text()
+        start = source.index('test_and_update_branch (SeafBranchManager *mgr')
+        body = source[start:source.index('\n}\n', start)]
+        self.assertIn('cf_v2_edit_check_unscoped_branch', body)
+        self.assertIn('cf-v2-edit-fence.h', source)
+        self.assertLess(body.index('cf_v2_edit_check_unscoped_branch'),
+                        body.index('UPDATE Branch'))
+        self.assertLess(body.index('cf_v2_acl_final'),
+                        body.index('cf_v2_edit_check_unscoped_branch'))
+        # A guard denial is permanent: same non-retryable class as ACL denial.
+        self.assertIn('guard_result < 0', body)
+
+    def test_optional_status_never_reports_unknown_guard_as_unlocked(self):
+        source = (ROOT / 'fileserver/cf_v2_edit_agent.go').read_text()
+        # The API-level early refusal covers writes and status (only read is exempt).
+        self.assertIn('selected && !option.V2GuardAvailable && route != "read"', source)
+        start = source.index('func cfEditStatus(')
+        body = source[start:source.index('\n}\n', start)]
+        self.assertIn('GUARD_UNAVAILABLE', body)
+
 if __name__ == '__main__':
     unittest.main()
