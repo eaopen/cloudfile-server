@@ -30,9 +30,13 @@ class ACLFinalLockScope(unittest.TestCase):
     def test_lock_order_and_acl_writer_contract_unchanged(self):
         branch = (ROOT / "common/branch-mgr.c").read_text(encoding="utf-8")
         update = branch.split("test_and_update_branch (", 1)[1]
+        self.assertLess(update.index("cf_v2_acl_proof(NULL"),
+                        update.index("AND repo_id=? FOR UPDATE"))
+        self.assertLess(update.index("cf_v2_acl_preflight_scoped("),
+                        update.index("AND repo_id=? FOR UPDATE"))
         self.assertLess(update.index("AND repo_id=? FOR UPDATE"),
-                        update.index("cf_v2_acl_final("))
-        self.assertIn("cf_v2_acl_final_scoped (", update)
+                        update.index("cf_v2_acl_proof(trans"))
+        self.assertNotIn("cf_v2_acl_final_scoped (trans", update)
 
 
 if __name__ == "__main__":
