@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
-	"github.com/google/uuid"
 )
 
 // InfiniteQuota indicates that the quota is unlimited.
