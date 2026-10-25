@@ -60,7 +60,10 @@ type cfEditGuard struct {
 	Expires                                                        time.Time
 }
 
-func cfEditID(s string) bool { v, err := uuid.Parse(s); return err == nil && v.String() == s }
+func cfEditID(s string) bool {
+	v, err := uuid.Parse(s)
+	return err == nil && v.String() == s
+}
 func cfEditHex(s string, size int) bool {
 	if len(s) != size {
 		return false
@@ -72,7 +75,10 @@ func cfEditHex(s string, size int) bool {
 	}
 	return true
 }
-func cfEditHash(s string) []byte { sum := sha256.Sum256([]byte(s)); return sum[:] }
+func cfEditHash(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
 
 // Record only business state changes absent from native CE Activity.
 // Sharing the Guard/Branch transaction makes the event truthful without
