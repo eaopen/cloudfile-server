@@ -234,15 +234,23 @@ func cfEditVerified(c *cfEditClaims, g cfEditGuard, p cfEditProof, expiredAllowe
 func cfEditResumable(g cfEditGuard, current string, now time.Time) bool {
 	return g.Expires.After(now) || (g.BaseID != "" && current == g.BaseID)
 }
-func cfEditCurrentPermission(ctx context.Context, tx *sql.Tx, c *cfEditClaims) error {
-	protected, err := cfACLProtected(ctx, tx, c.RepoID)
+
+// cfEditPermissionPreflight is Phase A of cf-edit publication: it reads the
+// bounded ACL row/revision proof and, for a protected library, asks Hub once
+// for a write decision on this exact path. It must run before BeginTx so the
+// Hub round trip never happens while Branch(master) is locked (issue #43).
+func cfEditPermissionPreflight(ctx context.Context, repoID, user, filePath string) (cfACLProof, error) {
+	proof, err := cfACLCurrentProof(ctx, seafileDB, repoID, false)
 	if err != nil {
-		return err
+		return proof, err
 	}
-	if protected {
-		return cfACLAuthorize(ctx, c.RepoID, c.Subject, []cfACLCheck{{Path: c.FilePath, Kind: "file", Action: "write"}})
+	if !proof.Protected {
+		return proof, nil
 	}
-	return nil
+	if user == "" || !cfACLCanonical(filePath) {
+		return proof, errCFACL
+	}
+	return proof, cfACLAuthorize(ctx, repoID, user, []cfACLCheck{{Path: filePath, Kind: "file", Action: "write"}})
 }
 func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo) {
 	if r.Method != "GET" {
@@ -552,6 +560,15 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 		cfEditFail(w, 503, "INDEX_FAILED")
 		return
 	}
+	// Phase A: ACL proof and the single Hub write decision happen before the
+	// Branch transaction. cf-edit publication is a Branch(master) writer path;
+	// reviewed Hub ACL writers take the same lock, so a later ACL change makes
+	// the final proof below fail closed instead of being bypassed.
+	aclProof, err := cfEditPermissionPreflight(ctx, repo.ID, c.Subject, c.FilePath)
+	if err != nil {
+		cfEditFail(w, 403, "PERMISSION_CHANGED")
+		return
+	}
 	tx, err := seafileDB.BeginTx(ctx, nil)
 	if err != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
@@ -586,7 +603,11 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 			return
 		}
 	}
-	if err = cfEditCurrentPermission(ctx, tx, c); err != nil {
+	// Phase B: Branch(master) and guard rows are locked. Re-read the same
+	// bounded ACL proof with current locking reads; no Hub HTTP and no commit
+	// diff is permitted here. A changed rule set refuses this publication so
+	// the client re-authorizes against fresh policy.
+	if err = cfACLFinal(ctx, tx, repo.ID, aclProof); err != nil {
 		cfEditFail(w, 403, "PERMISSION_CHANGED")
 		return
 	}
