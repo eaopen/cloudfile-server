@@ -25,20 +25,23 @@ class NoManagedLibraryBoundary(unittest.TestCase):
 
     def test_path_proof_precedes_publication(self):
         fileop = (ROOT / 'fileserver/fileop.go').read_text(encoding='utf-8')
-        self.assertIn('cfACLFinal(ctx, trans, repoID, oldCommitID, newCommitID, aclActor)', fileop)
+        self.assertIn('cfACLFinal(ctx, trans, repoID, proof)', fileop)
+        self.assertLess(fileop.index('cfACLPreflight(preCtx, repoID, oldCommitID, newCommitID, aclActor)'),
+                        fileop.index('seafileDB.BeginTx(ctx, nil)'))
         self.assertIn('cfACLPath(repoID, info.User, filePath, "file", "read")', fileop)
         self.assertNotIn('checkLegacyLibrary(', fileop)
         branch = (ROOT / 'common/branch-mgr.c').read_text(encoding='utf-8')
-        self.assertIn('cf_v2_acl_final(', branch)
+        self.assertIn('cf_v2_acl_preflight_scoped(', branch)
+        self.assertIn('cf_v2_acl_proof(trans,', branch)
         self.assertNotIn('cf_policy_enroll_managed_library(', branch)
 
     def test_c_final_acl_follows_branch_lock_and_head_validation(self):
         source = (ROOT / 'common/branch-mgr.c').read_text()
         commit = source.split('test_and_update_branch (', 1)[1]
-        self.assertLess(commit.index('AND repo_id=? FOR UPDATE'),
-                        commit.index('cf_v2_acl_final('))
+        self.assertLess(commit.index('cf_v2_acl_preflight_scoped('),
+                        commit.index('AND repo_id=? FOR UPDATE'))
         self.assertLess(commit.index('strcmp (old_commit_id, commit_id)'),
-                        commit.index('cf_v2_acl_final('))
+                        commit.index('cf_v2_acl_proof(trans,'))
         policy = (ROOT / 'common/cf-v2-acl.c').read_text()
         self.assertIn('g_strconcat(query, " FOR UPDATE", NULL)', policy)
 
