@@ -37,19 +37,6 @@ int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id);
 int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session,
                     const char *repo_id);
 
-/* Second-chance qualification for protected libraries. When the plain final
- * check reports an ACL scope (cf_v2_acl_final == -2), verify the concrete
- * change against the V2 authority instead of refusing outright: @actor is
- * the authenticated native username (the commit author), and every
- * added/modified/renamed/deleted path must hold write permission. Returns 0
- * when the authority allows, -1 on denial, transport failure, or a malformed
- * change. This is what lets native delete/move/rename/mkdir commits through
- * on managed libraries: the upload path already qualifies per-path, and the
- * legacy write RPCs carry no guard context to mark themselves enhanced. */
-int cf_v2_acl_final_scoped(SeafDBTrans *trans, struct _SeafileSession *session,
-                           const char *repo_id, const char *old_id,
-                           const char *new_id, const char *actor);
-
 /* Transport only: one internal-JWT POST to /cloudfile/acl/check/. Returns the
  * HTTP status, or -1 when the channel is unusable. @body is reset and holds the
  * reply on 200. The single implementation of that handshake; cf-v2-share.c

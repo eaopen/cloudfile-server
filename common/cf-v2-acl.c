@@ -523,21 +523,3 @@ done:
     seaf_repo_unref (repo);
     return result;
 }
-
-/* Compatibility wrapper for any remaining callers that already own the
- * Branch transaction. New native CAS publication performs the same scoped
- * work in preflight and checks only cf_v2_acl_proof() under the final lock. */
-int
-cf_v2_acl_final_scoped (SeafDBTrans *trans, struct _SeafileSession *session,
-                        const char *repo_id, const char *old_id,
-                        const char *new_id, const char *actor)
-{
-    if (!trans)
-        return -1;
-    int state = cf_v2_acl_final(trans, session, repo_id);
-    if (state == 0)
-        return 0;
-    return state == -2
-        ? cf_v2_acl_preflight_scoped(session, repo_id, old_id, new_id, actor)
-        : -1;
-}
