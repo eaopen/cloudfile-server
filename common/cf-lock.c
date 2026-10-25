@@ -6,6 +6,8 @@
 #include "cf-ext.h"
 #include "cf-fileop.h"
 #include "cf-lock.h"
+#include "cf-v2-edit-fence.h"
+#include "seafile-session.h"
 #include "log.h"
 #include "seaf-db.h"
 #include "seafile-error.h"
@@ -71,6 +73,11 @@ static int
 check_path (const char *repo_id, const char *path, const char *user,
             GError **error)
 {
+    int policy = cf_v2_edit_repo_checkout(seaf, repo_id);
+    if (policy == 0)
+        return 0;
+    if (policy < 0)
+        goto unavailable;
     int n;
     if (!cf_ext_database ())
         goto unavailable;
@@ -101,12 +108,21 @@ cf_lock_prepare (const CfFileOp *fop, GError **error)
 {
     if (!lock_on || cf_fileop_op_pathless (fop->op) || !fop->repo_id)
         return 0;
+    const char *source_repo = fop->src_repo_id ? fop->src_repo_id : fop->repo_id;
+    int dest = cf_v2_edit_repo_checkout(seaf, fop->repo_id);
+    int source = cf_v2_edit_repo_checkout(seaf, source_repo);
+    if (dest < 0 || source < 0) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                    "CloudFile per-repo Checkout policy invalid");
+        return -1;
+    }
+    if (dest == 0 && source == 0)
+        return 0;
     GList *subjects = cf_fileop_subject_paths (fop);
     GList *sources = cf_fileop_source_paths (fop);
     int ret = 0;
     for (GList *p = subjects; p && ret == 0; p = p->next)
         ret = check_path (fop->repo_id, p->data, fop->user, error);
-    const char *source_repo = fop->src_repo_id ? fop->src_repo_id : fop->repo_id;
     for (GList *p = sources; p && ret == 0; p = p->next)
         ret = check_path (source_repo, p->data, fop->user, error);
     g_list_free_full (subjects, g_free);
@@ -126,8 +142,10 @@ cf_lock_init (void)
     char *backend = cf_ext_config_string ("lock_backend");
     /* Checkout is unfinished and opt-in. A legacy file-lock switch alone
      * must not make normal uploads depend on Guard or the retired ledger. */
-    lock_on = cf_ext_config_bool ("checkout_enabled") &&
-              (!backend || strcmp (backend, "cloudfile") == 0);
+    char *repos = cf_ext_config_string("checkout_repo_ids");
+    lock_on = cf_ext_config_bool("checkout_enabled") && repos && repos[0] &&
+              (!backend || strcmp(backend, "cloudfile") == 0);
+    g_free(repos);
     if (backend && strcmp (backend, "cloudfile") != 0)
         seaf_warning ("CloudFile: unsupported lock backend '%s'.\n", backend);
     g_free (backend);

@@ -109,9 +109,13 @@ func (r *uploadGuardRows) Next(dest []driver.Value) error {
 }
 
 func TestUploadGuardUsesReviewedPathQueryOnly(t *testing.T) {
-	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
+	old, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
-	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
+	// Guard checks apply only to explicitly selected OPTIONAL repositories.
+	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = old, oldEnabled, oldRepos
+	}()
 	f := &uploadGuardFixture{}
 	db := sql.OpenDB(uploadGuardConnector{f})
 	defer db.Close()
@@ -138,9 +142,12 @@ func TestUploadGuardUsesReviewedPathQueryOnly(t *testing.T) {
 }
 
 func TestUploadGuardRefusesGuardFailures(t *testing.T) {
-	old, oldEnabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
+	old, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = true, true
-	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, oldEnabled }()
+	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = old, oldEnabled, oldRepos
+	}()
 	for _, f := range []*uploadGuardFixture{
 		{failGuard: true},
 		{paths: []driver.Value{nil}},
@@ -161,8 +168,11 @@ func TestUploadGuardRefusesGuardFailures(t *testing.T) {
 
 // Nil DB/transaction proves the disabled path performs no metadata or Guard SQL.
 func TestUploadCheckoutDisabledNeverQueriesGuard(t *testing.T) {
-	old, enabled := option.V2GuardAvailable, option.CloudFileCheckoutEnabled
-	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled = old, enabled }()
+	old, enabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = old, enabled, oldRepos
+	}()
+	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
 	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = false, true
 	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
 		t.Fatalf("disabled capability touched the database: %v", err)
@@ -177,9 +187,16 @@ func TestUploadCheckoutDisabledNeverQueriesGuard(t *testing.T) {
 }
 
 func TestUploadEnabledCheckoutRequiresInstalledGuard(t *testing.T) {
-	enabled := option.CloudFileCheckoutEnabled
+	enabled, repos := option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
 	option.CloudFileCheckoutEnabled = true
-	defer func() { option.CloudFileCheckoutEnabled = enabled }()
+	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
+	defer func() { option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = enabled, repos }()
+	// Global switch alone selects no repository: zero Guard discovery and no DB.
+	option.CloudFileCheckoutRepos = map[string]struct{}{}
+	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
+		t.Fatalf("empty allowlist must be all OFF without a database: %v", err)
+	}
+	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
 	for _, f := range []*uploadGuardFixture{{tableCount: 1, currentSchema: true}, {tableCount: 1}, {tableCount: 0}, {failMetadata: true}} {
 		db := sql.OpenDB(uploadGuardConnector{f})
 		available, err := loadV2GuardCapability(context.Background(), db)

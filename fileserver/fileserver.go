@@ -165,7 +165,7 @@ func loadSeafileDB() {
 // A capability change requires restarting Hub and native services. Disabled
 // Checkout never queries a Guard table, even when the baseline DDL includes it.
 func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
-	if !option.CloudFileCheckoutEnabled {
+	if !option.CloudFileCheckoutEnabled || len(option.CloudFileCheckoutRepos) == 0 {
 		return false, nil
 	}
 	var count int
@@ -193,7 +193,11 @@ func detectV2Guard() {
 	defer cancel()
 	available, err := loadV2GuardCapability(ctx, seafileDB)
 	if err != nil {
-		log.Fatal(err)
+		// OFF repositories remain available on a Guard schema failure. Selected
+		// repositories refuse unsafe writes until the next controlled restart.
+		log.Errorf("CloudFile optional Checkout unavailable: %v; selected repositories refuse guarded writes", err)
+		option.V2GuardAvailable = false
+		return
 	}
 	option.V2GuardAvailable = available
 }

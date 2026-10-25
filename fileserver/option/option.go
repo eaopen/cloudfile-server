@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -21,6 +22,40 @@ var CloudFileTrustedTLSProxies []*net.IPNet
 // Checkout is an explicit existing capability, not implied by a table name.
 // Both values are initialized before serving requests; disabled means no Guard SQL.
 var CloudFileCheckoutEnabled bool
+
+// Repo-scoped optional Checkout. No entry means OFF, even when the capability is enabled.
+var CloudFileCheckoutRepos map[string]struct{}
+
+// CheckoutEnabledForRepo is a pure in-memory check. Ordinary libraries never touch Guard SQL.
+func CheckoutEnabledForRepo(repoID string) bool {
+	if !CloudFileCheckoutEnabled {
+		return false
+	}
+	_, ok := CloudFileCheckoutRepos[repoID]
+	return ok
+}
+
+func parseCheckoutRepoIDs(raw string) (map[string]struct{}, error) {
+	ids := make(map[string]struct{})
+	if strings.TrimSpace(raw) == "" {
+		return ids, nil
+	}
+	if len(raw) > 8192 {
+		return nil, fmt.Errorf("Checkout repository list exceeds 8192 bytes")
+	}
+	for _, field := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(field)
+		parsed, err := uuid.Parse(id)
+		if err != nil || parsed.String() != id {
+			return nil, fmt.Errorf("Checkout repository must be a canonical UUID")
+		}
+		if _, exists := ids[id]; exists {
+			return nil, fmt.Errorf("duplicate Checkout repository: %s", id)
+		}
+		ids[id] = struct{}{}
+	}
+	return ids, nil
+}
 
 // True only after enabled Checkout has a usable installed Guard table.
 var V2GuardAvailable bool
@@ -143,6 +178,7 @@ func LoadFileServerOptions(centralDir string) {
 	CloudMode = false
 	CloudFileTrustedTLSProxies = nil
 	CloudFileCheckoutEnabled = false
+	CloudFileCheckoutRepos = make(map[string]struct{})
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
 		// Reuse CF_ENABLE_CHECKOUT -> [cloudfile] checkout_enabled from Docker.
 		// Invalid values must not silently disable an explicitly requested fence.
@@ -151,6 +187,13 @@ func LoadFileServerOptions(centralDir string) {
 			CloudFileCheckoutEnabled, parseErr = key.Bool()
 			if parseErr != nil {
 				log.Fatal("Invalid CloudFile checkout_enabled")
+			}
+		}
+		if key, keyErr := section.GetKey("checkout_repo_ids"); keyErr == nil {
+			var parseErr error
+			CloudFileCheckoutRepos, parseErr = parseCheckoutRepoIDs(key.String())
+			if parseErr != nil {
+				log.Fatalf("Invalid CloudFile checkout_repo_ids: %v", parseErr)
 			}
 		}
 		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {

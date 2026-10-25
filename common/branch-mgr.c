@@ -13,6 +13,7 @@
 #ifdef FULL_FEATURE
 #include "notif-mgr.h"
 #include "cf-v2-acl.h"
+#include "cf-v2-edit-fence.h"
 #include "commit-mgr.h"
 #include "repo-mgr.h"
 #include "fs-mgr.h"
@@ -564,6 +565,19 @@ test_and_update_branch (SeafBranchManager *mgr,
         g_free (actor);
     }
     if (acl_result < 0) {
+        seaf_db_rollback (trans);
+        seaf_db_trans_close (trans);
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+    }
+
+    /* Final native publication fence. Branch(master) is already locked and
+     * this runs before the Branch UPDATE, in the same transaction: an
+     * OPTIONAL repository must not publish a commit touching an active Guard
+     * unless the guarded path check passes. OFF returns 0 without SQL.
+     * Denial is permanent (not a HEAD race), so reuse the ACL-denied code. */
+    int guard_result = cf_v2_edit_check_unscoped_branch (
+        trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id);
+    if (guard_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
         return SEAF_BRANCH_UPDATE_ACL_DENIED;

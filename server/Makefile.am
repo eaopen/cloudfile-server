@@ -103,6 +103,7 @@ seaf_server_SOURCES = \
 	../common/group-mgr.c \
 	../common/org-mgr.c \
 	../common/cf-v2-acl.c \
+	../common/cf-v2-edit-fence.c \
 	../common/cf-v2-share.c \
 	../common/cf-v2-storage.c \
 	../common/cf-ext.c \

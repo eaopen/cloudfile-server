@@ -60,7 +60,10 @@ type cfEditGuard struct {
 	Expires                                                        time.Time
 }
 
-func cfEditID(s string) bool { v, err := uuid.Parse(s); return err == nil && v.String() == s }
+func cfEditID(s string) bool {
+	v, err := uuid.Parse(s)
+	return err == nil && v.String() == s
+}
 func cfEditHex(s string, size int) bool {
 	if len(s) != size {
 		return false
@@ -72,7 +75,11 @@ func cfEditHex(s string, size int) bool {
 	}
 	return true
 }
-func cfEditHash(s string) []byte { sum := sha256.Sum256([]byte(s)); return sum[:] }
+func cfEditHash(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
 // Record only business state changes absent from native CE Activity.
 // Sharing the Guard/Branch transaction makes the event truthful without
 // an Outbox, duplicate file-commit log or a second audit database.
@@ -116,6 +123,7 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 	}
 	return c, nil
 }
+
 // Every refusal here is mapped to one HTTP code by the handler, so the reason
 // has to travel with the error: an unsupported repo, an unavailable authority
 // and an actual denial need different answers from the caller.
@@ -439,6 +447,11 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		cfEditFail(w, 405, "METHOD")
 		return
 	}
+	if option.CheckoutEnabledForRepo(repo.ID) && !option.V2GuardAvailable {
+		// Unknown is not "unlocked": recovery must not decide from a false negative.
+		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
+		return
+	}
 	id, _, err := cfEditActual(repo, repo.HeadCommitID, c.FilePath)
 	if err != nil {
 		cfEditFail(w, 404, "FILE_MISSING")
@@ -460,7 +473,7 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		}
 	}
 	out["sha256"] = hex.EncodeToString(hasher.Sum(nil))
-	if option.CloudFileCheckoutEnabled && option.V2GuardAvailable {
+	if option.CheckoutEnabledForRepo(repo.ID) && option.V2GuardAvailable {
 		// Checkout is explicitly enabled and its Guard is installed.
 		// Disabled Checkout leaves ordinary optimistic editing independent of Guard SQL.
 		var gID, owner sql.NullString
@@ -558,7 +571,7 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 	if action == "optimistic" {
 		// No persistent lock or Intent is allocated for an ordinary save.
 		// The Guard query is needed only on deployments with an installed Guard.
-		if option.CloudFileCheckoutEnabled && option.V2GuardAvailable {
+		if option.CheckoutEnabledForRepo(repo.ID) && option.V2GuardAvailable {
 			var held int
 			err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cf_edit_guard WHERE repo_id=? AND path_hash=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repo.ID, cfEditHash(c.FilePath)).Scan(&held)
 			if err != nil || held != 0 {
@@ -677,8 +690,17 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditFail(w, 403, "READ_ONLY_TICKET")
 		return
 	}
-	if (!option.CloudFileCheckoutEnabled || !option.V2GuardAvailable) && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
+	selected := option.CheckoutEnabledForRepo(c.RepoID)
+	if !selected && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
 		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
+		return
+	}
+	// OFF repositories do not depend on the Guard schema. OPTIONAL repositories
+	// must refuse all writes when Guard is unavailable, including optimistic edits.
+	// Status is refused too: unknown lock state must never look like "no lock",
+	// otherwise the Agent could treat a live Guard as absent during recovery.
+	if selected && !option.V2GuardAvailable && route != "read" {
+		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
 		return
 	}
 	write := route != "read" && route != "status"

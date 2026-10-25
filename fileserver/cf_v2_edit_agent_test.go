@@ -167,6 +167,87 @@ func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
 
 }
 
+func TestCFEditOptionalRepoWithoutGuardRefusesWrites(t *testing.T) {
+	oldAvailable, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+	oldSecret := option.JWTPrivateKey
+	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = false, true
+	repoID := uuid.New().String()
+	option.CloudFileCheckoutRepos = map[string]struct{}{repoID: {}}
+	option.JWTPrivateKey = "unit-test-secret"
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldEnabled, oldRepos
+		option.JWTPrivateKey = oldSecret
+	}()
+	now := time.Now()
+	ticket := cfEditClaims{
+		UID:      "uid-test",
+		RepoID:   repoID,
+		FilePath: "/design.step",
+		BaseID:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Mode:     "optimistic-edit",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "user@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket).SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Selected OPTIONAL repo: an unavailable Guard fails closed for ordinary writes too.
+	req := httptest.NewRequest("POST", "/cf-edit/v1/publish", nil)
+	req.Header.Set("Authorization", "Bearer "+signed)
+	req.Header.Set("X-CF-Action", "optimistic")
+	rec := httptest.NewRecorder()
+	cfEditAPI(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "GUARD_UNAVAILABLE") {
+		t.Fatalf("OPTIONAL without Guard must fail closed: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCFEditOptionalStatusUnknownGuardIsNotUnlocked(t *testing.T) {
+	oldAvailable, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+	oldSecret := option.JWTPrivateKey
+	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = false, true
+	repoID := uuid.New().String()
+	option.CloudFileCheckoutRepos = map[string]struct{}{repoID: {}}
+	option.JWTPrivateKey = "unit-test-secret"
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldEnabled, oldRepos
+		option.JWTPrivateKey = oldSecret
+	}()
+	now := time.Now()
+	ticket := cfEditClaims{
+		UID:      "uid-test",
+		RepoID:   repoID,
+		FilePath: "/design.step",
+		BaseID:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Mode:     "optimistic-edit",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "cloudfile-v2-edit",
+			Audience:  jwt.ClaimStrings{"cloudfile-edit-agent"},
+			Subject:   "user@auth.local",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket).SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recovery must see "unknown", never checked_out=false, when Guard is gone.
+	req := httptest.NewRequest("GET", "/cf-edit/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+signed)
+	rec := httptest.NewRecorder()
+	cfEditAPI(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "GUARD_UNAVAILABLE") {
+		t.Fatalf("OPTIONAL status without Guard must be explicit: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCFEditOrdinaryRequiresNoCheckoutTable(t *testing.T) {
 	cases := []struct {
 		mode, route, action string

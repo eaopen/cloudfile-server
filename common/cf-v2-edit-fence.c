@@ -8,6 +8,7 @@
 #include "common.h"
 #include "commit-mgr.h"
 #include "diff-simple.h"
+#include "log.h"
 #include "repo-mgr.h"
 #include "seafile-session.h"
 
@@ -46,9 +47,76 @@ path_touches(const char *changed, const char *guarded)
     return touches;
 }
 
-/* Schema is the sole Checkout capability source. Cache only for this native
- * process; installing/removing Guard requires a controlled restart. An SQL
- * failure is permanently fail-closed until restart, never an absent Guard. */
+/* Two policies only: OFF (default) and OPTIONAL (listed repository). Parse the
+ * startup configuration once; never query SQL for an OFF repository. */
+static gsize checkout_policy_state = 0;  /* 0=unread, 1=valid, 2=invalid */
+static GHashTable *checkout_repo_ids;
+
+static gboolean
+canonical_repo_id(const char *id)
+{
+    if (!id || strlen(id) != 36)
+        return FALSE;
+    for (int i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (id[i] != '-')
+                return FALSE;
+        } else if (!g_ascii_isdigit(id[i]) && !(id[i] >= 'a' && id[i] <= 'f')) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+int
+cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
+{
+    if (g_once_init_enter(&checkout_policy_state)) {
+        gboolean valid = TRUE;
+        GError *error = NULL;
+        gboolean enabled = session && session->config &&
+            g_key_file_get_boolean(session->config, "cloudfile",
+                                   "checkout_enabled", &error);
+        if (error) {
+            /* Missing setting means OFF; an explicitly invalid setting fails closed. */
+            valid = error->domain == G_KEY_FILE_ERROR &&
+                (error->code == G_KEY_FILE_ERROR_KEY_NOT_FOUND ||
+                 error->code == G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
+            g_clear_error(&error);
+        }
+        checkout_repo_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        if (valid && enabled) {
+            char *raw = g_key_file_get_string(session->config, "cloudfile",
+                                              "checkout_repo_ids", NULL);
+            if (raw && strlen(raw) > 8192)
+                valid = FALSE;
+            if (raw && *g_strstrip(raw)) {
+                char **parts = g_strsplit(raw, ",", -1);
+                for (char **p = parts; *p && valid; ++p) {
+                    char *id = g_strstrip(*p);
+                    if (!canonical_repo_id(id) ||
+                        g_hash_table_contains(checkout_repo_ids, id))
+                        valid = FALSE;
+                    else
+                        g_hash_table_add(checkout_repo_ids, g_strdup(id));
+                }
+                g_strfreev(parts);
+            }
+            g_free(raw);
+        }
+        if (!valid)
+            seaf_warning("CloudFile: invalid per-repo Checkout configuration; writes denied.\n");
+        g_once_init_leave(&checkout_policy_state, valid ? 1 : 2);
+    }
+    if (checkout_policy_state == 2)
+        return -1;
+    if (!repo_id)
+        return 0;
+    return g_hash_table_contains(checkout_repo_ids, repo_id) ? 1 : 0;
+}
+
+/* Schema is validated on guarded paths only. Its absence is a failure for an
+ * OPTIONAL repository, never a reason to bypass an active Checkout. */
 static gsize guard_schema_state = 0; /* 0=unread, 1=absent, 2=installed, 3=error */
 
 static gboolean
@@ -73,7 +141,7 @@ guard_available(struct _SeafileSession *session)
             guard_table_found, &found, 0);
         g_once_init_leave(&guard_schema_state, count < 0 ? 3 : found ? 2 : 1);
     }
-    return guard_schema_state == 3 ? -1 : guard_schema_state == 2 ? 1 : 0;
+    return guard_schema_state == 2 ? 1 : -1;
 }
 
 int
@@ -85,9 +153,12 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
 {
     if (!trans || !session || !repo_id || !old_commit_id || !new_commit_id)
         return -1;
+    int policy = cf_v2_edit_repo_checkout(session, repo_id);
+    if (policy <= 0)
+        return policy;
     int active = guard_available(session);
     if (active <= 0)
-        return active == 0 ? 0 : -1;
+        return -1;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
 

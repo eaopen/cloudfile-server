@@ -31,10 +31,31 @@ func TestCFV2EditTouchesPath(t *testing.T) {
 	}
 }
 
-func TestCFV2NoGuardNeedsNoDatabase(t *testing.T) {
-	old := option.V2GuardAvailable
+// Even with Checkout enabled elsewhere, OFF repositories do not require a DB.
+func TestCFV2OffRepoSkipsGuardSQL(t *testing.T) {
+	oldAvailable, oldOn, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos
+	}()
+	option.CloudFileCheckoutEnabled = true
+	option.CloudFileCheckoutRepos = map[string]struct{}{"11111111-1111-4111-8111-111111111111": {}}
 	option.V2GuardAvailable = false
-	defer func() { option.V2GuardAvailable = old }()
+	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "22222222-2222-4222-8222-222222222222", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "11111111-1111-4111-8111-111111111111", "", ""); err != errCFEditGuard {
+		t.Fatalf("selected repository should fail closed without Guard: %v", err)
+	}
+}
+
+func TestCFV2NoGuardNeedsNoDatabase(t *testing.T) {
+	oldAvailable, oldOn, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos
+	}()
+	option.V2GuardAvailable = false
+	option.CloudFileCheckoutEnabled = true
+	option.CloudFileCheckoutRepos = map[string]struct{}{}
 	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "", "", ""); err != nil {
 		t.Fatalf("absent Guard must make no database call: %v", err)
 	}
