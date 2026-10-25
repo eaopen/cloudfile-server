@@ -27,6 +27,17 @@ class ACLFinalLockScope(unittest.TestCase):
         self.assertIn("result = check_scope(trans, session, origin)", part)
         self.assertIn("return -1;", part)
 
+    def test_virtual_origin_proof_limit_resets_for_each_scope(self):
+        source = (ROOT / "common/cf-v2-acl.c").read_text(encoding="utf-8")
+        proof = source.split("static int proof_repo(", 1)[1].split(
+            "int cf_v2_acl_proof(", 1)[0]
+        self.assertIn("ctx->count = 0;", proof)
+        self.assertLess(proof.index("ctx->count = 0;"),
+                        proof.index("seaf_db_trans_foreach_selected_row"))
+        self.assertIn("if (rows < 0 || ctx->invalid || ctx->count > 4096)", proof)
+        self.assertNotIn("ctx->count - start", proof)
+        self.assertIn("return ctx->count < 4097;", source)
+
     def test_lock_order_and_acl_writer_contract_unchanged(self):
         branch = (ROOT / "common/branch-mgr.c").read_text(encoding="utf-8")
         update = branch.split("test_and_update_branch (", 1)[1]
