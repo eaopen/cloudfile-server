@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/haiwen/seafile-server/fileserver/diff"
 	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
@@ -124,7 +125,7 @@ func TestUploadGuardUsesReviewedPathQueryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := cfV2EditCheckUnscopedBranch(context.Background(), tx, "repo", "old", "new"); err != nil {
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", []*diff.DiffEntry{}); err != nil {
 		t.Fatal(err)
 	}
 	// Startup already qualified the schema: the commit path issues exactly one
@@ -158,7 +159,7 @@ func TestUploadGuardRefusesGuardFailures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !errors.Is(cfV2EditCheckUnscopedBranch(context.Background(), tx, "repo", "old", "new"), errCFEditGuard) {
+		if !errors.Is(cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", []*diff.DiffEntry{}), errCFEditGuard) {
 			t.Fatalf("unavailable or malformed guard was bypassed: %+v", f)
 		}
 		tx.Rollback()
