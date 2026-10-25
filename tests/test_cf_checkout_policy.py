@@ -46,7 +46,7 @@ class CheckoutPolicyContract(unittest.TestCase):
         self.assertIn('cf-v2-edit-fence.h', source)
         self.assertLess(body.index('cf_v2_edit_check_unscoped_branch'),
                         body.index('UPDATE Branch'))
-        self.assertLess(body.index('cf_v2_acl_final'),
+        self.assertLess(body.index('cf_v2_acl_proof(trans,'),
                         body.index('cf_v2_edit_check_unscoped_branch'))
         # A guard denial is permanent: same non-retryable class as ACL denial.
         self.assertIn('guard_result < 0', body)
