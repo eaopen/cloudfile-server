@@ -59,3 +59,26 @@ jobs:
               }
             fi
           done < <(git diff --name-only HEAD^ HEAD -- '*.go')
+
+      # One-time PR42 verification: no full Seafile build, database, or image build.
+      - name: Setup Go for PR42 compile
+        if: ${{ github.head_ref == 'fix/native-short-branch-transaction-20261025' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: fileserver/go.mod
+
+      - name: PR42 targeted C/Go compile
+        if: ${{ github.head_ref == 'fix/native-short-branch-transaction-20261025' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglib2.0-dev libjansson-dev libcurl4-openssl-dev libjwt-dev libsearpc-dev libmysqlclient-dev libhiredis-dev libevent-dev libarchive-dev libonig-dev uuid-dev > /dev/null
+          flags=(-DSEAFILE_SERVER -DFULL_FEATURE -Iinclude -Ilib -Icommon -Iserver)
+          read -ra pkgflags <<< "$(pkg-config --cflags glib-2.0 libsearpc jansson libcurl)"
+          for path in common/branch-mgr.c common/cf-v2-acl.c common/cf-v2-edit-fence.c; do
+            echo "Syntax compiling: $path"
+            gcc -fsyntax-only -Wall "${flags[@]}" "${pkgflags[@]}" "$path"
+          done
+          cd fileserver
+          go test . -run '^(TestCFACL|TestCfACL|TestCFV2|TestUploadGuard)' -count=1
