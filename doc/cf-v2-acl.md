@@ -61,7 +61,7 @@ Targeted Go tests: `go test . -run '^TestCFACL' -v` from `fileserver`.
 The opt-in `tests/test_cf_v2_acl_native.py` starts disposable real C/Go services
 and uses a disposable MariaDB schema plus the matching Hub policy, SQL store and
 internal DRF decision endpoint. Login/subject projection are explicit test doubles.
-It is not an IdP, TTL, Etech or production acceptance test. Run only in an isolated
+It is not an IdP, TTL, customer or production acceptance test. Run only in an isolated
 container with `CF_ACL_NATIVE_SOURCE`, `CF_ACL_HUB_SOURCE`, `CF_ACL_C_BINARY`,
 `CF_ACL_GO_BINARY`, and an isolated MariaDB reachable as `CF_ACL_DB_HOST`
 (default `db`, test-only root password `acl-test-only`).

@@ -2,7 +2,7 @@
 
 Needs built binaries, disposable MariaDB and Hub checkout. Uses real Hub policy,
 SQL store and internal DRF decision endpoint. Login/subject TTL are test adapters;
-this is NOT an IdP, Etech or production deployment acceptance test.
+this is NOT an IdP, customer or production deployment acceptance test.
 """
 import json
 import os
@@ -132,7 +132,7 @@ port=8082
                     try:
                         time.sleep(.2)
                         assert not pending.done(), 'native transfer bypassed the ACL mutation fence'
-                        restriction=Rule(plain,'/','etech','user','user','owner-uid','invisible',True,False)
+                        restriction=Rule(plain,'/','external','user','user','owner-uid','invisible',True,False)
                         restriction_revision=str(uuid4())
                         store.mutate(restriction,expected=None,revision=restriction_revision)
                     finally:
@@ -146,12 +146,12 @@ port=8082
                 seafile_api.remove_repo(plain)
                 seafile_api.remove_repo(target)
             revision=str(uuid4())
-            rule=Rule(repo,'/shared','etech','user','user','member-uid','rw',True,True)
+            rule=Rule(repo,'/shared','external','user','user','member-uid','rw',True,True)
             store.mutate(rule,expected=None,revision=revision)
             def change(permission):
                 nonlocal revision,rule
                 old=revision;revision=str(uuid4())
-                rule=Rule(repo,'/shared','etech','user','user','member-uid',permission,True,permission in ('r','rw'))
+                rule=Rule(repo,'/shared','external','user','user','member-uid',permission,True,permission in ('r','rw'))
                 store.mutate(rule,expected=old,revision=revision)
             revoke_after_preflight=threading.Event()
             def authority(username):
@@ -161,7 +161,7 @@ port=8082
                 # Closed after the request by Handler. Subjects come from this
                 # fixed test login adapter, never request-supplied groups.
                 current_connections.values.append(connection)
-                return Authority(username,principal=Principal('etech','member-uid' if username==member else 'owner-uid'),
+                return Authority(username,principal=Principal('external','member-uid' if username==member else 'owner-uid'),
                     rules=ACLStore(connection,schemas['files'],lambda:None),api=seafile_api)
             current_connections=threading.local()
             class Handler(BaseHTTPRequestHandler):
@@ -201,14 +201,14 @@ port=8082
                 reply=upload('proof.txt')
                 assert reply.status_code==200,(reply.status_code,reply.text,(root/'go.log').read_text()[-3000:])
                 checks.append('Go upload + final commit: directory-only rw')
-                shared_view=Authority(member,principal=Principal('etech','member-uid'),rules=store,api=seafile_api)
+                shared_view=Authority(member,principal=Principal('external','member-uid'),rules=store,api=seafile_api)
                 listed=shared_view.entries(repo,'/shared')
                 assert listed['root_path']=='/shared' and listed['data'][0]['name']=='proof.txt'
                 for hidden in ('/','/sibling'):
                     try:shared_view.entries(repo,hidden)
                     except PermissionError:pass
                     else:raise AssertionError('escaped shared root')
-                library_view=Authority(owner,principal=Principal('etech','owner-uid'),rules=store,api=seafile_api)
+                library_view=Authority(owner,principal=Principal('external','owner-uid'),rules=store,api=seafile_api)
                 assert library_view.entries(repo,'/')['root_path']=='/'
                 checks.append('Shared-root view versus native-library root uses identical authority')
                 url=f'http://127.0.0.1:8082/repos/{repo}/files/shared/proof.txt?op=download'

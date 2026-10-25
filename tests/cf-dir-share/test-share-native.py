@@ -25,7 +25,7 @@ REPO = '11111111-1111-4111-8111-111111111111'
 ALLOW = json.dumps(dict(allowed=True, contract='cf-acl-v1', permissions=['rw']))
 
 
-def grant(path='/shared/team', user='shared-user@etech.local', repo=REPO):
+def grant(path='/shared/team', user='shared-user@example.test', repo=REPO):
     unavailable = ctypes.c_int(0)
     pointer = lib.cf_v2_share_grant(repo.encode(), path.encode(), user.encode(),
                                     ctypes.byref(unavailable))
@@ -65,7 +65,7 @@ class DirectoryShareTests(unittest.TestCase):
         self.reply(['rw'])
         grant('/shared/team/design')
         self.assertEqual(json.loads(lib.fixture_payload()), dict(
-            username='shared-user@etech.local', repo_id=REPO,
+            username='shared-user@example.test', repo_id=REPO,
             checks=[dict(path='/shared/team/design', kind='dir', action='read')]))
 
     def test_a_trailing_slash_is_the_same_directory(self):
