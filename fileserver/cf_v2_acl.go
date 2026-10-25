@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -176,38 +177,124 @@ func cfACLChanges(changes []*diff.DiffEntry) ([]cfACLCheck, error) {
 	return checks, nil
 }
 
-// Branch(master) is locked by caller. ACLStore writers take the same lock first.
-// The supplied actor is request-authenticated, NEVER Commit.CreatorName.
-func cfACLFinal(ctx context.Context, tx *sql.Tx, repoID, oldID, newID, user string) error {
-	protected, err := cfACLProtected(ctx, tx, repoID)
-	if err != nil {
-		return errCFACL
+// Bounded optimistic SQL proof of the exact ACL row/revision set. The Hub's
+// reviewed ACL writers acquire Branch(master) before changing these rows.
+// The same digest taken with current locking reads in Branch's final short
+// transaction therefore detects intervening ACL adds/removes/edits.
+// No additional table, global policy epoch or cross-request decision cache.
+type cfACLProof struct {
+	Hash      [32]byte
+	Protected bool
+}
+
+type cfACLProofDB interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+}
+
+func cfACLCurrentProof(ctx context.Context, db cfACLProofDB, repoID string, locked bool) (cfACLProof, error) {
+	var out cfACLProof
+	if db == nil || len(repoID) != 36 {
+		return out, errCFACLUnavailable
 	}
-	if !protected {
-		return nil
+	var origin string
+	err := db.QueryRowContext(ctx, "SELECT origin_repo FROM VirtualRepo WHERE repo_id=?", repoID).Scan(&origin)
+	if err != nil && err != sql.ErrNoRows {
+		return out, errCFACLUnavailable
+	}
+	scopes := []string{repoID}
+	if err == nil {
+		if len(origin) != 36 || origin == repoID {
+			return out, errCFACLUnavailable
+		}
+		scopes = append(scopes, origin)
+	}
+	hasher := sha256.New()
+	query := "SELECT HEX(path_hash),subject_type,provider,namespace,external_id,revision " +
+		"FROM cf_dir_acl FORCE INDEX(PRIMARY) WHERE repo_id=? " +
+		"ORDER BY path_hash,subject_type,provider,namespace,external_id LIMIT 4097"
+	if locked {
+		query += " FOR UPDATE"
+	}
+	for _, scope := range scopes {
+		_, _ = io.WriteString(hasher, scope)
+		_, _ = hasher.Write([]byte{0})
+		rows, err := db.QueryContext(ctx, query, scope)
+		if err != nil {
+			return out, errCFACLUnavailable
+		}
+		n := 0
+		for rows.Next() {
+			var cols [6]string
+			if err := rows.Scan(&cols[0], &cols[1], &cols[2], &cols[3], &cols[4], &cols[5]); err != nil {
+				rows.Close()
+				return out, errCFACLUnavailable
+			}
+			n++
+			if n > 4096 {
+				rows.Close()
+				return out, errCFACLUnavailable
+			}
+			for _, value := range cols {
+				_, _ = io.WriteString(hasher, value)
+				_, _ = hasher.Write([]byte{0})
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return out, errCFACLUnavailable
+		}
+		if n != 0 {
+			out.Protected = true
+		}
+	}
+	copy(out.Hash[:], hasher.Sum(nil))
+	return out, nil
+}
+
+// Phase A runs before BeginTx: current protected-scope check, one diff and one
+// Hub write authorization with authenticated request actor. No Branch lock.
+func cfACLPreflight(ctx context.Context, repoID, oldID, newID, user string) (cfACLProof, error) {
+	proof, err := cfACLCurrentProof(ctx, seafileDB, repoID, false)
+	if err != nil {
+		return proof, err
+	}
+	if !proof.Protected {
+		return proof, nil
 	}
 	if user == "" {
-		return errCFACL
+		return proof, errCFACL
 	}
 	oldCommit, err := commitmgr.Load(repoID, oldID)
 	if err != nil {
-		return errCFACL
+		return proof, errCFACL
 	}
 	newCommit, err := commitmgr.Load(repoID, newID)
 	if err != nil {
-		return errCFACL
+		return proof, errCFACL
 	}
 	var changes []*diff.DiffEntry
 	if diff.DiffCommits(oldCommit, newCommit, &changes, false) != nil {
-		return errCFACL
+		return proof, errCFACL
 	}
 	checks, err := cfACLChanges(changes)
+	if err != nil || len(checks) == 0 {
+		return proof, errCFACL
+	}
+	return proof, cfACLAuthorize(ctx, repoID, user, checks)
+}
+
+// Phase B runs under Branch(master) after its HEAD CAS read. There is no
+// remote RPC, commit diff, or repeated policy evaluation under the lock.
+// A changed ACL set invalidates preflight; the client must re-authorize.
+func cfACLFinal(ctx context.Context, tx *sql.Tx, repoID string, expected cfACLProof) error {
+	current, err := cfACLCurrentProof(ctx, tx, repoID, true)
 	if err != nil {
 		return err
 	}
-	// No-change commits still need current write authority; do not bypass on IDs.
-	if len(checks) == 0 {
+	if current.Hash != expected.Hash {
 		return errCFACL
 	}
-	return cfACLAuthorize(ctx, repoID, user, checks)
+	return nil
 }

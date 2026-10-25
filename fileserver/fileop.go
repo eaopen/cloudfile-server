@@ -2298,6 +2298,26 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 }
 
 func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID string, checkGC bool, lastGCID string, actor ...string) (gcConflict bool, err error) {
+	// Phase A: read the ACL revision set, compute the concrete change and
+	// consult Hub BEFORE acquiring any Branch or GC row lock. An ACL writer
+	// concurrent with this work changes the proof and invalidates publication.
+	var aclActor string
+	if len(actor) == 1 {
+		aclActor = actor[0]
+	}
+	preCtx, preCancel := context.WithTimeout(context.Background(), option.DBOpTimeout+5*time.Second)
+	proof, err := cfACLPreflight(preCtx, repoID, oldCommitID, newCommitID, aclActor)
+	preCancel()
+	if err != nil {
+		return false, err
+	}
+	guardChanges, err := cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID)
+	if err != nil {
+		return false, err
+	}
+
+	// Phase B: the final native transaction is short. It checks HEAD and
+	// the exact ACL revision proof and retains the existing Guard fence.
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	trans, err := seafileDB.BeginTx(ctx, nil)
@@ -2346,17 +2366,13 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		return false, ErrConflict
 	}
 
-	// Final and transactional: an upload preflight cannot protect against a
-	// Checkout acquired during indexing. Never publish through an old token.
-	var aclActor string
-	if len(actor) == 1 {
-		aclActor = actor[0]
-	}
-	if err := cfACLFinal(ctx, trans, repoID, oldCommitID, newCommitID, aclActor); err != nil {
+	// ACL rules are immutable during this final Branch transaction because
+	// reviewed writers also acquire Branch first. No HTTP or commit diff here.
+	if err := cfACLFinal(ctx, trans, repoID, proof); err != nil {
 		trans.Rollback()
 		return false, err
 	}
-	if err := cfV2EditCheckUnscopedBranch(ctx, trans, repoID, oldCommitID, newCommitID); err != nil {
+	if err := cfV2EditCheckPreparedBranch(ctx, trans, repoID, guardChanges); err != nil {
 		trans.Rollback()
 		return false, err
 	}

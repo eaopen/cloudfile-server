@@ -68,6 +68,104 @@ static int check(SeafDBTrans *trans, struct _SeafileSession *session, const char
     return result;
 }
 
+/* An ACL management write takes Branch(master) before mutating cf_dir_acl.
+ * A preflight snapshot therefore remains valid at final publication ONLY
+ * when the same ordered row/revision proof is observed after locking Branch.
+ * Current locking reads avoid old REPEATABLE READ snapshots and prevent an
+ * in-flight direct ACL mutation from being mistaken for an empty library.
+ *
+ * This deliberately does not cache authorization or create an ACL epoch table.
+ * UUID revisions are replaced on each reviewed ACL change. */
+typedef struct {
+    GChecksum *digest;
+    guint count;
+    gboolean invalid;
+} CfACLProofRows;
+
+static gboolean proof_row(SeafDBRow *row, void *data)
+{
+    CfACLProofRows *ctx = data;
+    const guchar separator = 0;
+    for (int i = 0; i < 6; ++i) {
+        const char *value = seaf_db_row_get_column_text(row, i);
+        if (!value) {
+            ctx->invalid = TRUE;
+            return FALSE;
+        }
+        g_checksum_update(ctx->digest, (const guchar *)value, strlen(value));
+        g_checksum_update(ctx->digest, &separator, 1);
+    }
+    ++ctx->count;
+    return ctx->count < 4097;
+}
+
+static int proof_repo(SeafDBTrans *trans, struct _SeafileSession *session,
+                      const char *repo_id, CfACLProofRows *ctx,
+                      gboolean *has_rules)
+{
+    static const char *sql =
+        "SELECT HEX(path_hash),subject_type,provider,namespace,external_id,revision "
+        "FROM cf_dir_acl FORCE INDEX(PRIMARY) WHERE repo_id=? "
+        "ORDER BY path_hash,subject_type,provider,namespace,external_id LIMIT 4097";
+    char *locking = trans ? g_strconcat(sql, " FOR UPDATE", NULL) : NULL;
+    const guchar separator = 0;
+    g_checksum_update(ctx->digest, (const guchar *)repo_id, strlen(repo_id));
+    g_checksum_update(ctx->digest, &separator, 1);
+    guint start = ctx->count;
+    int rows = trans
+        ? seaf_db_trans_foreach_selected_row(trans, locking, proof_row, ctx,
+                                              1, "string", repo_id)
+        : seaf_db_statement_foreach_row(session->db, sql, proof_row, ctx,
+                                       1, "string", repo_id);
+    g_free(locking);
+    if (rows < 0 || ctx->invalid || ctx->count - start > 4096)
+        return -1;
+    if (has_rules && ctx->count != start)
+        *has_rules = TRUE;
+    return 0;
+}
+
+int cf_v2_acl_proof(SeafDBTrans *trans, struct _SeafileSession *session,
+                    const char *repo_id, char proof[65], gboolean *protected)
+{
+    if (!session || !session->db || !repo_id || strlen(repo_id) != 36 ||
+        !proof || seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
+        return -1;
+    if (protected)
+        *protected = FALSE;
+    GChecksum *digest = g_checksum_new(G_CHECKSUM_SHA256);
+    if (!digest)
+        return -1;
+    CfACLProofRows rows = {digest, 0, FALSE};
+    gboolean has_rules = FALSE;
+    int result = proof_repo(trans, session, repo_id, &rows, &has_rules);
+    if (result < 0)
+        goto done;
+    char *origin = NULL;
+    int origins = trans
+        ? seaf_db_trans_foreach_selected_row(trans, origin_query,
+                                              origin_found, &origin,
+                                              1, "string", repo_id)
+        : seaf_db_statement_foreach_row(session->db, origin_query,
+                                        origin_found, &origin,
+                                        1, "string", repo_id);
+    if (origins < 0 || origins > 1 ||
+        (origins == 1 && (!origin || strlen(origin) != 36 ||
+                          !strcmp(origin, repo_id))))
+        result = -1;
+    else if (origins == 1)
+        result = proof_repo(trans, session, origin, &rows, &has_rules);
+    g_free(origin);
+    if (result == 0) {
+        g_strlcpy(proof, g_checksum_get_string(digest), 65);
+        if (protected)
+            *protected = has_rules;
+    }
+done:
+    g_checksum_free(digest);
+    return result;
+}
+
 /* Native transfer and Hub ACL mutations share per-library advisory locks.
  * Keep the dedicated connection until synchronous publication completes: an
  * empty ACL snapshot alone would race a newly installed source restriction. */
@@ -332,15 +430,10 @@ scoped_status_supported (DiffEntry *de)
 }
 
 int
-cf_v2_acl_final_scoped (SeafDBTrans *trans, struct _SeafileSession *session,
-                        const char *repo_id, const char *old_id,
-                        const char *new_id, const char *actor)
+cf_v2_acl_preflight_scoped (struct _SeafileSession *session,
+                            const char *repo_id, const char *old_id,
+                            const char *new_id, const char *actor)
 {
-    if (!trans) return -1;
-
-    int state = cf_v2_acl_final (trans, session, repo_id);
-    if (state == 0) return 0;
-    if (state != -2) return -1;
 
     /* Protected scope: qualify the concrete change. A missing actor or an
      * unreadable commit pair never grants. The Hub authority re-reads the
@@ -429,4 +522,22 @@ done:
     if (next) seaf_commit_unref (next);
     seaf_repo_unref (repo);
     return result;
+}
+
+/* Compatibility wrapper for any remaining callers that already own the
+ * Branch transaction. New native CAS publication performs the same scoped
+ * work in preflight and checks only cf_v2_acl_proof() under the final lock. */
+int
+cf_v2_acl_final_scoped (SeafDBTrans *trans, struct _SeafileSession *session,
+                        const char *repo_id, const char *old_id,
+                        const char *new_id, const char *actor)
+{
+    if (!trans)
+        return -1;
+    int state = cf_v2_acl_final(trans, session, repo_id);
+    if (state == 0)
+        return 0;
+    return state == -2
+        ? cf_v2_acl_preflight_scoped(session, repo_id, old_id, new_id, actor)
+        : -1;
 }

@@ -469,6 +469,45 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (check_gc)
         *gc_conflict = FALSE;
 
+    /* Phase A: no SQL transaction/Branch lock. Read the exact ACL row
+     * revisions, then qualify the already-created commit against Hub once.
+     * Hub write decisions bypass its cross-request TTL cache. An ACL change
+     * during this phase will invalidate the proof under Branch below. */
+    char acl_before[65] = {0};
+    gboolean acl_protected = FALSE;
+    if (cf_v2_acl_proof(NULL, mgr->seaf, branch->repo_id,
+                        acl_before, &acl_protected) < 0)
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+    if (acl_protected) {
+        char *actor = NULL;
+        SeafRepo *acl_repo = seaf_repo_manager_get_repo(mgr->seaf->repo_mgr,
+                                                        branch->repo_id);
+        if (acl_repo) {
+            SeafCommit *candidate = seaf_commit_manager_get_commit(
+                mgr->seaf->commit_mgr, branch->repo_id, acl_repo->version,
+                branch->commit_id);
+            if (candidate) {
+                actor = g_strdup(candidate->creator_name);
+                seaf_commit_unref(candidate);
+            }
+            seaf_repo_unref(acl_repo);
+        }
+        int allowed = cf_v2_acl_preflight_scoped(mgr->seaf, branch->repo_id,
+                                                  old_commit_id, branch->commit_id,
+                                                  actor ? actor : "");
+        g_free(actor);
+        if (allowed < 0)
+            return SEAF_BRANCH_UPDATE_ACL_DENIED;
+    }
+
+    /* OPTIONAL Checkout computes its candidate diff in Phase A too, so
+     * Guard's final fence only locks/checks current rows under Branch. */
+    g_autoptr(CfV2EditPrepared) guard_changes =
+        cf_v2_edit_prepare_unscoped_branch(mgr->seaf, branch->repo_id,
+                                            old_commit_id, branch->commit_id);
+    if (!guard_changes)
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+
     trans = seaf_db_begin_transaction (mgr->seaf->db);
     if (!trans)
         return -1;
@@ -535,38 +574,17 @@ test_and_update_branch (SeafBranchManager *mgr,
         return SEAF_BRANCH_UPDATE_HEAD_CONFLICT;
     }
 
-    /* Branch is locked before consulting the current authority. ACL writers
-     * acquire this same lock, serializing SQL changes with publication.
-     * Hub decisions retain their configured, bounded cache lifetime.
-     * Native whole-repository commits carry no actor/path scope in the RPC
-     * seam (del/move/rename/mkdir pass no guard context), so when the plain
-     * final check reports a protected scope, qualify the concrete change
-     * against the V2 authority instead of refusing outright. The commit
-     * author acts as the actor; the Hub re-checks per-path write permission
-     * against the V2 store, so a forged author cannot borrow grants. */
-    int acl_result = cf_v2_acl_final(trans, mgr->seaf, branch->repo_id);
-    if (acl_result == -2) {
-        char *actor = NULL;
-        SeafRepo *acl_repo = seaf_repo_manager_get_repo (mgr->seaf->repo_mgr,
-                                                         branch->repo_id);
-        if (acl_repo) {
-            SeafCommit *head = seaf_commit_manager_get_commit (
-                mgr->seaf->commit_mgr, branch->repo_id,
-                acl_repo->version, branch->commit_id);
-            if (head) {
-                actor = g_strdup (head->creator_name);
-                seaf_commit_unref (head);
-            }
-            seaf_repo_unref (acl_repo);
-        }
-        acl_result = cf_v2_acl_final_scoped (trans, mgr->seaf, branch->repo_id,
-                                             old_commit_id, branch->commit_id,
-                                             actor ? actor : "");
-        g_free (actor);
-    }
-    if (acl_result < 0) {
-        seaf_db_rollback (trans);
-        seaf_db_trans_close (trans);
+    /* Phase B: Branch is already locked. The Hub's ACL writers take the
+     * same Branch lock before changing cf_dir_acl. Verify the exact bounded
+     * row/revision proof with a CURRENT read; no remote HTTP and no ACL diff
+     * is permitted in this final transaction. Any policy change refuses this
+     * publication, so the client can create a fresh authorization. */
+    char acl_after[65] = {0};
+    if (cf_v2_acl_proof(trans, mgr->seaf, branch->repo_id,
+                        acl_after, NULL) < 0 ||
+        strcmp(acl_before, acl_after) != 0) {
+        seaf_db_rollback(trans);
+        seaf_db_trans_close(trans);
         return SEAF_BRANCH_UPDATE_ACL_DENIED;
     }
 
@@ -576,7 +594,8 @@ test_and_update_branch (SeafBranchManager *mgr,
      * unless the guarded path check passes. OFF returns 0 without SQL.
      * Denial is permanent (not a HEAD race), so reuse the ACL-denied code. */
     int guard_result = cf_v2_edit_check_unscoped_branch (
-        trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id);
+        trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id,
+        guard_changes);
     if (guard_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);

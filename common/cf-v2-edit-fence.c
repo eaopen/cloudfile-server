@@ -1,7 +1,8 @@
 /* CF-EDIT V2: deny unscoped native publications touching reserved paths.
  *
- * All reads happen *within* the native Branch CAS transaction, after locking
- * Branch(master). The Checkout service uses the same Branch -> Guard order.
+ * The candidate diff is prepared before Branch CAS. Only current Guard rows
+ * are locked and checked after Branch(master) in the final short transaction.
+ * Checkout writers use the same Branch -> Guard lock order.
  * This is a fail-closed fence, NOT an authorization path for Commit/Checkin.
  */
 #include "cf-v2-edit-fence.h"
@@ -144,20 +145,90 @@ guard_available(struct _SeafileSession *session)
     return guard_schema_state == 2 ? 1 : -1;
 }
 
+/* The Guard policy is OFF by default. For OPTIONAL libraries, resolve the
+ * candidate commit's changed paths before opening the final Branch transaction.
+ * DiffEntry objects are immutable for this candidate: a racing HEAD is caught
+ * by the final Branch CAS, and new Guard reservations are read under Branch. */
+struct _CfV2EditPrepared {
+    char *repo_id;
+    char *old_id;
+    char *new_id;
+    GList *changes;
+};
+
+void
+cf_v2_edit_prepared_free(CfV2EditPrepared *prepared)
+{
+    if (!prepared)
+        return;
+    g_list_free_full(prepared->changes, (GDestroyNotify)diff_entry_free);
+    g_free(prepared->repo_id);
+    g_free(prepared->old_id);
+    g_free(prepared->new_id);
+    g_free(prepared);
+}
+
+CfV2EditPrepared *
+cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
+                                   const char *repo_id,
+                                   const char *old_commit_id,
+                                   const char *new_commit_id)
+{
+    if (!session || !repo_id || !old_commit_id || !new_commit_id)
+        return NULL;
+    int policy = cf_v2_edit_repo_checkout(session, repo_id);
+    if (policy < 0)
+        return NULL;
+    CfV2EditPrepared *prepared = g_new0(CfV2EditPrepared, 1);
+    prepared->repo_id = g_strdup(repo_id);
+    prepared->old_id = g_strdup(old_commit_id);
+    prepared->new_id = g_strdup(new_commit_id);
+    if (policy == 0 || !strcmp(old_commit_id, new_commit_id))
+        return prepared;
+    if (guard_available(session) <= 0)
+        goto fail;
+    SeafRepo *repo = seaf_repo_manager_get_repo(session->repo_mgr, repo_id);
+    if (!repo)
+        goto fail;
+    SeafCommit *old_commit = seaf_commit_manager_get_commit(
+        session->commit_mgr, repo_id, repo->version, old_commit_id);
+    SeafCommit *new_commit = seaf_commit_manager_get_commit(
+        session->commit_mgr, repo_id, repo->version, new_commit_id);
+    int result = (old_commit && new_commit)
+        ? diff_commit_roots(repo->store_id, repo->version,
+                            old_commit->root_id, new_commit->root_id,
+                            &prepared->changes, FALSE)
+        : -1;
+    if (old_commit)
+        seaf_commit_unref(old_commit);
+    if (new_commit)
+        seaf_commit_unref(new_commit);
+    seaf_repo_unref(repo);
+    if (result < 0)
+        goto fail;
+    return prepared;
+fail:
+    cf_v2_edit_prepared_free(prepared);
+    return NULL;
+}
+
 int
 cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
                                  struct _SeafileSession *session,
                                  const char *repo_id,
                                  const char *old_commit_id,
-                                 const char *new_commit_id)
+                                 const char *new_commit_id,
+                                 const CfV2EditPrepared *prepared)
 {
-    if (!trans || !session || !repo_id || !old_commit_id || !new_commit_id)
+    if (!trans || !session || !repo_id || !old_commit_id || !new_commit_id ||
+        !prepared || g_strcmp0(prepared->repo_id, repo_id) ||
+        g_strcmp0(prepared->old_id, old_commit_id) ||
+        g_strcmp0(prepared->new_id, new_commit_id))
         return -1;
     int policy = cf_v2_edit_repo_checkout(session, repo_id);
     if (policy <= 0)
         return policy;
-    int active = guard_available(session);
-    if (active <= 0)
+    if (guard_available(session) <= 0)
         return -1;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
@@ -171,27 +242,9 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
     int rc = -1;
     if (count < 0 || guards.invalid)
         goto done;
-    if (guards.paths->len == 0 || !strcmp(old_commit_id, new_commit_id)) {
-        rc = 0;
-        goto done;
-    }
-
-    SeafRepo *repo = seaf_repo_manager_get_repo(session->repo_mgr, repo_id);
-    if (!repo)
-        goto done;
-    SeafCommit *old_commit = seaf_commit_manager_get_commit(
-        session->commit_mgr, repo_id, repo->version, old_commit_id);
-    SeafCommit *new_commit = seaf_commit_manager_get_commit(
-        session->commit_mgr, repo_id, repo->version, new_commit_id);
-    GList *changes = NULL;
-    if (!old_commit || !new_commit ||
-        diff_commit_roots(repo->store_id, repo->version,
-                          old_commit->root_id, new_commit->root_id,
-                          &changes, FALSE) < 0)
-        goto cleanup;
-
     rc = 0;
-    for (GList *entry = changes; entry != NULL && rc == 0; entry = entry->next) {
+    for (GList *entry = prepared->changes; entry != NULL && rc == 0;
+         entry = entry->next) {
         DiffEntry *delta = entry->data;
         for (guint i = 0; i < guards.paths->len; ++i) {
             const char *path = g_ptr_array_index(guards.paths, i);
@@ -202,14 +255,6 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
             }
         }
     }
-
-cleanup:
-    g_list_free_full(changes, (GDestroyNotify)diff_entry_free);
-    if (old_commit)
-        seaf_commit_unref(old_commit);
-    if (new_commit)
-        seaf_commit_unref(new_commit);
-    seaf_repo_unref(repo);
 done:
     g_ptr_array_free(guards.paths, TRUE);
     return rc;

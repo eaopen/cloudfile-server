@@ -154,7 +154,7 @@ port=8082
                 rule=Rule(repo,'/shared','external','user','user','member-uid',permission,True,permission in ('r','rw'))
                 store.mutate(rule,expected=old,revision=revision)
             revoke_after_preflight=threading.Event()
-            def authority(username):
+            def authority(username, **kwargs):
                 account=ccnet_api.get_emailuser(username)
                 if not account or not account.is_active:raise PermissionError()
                 connection=pymysql.connect(**options)
