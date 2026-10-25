@@ -16,8 +16,7 @@ int cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_i
 typedef struct _CfV2EditPrepared CfV2EditPrepared;
 CfV2EditPrepared *cf_v2_edit_prepare_unscoped_branch(
     struct _SeafileSession *session, const char *repo_id,
-    const char *old_commit_id, const char *new_commit_id,
-    const CfV2EditPrepared *prepared);
+    const char *old_commit_id, const char *new_commit_id);
 void cf_v2_edit_prepared_free(CfV2EditPrepared *prepared);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2EditPrepared, cf_v2_edit_prepared_free)
 
@@ -26,6 +25,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2EditPrepared, cf_v2_edit_prepared_free)
  * -1: guarded/conflicting/unverifiable; caller MUST rollback. */
 int cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
     struct _SeafileSession *session, const char *repo_id,
-    const char *old_commit_id, const char *new_commit_id);
+    const char *old_commit_id, const char *new_commit_id,
+    const CfV2EditPrepared *prepared);
 
 #endif
