@@ -20,6 +20,19 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2ACLTransfer, cf_v2_acl_transfer_free)
 int cf_v2_acl_public_link_scope(struct _SeafileSession *session,
                                 const char *repo, const char *path,
                                 gboolean subtree);
+/* Optimistic ACL proof for the native two-phase Branch publication:
+ * read a bounded, ordered hash of ALL ACL row keys+revisions for the library
+ * and its optional CE virtual origin. No HTTP, no permission decision here.
+ * With trans!=NULL, use current locking reads AFTER Branch(master) is locked.
+ * 0=success; negative=unavailable. proof[65] is a SHA-256 hex digest. */
+int cf_v2_acl_proof(SeafDBTrans *trans, struct _SeafileSession *session,
+                    const char *repo_id, char proof[65], gboolean *protected);
+
+/* Expensive diff and current Hub write authorization run before acquiring
+ * Branch(master). The final short transaction only validates the proof. */
+int cf_v2_acl_preflight_scoped(struct _SeafileSession *session,
+                              const char *repo_id, const char *old_id,
+                              const char *new_id, const char *actor);
 int cf_v2_acl_unscoped(struct _SeafileSession *session, const char *repo_id);
 int cf_v2_acl_final(SeafDBTrans *trans, struct _SeafileSession *session,
                     const char *repo_id);
