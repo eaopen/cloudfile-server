@@ -2311,6 +2311,10 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	if err != nil {
 		return false, err
 	}
+	guardChanges, err := cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID)
+	if err != nil {
+		return false, err
+	}
 
 	// Phase B: the final native transaction is short. It checks HEAD and
 	// the exact ACL revision proof and retains the existing Guard fence.
@@ -2368,7 +2372,7 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		trans.Rollback()
 		return false, err
 	}
-	if err := cfV2EditCheckUnscopedBranch(ctx, trans, repoID, oldCommitID, newCommitID); err != nil {
+	if err := cfV2EditCheckPreparedBranch(ctx, trans, repoID, guardChanges); err != nil {
 		trans.Rollback()
 		return false, err
 	}
