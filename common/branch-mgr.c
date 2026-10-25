@@ -500,6 +500,14 @@ test_and_update_branch (SeafBranchManager *mgr,
             return SEAF_BRANCH_UPDATE_ACL_DENIED;
     }
 
+    /* OPTIONAL Checkout computes its candidate diff in Phase A too, so
+     * Guard's final fence only locks/checks current rows under Branch. */
+    g_autoptr(CfV2EditPrepared) guard_changes =
+        cf_v2_edit_prepare_unscoped_branch(mgr->seaf, branch->repo_id,
+                                            old_commit_id, branch->commit_id);
+    if (!guard_changes)
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+
     trans = seaf_db_begin_transaction (mgr->seaf->db);
     if (!trans)
         return -1;
@@ -586,7 +594,8 @@ test_and_update_branch (SeafBranchManager *mgr,
      * unless the guarded path check passes. OFF returns 0 without SQL.
      * Denial is permanent (not a HEAD race), so reuse the ACL-denied code. */
     int guard_result = cf_v2_edit_check_unscoped_branch (
-        trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id);
+        trans, mgr->seaf, branch->repo_id, old_commit_id, branch->commit_id,
+        guard_changes);
     if (guard_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
