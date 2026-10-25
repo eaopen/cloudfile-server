@@ -34,7 +34,9 @@ func TestCFV2EditTouchesPath(t *testing.T) {
 // Even with Checkout enabled elsewhere, OFF repositories do not require a DB.
 func TestCFV2OffRepoSkipsGuardSQL(t *testing.T) {
 	oldAvailable, oldOn, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
-	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos }()
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos
+	}()
 	option.CloudFileCheckoutEnabled = true
 	option.CloudFileCheckoutRepos = map[string]struct{}{"11111111-1111-4111-8111-111111111111": {}}
 	option.V2GuardAvailable = false
@@ -48,7 +50,9 @@ func TestCFV2OffRepoSkipsGuardSQL(t *testing.T) {
 
 func TestCFV2NoGuardNeedsNoDatabase(t *testing.T) {
 	oldAvailable, oldOn, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
-	defer func() { option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos }()
+	defer func() {
+		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos
+	}()
 	option.V2GuardAvailable = false
 	option.CloudFileCheckoutEnabled = true
 	option.CloudFileCheckoutRepos = map[string]struct{}{}

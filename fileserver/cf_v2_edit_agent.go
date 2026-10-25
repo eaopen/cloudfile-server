@@ -73,6 +73,7 @@ func cfEditHex(s string, size int) bool {
 	return true
 }
 func cfEditHash(s string) []byte { sum := sha256.Sum256([]byte(s)); return sum[:] }
+
 // Record only business state changes absent from native CE Activity.
 // Sharing the Guard/Branch transaction makes the event truthful without
 // an Outbox, duplicate file-commit log or a second audit database.
@@ -116,6 +117,7 @@ func cfEditClaimsFor(r *http.Request) (*cfEditClaims, error) {
 	}
 	return c, nil
 }
+
 // Every refusal here is mapped to one HTTP code by the handler, so the reason
 // has to travel with the error: an unsupported repo, an unavailable authority
 // and an actual denial need different answers from the caller.
