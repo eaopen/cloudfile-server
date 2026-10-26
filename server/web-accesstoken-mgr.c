@@ -15,6 +15,8 @@
 #include "log.h"
 #ifdef FULL_FEATURE
 #include "cf-v2-acl.h"
+#include "seafile-rpc.h"
+#include <jansson.h>
 #endif
 
 #define CLEANING_INTERVAL_MSEC 1000*300	/* 5 minutes */
@@ -237,11 +239,101 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     return t;
 }
 
+#ifdef FULL_FEATURE
+/* Native ZIP payloads carry real paths already. Bind only after checking every
+ * selected object; merely exempting ZIP from the unscoped guard leaks subtrees. */
+static gboolean
+zip_path_valid (const char *path)
+{
+    if (!path || path[0] != '/' || strlen(path) > 4096 ||
+        !g_utf8_validate(path, -1, NULL) || strstr(path, "//") ||
+        strchr(path, '\\') || (strlen(path) > 1 && g_str_has_suffix(path, "/")))
+        return FALSE;
+    gchar **parts = g_strsplit(path, "/", -1);
+    gboolean valid = TRUE;
+    for (int i = 0; parts[i]; ++i)
+        if (!strcmp(parts[i], ".") || !strcmp(parts[i], "..")) valid = FALSE;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        if (*p < 32 || *p == 127) valid = FALSE;
+    g_strfreev(parts);
+    return valid;
+}
+
+static char *
+zip_download_scope (const char *repo_id, const char *payload,
+                    const char *op, const char *username, GError **error)
+{
+    json_t *obj = json_loads(payload, JSON_REJECT_DUPLICATES, NULL);
+    const char *parent = json_string_value(json_object_get(obj, "parent_dir"));
+    gboolean directory = !strcmp(op, "download-dir");
+    json_t *names = directory ? json_array() : json_object_get(obj, "file_list");
+    if (directory) {
+        json_t *name = json_object_get(obj, "dir_name");
+        if (name) json_array_append(names, name);
+    } else {
+        json_incref(names);
+    }
+    char *scope = NULL;
+    if (!username || !*username || !zip_path_valid(parent) ||
+        !json_is_array(names) || !json_array_size(names) || json_array_size(names) > 4096)
+        goto invalid;
+    size_t i;
+    json_t *name;
+    json_array_foreach(names, i, name) {
+        const char *entry = json_string_value(name);
+        if (!entry || !*entry || strchr(entry, '/')) goto invalid;
+        char *path = g_build_filename(parent, entry, NULL);
+        if (!zip_path_valid(path)) { g_free(path); goto invalid; }
+        /* Bind the actual directory object, never an unrelated snapshot in an
+         * otherwise authorized payload. Multi-selection must not skip misses. */
+        if (directory) {
+            char *id = seafile_get_dir_id_by_path(repo_id, path, error);
+            gboolean matches = id && !g_strcmp0(id,
+                json_string_value(json_object_get(obj, "obj_id")));
+            g_free(id);
+            if (!matches) { g_free(path); goto invalid; }
+        } else {
+            GObject *entry_obj = seafile_get_dirent_by_path(repo_id, path, error);
+            if (!entry_obj) { g_free(path); goto invalid; }
+            g_object_unref(entry_obj);
+        }
+        /* Reuse native whole-subtree denial, including policy/SQL failure.
+         * One denied child must not produce a partial successful archive. */
+        char *restricted = seafile_cf_find_restricted_path(repo_id, path, username, error);
+        gboolean denied = restricted != NULL || (error && *error);
+        g_free(restricted);
+        if (denied) { g_free(path); goto invalid; }
+        if (directory) scope = path;
+        else g_free(path);
+    }
+    if (!directory) scope = g_strdup(parent);
+    goto done;
+invalid:
+    if (!error || !*error)
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                    "Invalid or unauthorized ZIP paths");
+done:
+    json_decref(names);
+    json_decref(obj);
+    return scope;
+}
+#endif
+
 char *
 seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     const char *repo_id, const char *obj_id, const char *op,
     const char *username, int use_onetime, GError **error)
 {
+#ifdef FULL_FEATURE
+    if (!strcmp(op, "download-dir") || !strcmp(op, "download-multi")) {
+        char *scope = zip_download_scope(repo_id, obj_id, op, username, error);
+        if (!scope) return NULL;
+        char *token = issue_access_token(mgr, repo_id, obj_id, op, username,
+                                         use_onetime, scope, error);
+        g_free(scope);
+        return token;
+    }
+#endif
     return issue_access_token (mgr, repo_id, obj_id, op, username,
                                use_onetime, NULL, error);
 }
