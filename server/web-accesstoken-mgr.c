@@ -261,27 +261,6 @@ zip_path_valid (const char *path)
     return valid;
 }
 
-/* A selection is a path relative to parent_dir. Nested selections are part of
- * the native ZIP contract (seahub builds 'dir/name' entries and the Go archiver
- * accepts them), so an entry may contain '/', but it must stay relative and
- * canonical: no absolute path, no '..'/'.', no empty segment. */
-static gboolean
-zip_entry_valid (const char *entry)
-{
-    if (!entry || !*entry || entry[0] == '/' || strlen(entry) > 4096 ||
-        !g_utf8_validate(entry, -1, NULL) || strstr(entry, "//") ||
-        strchr(entry, '\\') || g_str_has_suffix(entry, "/"))
-        return FALSE;
-    gchar **parts = g_strsplit(entry, "/", -1);
-    gboolean valid = TRUE;
-    for (int i = 0; parts[i]; ++i)
-        if (!strcmp(parts[i], ".") || !strcmp(parts[i], "..")) valid = FALSE;
-    for (const unsigned char *p = (const unsigned char *)entry; *p; ++p)
-        if (*p < 32 || *p == 127) valid = FALSE;
-    g_strfreev(parts);
-    return valid;
-}
-
 static char *
 zip_download_scope (const char *repo_id, const char *payload,
                     const char *op, const char *username, GError **error)
@@ -304,8 +283,10 @@ zip_download_scope (const char *repo_id, const char *payload,
     json_t *name;
     json_array_foreach(names, i, name) {
         const char *entry = json_string_value(name);
-        if (!zip_entry_valid(entry)) goto invalid;
-        char *path = g_build_filename(parent, entry, NULL);
+        if (!entry || !*entry || entry[0] == '/') goto invalid;
+        /* Preserve relative nested selections; validate before normalizing so
+         * traversal and empty segments cannot disappear during joining. */
+        char *path = g_strconcat(parent, !strcmp(parent, "/") ? "" : "/", entry, NULL);
         if (!zip_path_valid(path)) { g_free(path); goto invalid; }
         /* Bind the actual directory object, never an unrelated snapshot in an
          * otherwise authorized payload. Multi-selection must not skip misses. */

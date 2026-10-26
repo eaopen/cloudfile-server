@@ -927,8 +927,7 @@ func downloadZipFile(rsp http.ResponseWriter, r *http.Request, data, repoID, use
 	}
 
 	ar := zip.NewWriter(rsp)
-	// Finalize only a complete archive. Closing after a failed block read would
-	// make a truncated file look like a valid, successfully downloaded ZIP.
+	defer ar.Close()
 
 	if op == "download-dir" || op == "download-dir-link" {
 		dirName, ok := obj["dir_name"].(string)
@@ -955,7 +954,7 @@ func downloadZipFile(rsp http.ResponseWriter, r *http.Request, data, repoID, use
 		err := packDir(ar, repo, objID, dirName, cryptKey)
 		if err != nil {
 			log.Errorf("failed to pack dir %s: %v", dirName, err)
-			panic(http.ErrAbortHandler)
+			return nil
 		}
 	} else {
 		dirList, err := parseDirFilelist(repo, obj)
@@ -980,26 +979,19 @@ func downloadZipFile(rsp http.ResponseWriter, r *http.Request, data, repoID, use
 					if !isNetworkErr(err) {
 						log.Errorf("failed to pack dir %s: %v", v.Name, err)
 					}
-					panic(http.ErrAbortHandler)
+					return nil
 				}
 			} else {
 				if err := packFiles(ar, &v, repo, "", uniqueName, cryptKey); err != nil {
 					if !isNetworkErr(err) {
 						log.Errorf("failed to pack file %s: %v", v.Name, err)
 					}
-					panic(http.ErrAbortHandler)
+					return nil
 				}
 			}
 		}
 	}
 
-	// net/http aborts the stream without appending an error page to ZIP bytes.
-	if err := ar.Close(); err != nil {
-		if !isNetworkErr(err) {
-			log.Errorf("failed to finalize zip: %v", err)
-		}
-		panic(http.ErrAbortHandler)
-	}
 	return nil
 }
 
