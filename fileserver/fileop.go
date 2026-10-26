@@ -3048,11 +3048,18 @@ type webaccessInfo struct {
 }
 
 // Only an authenticated single-file grant minted through native Server RPC
-// may bypass the old object-only ACL guard. Do not extend to ZIP, blocks,
+// may bypass the old object-only ACL guard. Do not extend to blocks,
 // uploads, download-link or other legacy read operations.
 func hasAuthorizedFileReadScope(op string, tokenInfo map[string]interface{}) bool {
 	path, ok := tokenInfo["scope-path"].(string)
 	return op == "download" && ok && path != ""
+}
+
+// Server binds ZIP scope only after checking the actual selected objects and
+// their subtrees. Recognize that proof without admitting unbound/public links.
+func hasAuthorizedZipReadScope(op string, tokenInfo map[string]interface{}) bool {
+	path, ok := tokenInfo["scope-path"].(string)
+	return (op == "download-dir" || op == "download-multi") && ok && cfACLCanonical(path)
 }
 
 func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
@@ -3099,6 +3106,7 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	// Scoped native tickets were path-authorized at issue time. A repeated
 	// GET/HEAD/Range only needs the native token and its expiry, not ACL SQL.
 	if !hasAuthorizedFileReadScope(accessInfo.op, webaccessMap) &&
+		!hasAuthorizedZipReadScope(accessInfo.op, webaccessMap) &&
 		accessInfo.op != "upload" && accessInfo.op != "update" {
 		if denied := cfACLRequireRepoWideProof(repoID); denied != nil {
 			return nil, denied

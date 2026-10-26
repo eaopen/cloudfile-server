@@ -26,3 +26,25 @@ func TestAuthorizedFileReadScopeOnlySkipsForNativeSingleFileDownload(t *testing.
 		})
 	}
 }
+
+// ZIP must carry the native Server's path proof; other operations and public
+// links keep their existing guards even when a scope property is present.
+func TestAuthorizedZipReadScope(t *testing.T) {
+	for _, op := range []string{"download-dir", "download-multi"} {
+		for _, path := range []string{"/", "/文档/a +b"} {
+			if !hasAuthorizedZipReadScope(op, map[string]interface{}{"scope-path": path}) {
+				t.Fatalf("scoped %s rejected for %q", op, path)
+			}
+		}
+		for _, value := range []interface{}{nil, true, "", "relative", "/a/../b", "/a//b", "/a\\b", "/a\n"} {
+			if hasAuthorizedZipReadScope(op, map[string]interface{}{"scope-path": value}) {
+				t.Fatalf("invalid ZIP scope accepted: %#v", value)
+			}
+		}
+	}
+	for _, op := range []string{"download", "upload", "downloadblks", "download-dir-link", "download-multi-link"} {
+		if hasAuthorizedZipReadScope(op, map[string]interface{}{"scope-path": "/docs"}) {
+			t.Fatalf("operation %s admitted as a ZIP", op)
+		}
+	}
+}
