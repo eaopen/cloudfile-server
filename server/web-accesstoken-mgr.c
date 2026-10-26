@@ -241,7 +241,9 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
 
 #ifdef FULL_FEATURE
 /* Native ZIP payloads carry real paths already. Bind only after checking every
- * selected object; merely exempting ZIP from the unscoped guard leaks subtrees. */
+ * selected object; merely exempting ZIP from the unscoped guard leaks subtrees.
+ * The caller runs this only for ACL-protected repositories, so the untouched
+ * native payload of an unprotected library keeps its old, unbound ticket. */
 static gboolean
 zip_path_valid (const char *path)
 {
@@ -254,6 +256,27 @@ zip_path_valid (const char *path)
     for (int i = 0; parts[i]; ++i)
         if (!strcmp(parts[i], ".") || !strcmp(parts[i], "..")) valid = FALSE;
     for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        if (*p < 32 || *p == 127) valid = FALSE;
+    g_strfreev(parts);
+    return valid;
+}
+
+/* A selection is a path relative to parent_dir. Nested selections are part of
+ * the native ZIP contract (seahub builds 'dir/name' entries and the Go archiver
+ * accepts them), so an entry may contain '/', but it must stay relative and
+ * canonical: no absolute path, no '..'/'.', no empty segment. */
+static gboolean
+zip_entry_valid (const char *entry)
+{
+    if (!entry || !*entry || entry[0] == '/' || strlen(entry) > 4096 ||
+        !g_utf8_validate(entry, -1, NULL) || strstr(entry, "//") ||
+        strchr(entry, '\\') || g_str_has_suffix(entry, "/"))
+        return FALSE;
+    gchar **parts = g_strsplit(entry, "/", -1);
+    gboolean valid = TRUE;
+    for (int i = 0; parts[i]; ++i)
+        if (!strcmp(parts[i], ".") || !strcmp(parts[i], "..")) valid = FALSE;
+    for (const unsigned char *p = (const unsigned char *)entry; *p; ++p)
         if (*p < 32 || *p == 127) valid = FALSE;
     g_strfreev(parts);
     return valid;
@@ -281,7 +304,7 @@ zip_download_scope (const char *repo_id, const char *payload,
     json_t *name;
     json_array_foreach(names, i, name) {
         const char *entry = json_string_value(name);
-        if (!entry || !*entry || strchr(entry, '/')) goto invalid;
+        if (!zip_entry_valid(entry)) goto invalid;
         char *path = g_build_filename(parent, entry, NULL);
         if (!zip_path_valid(path)) { g_free(path); goto invalid; }
         /* Bind the actual directory object, never an unrelated snapshot in an
@@ -325,7 +348,13 @@ seaf_web_at_manager_get_access_token (SeafWebAccessTokenManager *mgr,
     const char *username, int use_onetime, GError **error)
 {
 #ifdef FULL_FEATURE
-    if (!strcmp(op, "download-dir") || !strcmp(op, "download-multi")) {
+    /* Only an ACL-protected repository needs the ticket itself to carry the
+     * path proof: issue_access_token() already refuses unbound tickets there.
+     * Unprotected repositories keep the native CE ZIP payload contract, so
+     * legacy dir tickets (no parent_dir), public share links (empty username)
+     * and display-name aliases are not forced through path binding. */
+    if ((!strcmp(op, "download-dir") || !strcmp(op, "download-multi")) &&
+        cf_v2_acl_unscoped(seaf, repo_id) < 0) {
         char *scope = zip_download_scope(repo_id, obj_id, op, username, error);
         if (!scope) return NULL;
         char *token = issue_access_token(mgr, repo_id, obj_id, op, username,

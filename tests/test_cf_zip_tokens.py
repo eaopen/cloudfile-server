@@ -1,7 +1,9 @@
 """Compile the real token manager against isolated native/ACL dependencies.
 
 This exercises issuance, scope storage, redemption and expiry without a live
-database or file server. Native subtree policy and real ZIP bytes need DEV QA.
+database or file server. The ACL-protected paths are the only ones that get a
+path-bound ticket; the native payload of an unprotected library keeps the old
+unbound ticket. Native subtree policy and real ZIP bytes need DEV QA.
 """
 from pathlib import Path
 import re
@@ -38,7 +40,8 @@ static void gen_uuid_inplace(char *out) {
     g_snprintf(out, 37, "00000000-0000-4000-8000-%012d", ++counter);
 }
 static void ccnet_timer_new(int (*callback)(void *), void *data, int ms) {}
-static int cf_v2_acl_unscoped(SeafileSession *s, const char *repo) { return -2; }
+static int cf_v2_acl_scope = -2;
+static int cf_v2_acl_unscoped(SeafileSession *s, const char *repo) { return cf_v2_acl_scope; }
 static void *test_object_new(int type, ...) {
     SeafileWebAccess *obj = g_new0(SeafileWebAccess, 1);
     va_list ap;
@@ -94,6 +97,25 @@ static void check(const char *op, const char *body, const char *expected_scope) 
     g_hash_table_destroy(mgr->priv->access_token_hash);
     pthread_mutex_destroy(&mgr->priv->lock); g_free(mgr->priv); g_free(mgr);
 }
+/* An unprotected library keeps the native CE payload contract: the ticket is
+ * issued unbound, exactly like dev before the path-bound ACL guard. */
+static void check_unbound(const char *op, const char *body, const char *user) {
+    SeafWebAccessTokenManager *mgr = seaf_web_at_manager_new(seaf);
+    GError *error = NULL;
+    char *token = seaf_web_at_manager_get_access_token(mgr, "repo", body, op,
+                                                       user, 1, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(token);
+    SeafileWebAccess *info = seaf_web_at_manager_query_access_token(mgr, token);
+    g_assert_nonnull(info);
+    g_assert_null(info->scope);
+    g_assert_cmpstr(info->op, ==, op);
+    g_assert_null(seaf_web_at_manager_query_access_token(mgr, token));
+    g_free(info->scope); g_free(info->op); g_free(info);
+    g_free(token);
+    g_hash_table_destroy(mgr->priv->access_token_hash);
+    pthread_mutex_destroy(&mgr->priv->lock); g_free(mgr->priv); g_free(mgr);
+}
 static void directory(void) {
     check("download-dir", "{\"parent_dir\":\"/\",\"dir_name\":\"docs\",\"obj_id\":\"directory-id\"}", "/docs");
     check("download-dir", "{\"parent_dir\":\"/\",\"dir_name\":\"docs\",\"obj_id\":\"unrelated-id\"}", NULL);
@@ -119,7 +141,11 @@ static void invalid(void) {
         "{\"parent_dir\":\"/\",\"file_list\":[\"..\"]}",
         "{\"parent_dir\":\"/\",\"file_list\":[\".\"]}",
         "{\"parent_dir\":\"/\",\"file_list\":[\"\"]}",
-        "{\"parent_dir\":\"/\",\"file_list\":[\"a/b\"]}",
+        "{\"parent_dir\":\"/\",\"file_list\":[\"/a\"]}",
+        "{\"parent_dir\":\"/\",\"file_list\":[\"a/\"]}",
+        "{\"parent_dir\":\"/\",\"file_list\":[\"a//b\"]}",
+        "{\"parent_dir\":\"/\",\"file_list\":[\"a/./b\"]}",
+        "{\"parent_dir\":\"/\",\"file_list\":[\"a/../b\"]}",
         "{\"parent_dir\":\"/\",\"file_list\":[\"a\\\\b\"]}",
         "{\"parent_dir\":\"/\",\"file_list\":[1]}",
         "{\"parent_dir\":\"/\",\"parent_dir\":\"/secret\",\"file_list\":[\"a\"]}"
@@ -145,14 +171,39 @@ static void expiry(void) {
     g_free(token); g_hash_table_destroy(mgr->priv->access_token_hash);
     pthread_mutex_destroy(&mgr->priv->lock); g_free(mgr->priv); g_free(mgr);
 }
+static void nested(void) {
+    /* The native ZIP contract allows relative multi-level selections. */
+    check("download-multi",
+          "{\"parent_dir\":\"/docs\",\"file_list\":[\"a.xlsx\",\"dir/sub/b.pdf\"]}",
+          "/docs");
+    check("download-dir",
+          "{\"parent_dir\":\"/docs\",\"dir_name\":\"dir/sub\",\"obj_id\":\"directory-id\"}",
+          "/docs/dir/sub");
+}
+static void unprotected(void) {
+    cf_v2_acl_scope = 0;
+    /* Legacy CE dir payload: no parent_dir at all. */
+    check_unbound("download-dir",
+        "{\"obj_id\":\"directory-id\",\"dir_name\":\"docs\",\"is_windows\":0}",
+        "ordinary-user");
+    /* Public folder share link: seahub mints a multi ticket with username ''. */
+    check_unbound("download-multi",
+        "{\"parent_dir\":\"/docs\",\"file_list\":[\"a\",\"dir/b\"]}", "");
+    /* Nothing to prove without ACL rows: native behaviour stays unbound. */
+    check_unbound("download-multi",
+        "{\"parent_dir\":\"/docs\",\"file_list\":[\"a.xlsx\"]}", "ordinary-user");
+    cf_v2_acl_scope = -2;
+}
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/zip/directory", directory);
     g_test_add_func("/zip/multiple", multiple);
+    g_test_add_func("/zip/nested", nested);
     g_test_add_func("/zip/denied", denied);
     g_test_add_func("/zip/invalid", invalid);
     g_test_add_func("/zip/legacy", legacy);
     g_test_add_func("/zip/expiry", expiry);
+    g_test_add_func("/zip/unprotected", unprotected);
     return g_test_run();
 }
 '''
