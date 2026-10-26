@@ -270,7 +270,8 @@ zip_download_scope (const char *repo_id, const char *payload,
     /* Native callers, including Etech, send directory parents with a trailing
      * slash. Remove one separator before canonical validation; doubled slashes
      * and traversal still fail, and the ticket scope remains canonical. */
-    if (parent && strlen(parent) > 1 && g_str_has_suffix(parent, "/"))
+    if (parent && strlen(parent) > 1 && g_str_has_suffix(parent, "/") &&
+        parent[strlen(parent) - 2] != '/')
         parent[strlen(parent) - 1] = '\0';
     gboolean directory = !strcmp(op, "download-dir");
     json_t *names = directory ? json_array() : json_object_get(obj, "file_list");
