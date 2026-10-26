@@ -266,7 +266,12 @@ zip_download_scope (const char *repo_id, const char *payload,
                     const char *op, const char *username, GError **error)
 {
     json_t *obj = json_loads(payload, JSON_REJECT_DUPLICATES, NULL);
-    const char *parent = json_string_value(json_object_get(obj, "parent_dir"));
+    char *parent = g_strdup(json_string_value(json_object_get(obj, "parent_dir")));
+    /* Native callers, including Etech, send directory parents with a trailing
+     * slash. Remove one separator before canonical validation; doubled slashes
+     * and traversal still fail, and the ticket scope remains canonical. */
+    if (parent && strlen(parent) > 1 && g_str_has_suffix(parent, "/"))
+        parent[strlen(parent) - 1] = '\0';
     gboolean directory = !strcmp(op, "download-dir");
     json_t *names = directory ? json_array() : json_object_get(obj, "file_list");
     if (directory) {
@@ -317,6 +322,7 @@ invalid:
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
                     "Invalid or unauthorized ZIP paths");
 done:
+    g_free(parent);
     json_decref(names);
     json_decref(obj);
     return scope;
