@@ -25,7 +25,7 @@ func InitV2Storage(db *sql.DB) { v2StorageDB = db }
 // verified positive mappings, with a short TTL for offline repair/GC changes.
 // This is a physical-path cache, never an authorization or object-content cache.
 const (
-	v2RouteCacheCapacity = 1024
+	v2RouteCacheCapacity  = 1024
 	v2RouteCacheTTL       = 10 * time.Second
 	v2NativeRouteCacheTTL = time.Second
 )
