@@ -92,6 +92,107 @@ typedef struct {
     gboolean native_repo_present;
 } Route;
 
+
+/* Only verified positive physical routes are cached (not ACLs or failures).
+ * Bounds protect other libraries' memory; never hold this mutex over I/O. */
+#define ROUTE_CACHE_MAX 1024
+#define ROUTE_CACHE_TTL_USEC (10 * G_USEC_PER_SEC)
+
+typedef struct {
+    char *repo_id;
+    Route route;
+    gint64 expires_at;
+    GList *link;
+} CachedRoute;
+
+static GMutex route_cache_mutex;
+static GHashTable *route_cache_index;
+static GQueue route_cache_lru;
+
+static void
+route_clear (Route *route)
+{
+    g_free (route->storage_id);
+    g_free (route->legacy_key);
+    g_free (route->legacy_state);
+    memset (route, 0, sizeof(*route));
+}
+
+static void
+route_copy (Route *dst, const Route *src)
+{
+    dst->storage_id = g_strdup (src->storage_id);
+    dst->legacy_key = g_strdup (src->legacy_key);
+    dst->legacy_state = g_strdup (src->legacy_state);
+    dst->route_row_present = src->route_row_present;
+    dst->native_repo_present = src->native_repo_present;
+}
+
+/* Caller holds route_cache_mutex. */
+static void
+route_cache_remove (CachedRoute *entry)
+{
+    g_hash_table_remove (route_cache_index, entry->repo_id);
+    g_queue_delete_link (&route_cache_lru, entry->link);
+    route_clear (&entry->route);
+    g_free (entry->repo_id);
+    g_free (entry);
+}
+
+static gboolean
+route_cache_get (const char *repo_id, Route *route)
+{
+    gboolean hit = FALSE;
+    g_mutex_lock (&route_cache_mutex);
+    CachedRoute *entry = route_cache_index ?
+        g_hash_table_lookup (route_cache_index, repo_id) : NULL;
+    if (entry && g_get_monotonic_time () >= entry->expires_at) {
+        route_cache_remove (entry);
+        entry = NULL;
+    }
+    if (entry) {
+        route_copy (route, &entry->route);
+        g_queue_unlink (&route_cache_lru, entry->link);
+        g_queue_push_head_link (&route_cache_lru, entry->link);
+        hit = TRUE;
+    }
+    g_mutex_unlock (&route_cache_mutex);
+    return hit;
+}
+
+static void
+route_cache_put (const char *repo_id, const Route *route)
+{
+    g_mutex_lock (&route_cache_mutex);
+    if (!route_cache_index)
+        route_cache_index = g_hash_table_new (g_str_hash, g_str_equal);
+    CachedRoute *previous = g_hash_table_lookup (route_cache_index, repo_id);
+    if (previous)
+        route_cache_remove (previous);
+    if (g_hash_table_size (route_cache_index) >= ROUTE_CACHE_MAX)
+        route_cache_remove (g_queue_peek_tail (&route_cache_lru));
+    CachedRoute *entry = g_new0 (CachedRoute, 1);
+    entry->repo_id = g_strdup (repo_id);
+    route_copy (&entry->route, route);
+    entry->expires_at = g_get_monotonic_time () + ROUTE_CACHE_TTL_USEC;
+    entry->link = g_list_alloc ();
+    entry->link->data = entry;
+    g_queue_push_head_link (&route_cache_lru, entry->link);
+    g_hash_table_insert (route_cache_index, entry->repo_id, entry);
+    g_mutex_unlock (&route_cache_mutex);
+}
+
+static void
+route_cache_forget (const char *repo_id)
+{
+    g_mutex_lock (&route_cache_mutex);
+    CachedRoute *entry = route_cache_index ?
+        g_hash_table_lookup (route_cache_index, repo_id) : NULL;
+    if (entry)
+        route_cache_remove (entry);
+    g_mutex_unlock (&route_cache_mutex);
+}
+
 static gboolean
 read_route (SeafDBRow *row, void *data)
 {
