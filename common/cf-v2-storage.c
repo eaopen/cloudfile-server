@@ -225,7 +225,8 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
      * before its initial commit, while the Repo row is written afterwards.
      * Without that fact a folder-share (sub-library) commit would be refused
      * even though it belongs in the native tree, exactly like CE. */
-    if (seaf_db_statement_foreach_row (seaf->db,
+    gboolean cached = route_cache_get (repo_id, &route);
+    if (!cached && seaf_db_statement_foreach_row (seaf->db,
             "SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"
             "COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "
             "FROM (SELECT ? AS repo_id) i "
@@ -270,9 +271,9 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
 out:
     if (!result)
         seaf_warning ("V2 refused unresolved storage for %.36s.\n", repo_id);
-    g_free (route.storage_id);
-    g_free (route.legacy_key);
-    g_free (route.legacy_state);
+    else if (!cached)
+        route_cache_put (repo_id, &route);
+    route_clear (&route);
     g_free (root);
     g_free (key_dir);
     g_free (obj_type);
@@ -330,6 +331,7 @@ cf_v2_storage_reserve (const char *repo_id)
         goto close;
     }
     ret = 0;
+    route_cache_forget (repo_id);
     goto close;
 rollback:
     if (trans)
@@ -353,9 +355,12 @@ cf_v2_storage_retire (const char *repo_id)
 {
     if (!cf_v2_storage_enabled ())
         return 0;
-    return seaf_db_statement_query (seaf->db,
+    int ret = seaf_db_statement_query (seaf->db,
         "UPDATE cf_library_storage SET state='retired' WHERE repo_id=?",
         1, "string", repo_id);
+    if (ret >= 0)
+        route_cache_forget (repo_id);
+    return ret;
 }
 
 /* Preserve native hardlinks on one volume; stage on the destination volume
