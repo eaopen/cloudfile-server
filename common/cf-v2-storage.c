@@ -92,6 +92,111 @@ typedef struct {
     gboolean native_repo_present;
 } Route;
 
+
+/* Only verified positive physical routes are cached (not ACLs or failures).
+ * Bounds protect other libraries' memory; never hold this mutex over I/O. */
+#define ROUTE_CACHE_MAX 1024
+#define ROUTE_CACHE_TTL_USEC (10 * G_USEC_PER_SEC)
+#define ROUTE_CACHE_NATIVE_TTL_USEC (1 * G_USEC_PER_SEC)
+
+typedef struct {
+    char *repo_id;
+    Route route;
+    gint64 expires_at;
+    GList *link;
+} CachedRoute;
+
+static GMutex route_cache_mutex;
+static GHashTable *route_cache_index;
+static GQueue route_cache_lru;
+
+static void
+route_clear (Route *route)
+{
+    g_free (route->storage_id);
+    g_free (route->legacy_key);
+    g_free (route->legacy_state);
+    memset (route, 0, sizeof(*route));
+}
+
+static void
+route_copy (Route *dst, const Route *src)
+{
+    dst->storage_id = g_strdup (src->storage_id);
+    dst->legacy_key = g_strdup (src->legacy_key);
+    dst->legacy_state = g_strdup (src->legacy_state);
+    dst->route_row_present = src->route_row_present;
+    dst->native_repo_present = src->native_repo_present;
+}
+
+/* Caller holds route_cache_mutex. */
+static void
+route_cache_remove (CachedRoute *entry)
+{
+    g_hash_table_remove (route_cache_index, entry->repo_id);
+    g_queue_delete_link (&route_cache_lru, entry->link);
+    route_clear (&entry->route);
+    g_free (entry->repo_id);
+    g_free (entry);
+}
+
+static gboolean
+route_cache_get (const char *repo_id, Route *route)
+{
+    gboolean hit = FALSE;
+    g_mutex_lock (&route_cache_mutex);
+    CachedRoute *entry = route_cache_index ?
+        g_hash_table_lookup (route_cache_index, repo_id) : NULL;
+    if (entry && g_get_monotonic_time () >= entry->expires_at) {
+        route_cache_remove (entry);
+        entry = NULL;
+    }
+    if (entry) {
+        route_copy (route, &entry->route);
+        g_queue_unlink (&route_cache_lru, entry->link);
+        g_queue_push_head_link (&route_cache_lru, entry->link);
+        hit = TRUE;
+    }
+    g_mutex_unlock (&route_cache_mutex);
+    return hit;
+}
+
+static void
+route_cache_put (const char *repo_id, const Route *route)
+{
+    g_mutex_lock (&route_cache_mutex);
+    if (!route_cache_index)
+        route_cache_index = g_hash_table_new (g_str_hash, g_str_equal);
+    CachedRoute *previous = g_hash_table_lookup (route_cache_index, repo_id);
+    if (previous)
+        route_cache_remove (previous);
+    if (g_hash_table_size (route_cache_index) >= ROUTE_CACHE_MAX)
+        route_cache_remove (g_queue_peek_tail (&route_cache_lru));
+    CachedRoute *entry = g_new0 (CachedRoute, 1);
+    entry->repo_id = g_strdup (repo_id);
+    route_copy (&entry->route, route);
+    /* Native CE/VirtualRepo lifecycle can change more often than immutable
+     * V2 RepoStorageId; recheck these short-lived positive facts sooner. */
+    entry->expires_at = g_get_monotonic_time () +
+        (route->route_row_present ? ROUTE_CACHE_TTL_USEC : ROUTE_CACHE_NATIVE_TTL_USEC);
+    entry->link = g_list_alloc ();
+    entry->link->data = entry;
+    g_queue_push_head_link (&route_cache_lru, entry->link);
+    g_hash_table_insert (route_cache_index, entry->repo_id, entry);
+    g_mutex_unlock (&route_cache_mutex);
+}
+
+static void
+route_cache_forget (const char *repo_id)
+{
+    g_mutex_lock (&route_cache_mutex);
+    CachedRoute *entry = route_cache_index ?
+        g_hash_table_lookup (route_cache_index, repo_id) : NULL;
+    if (entry)
+        route_cache_remove (entry);
+    g_mutex_unlock (&route_cache_mutex);
+}
+
 static gboolean
 read_route (SeafDBRow *row, void *data)
 {
@@ -124,7 +229,8 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
      * before its initial commit, while the Repo row is written afterwards.
      * Without that fact a folder-share (sub-library) commit would be refused
      * even though it belongs in the native tree, exactly like CE. */
-    if (seaf_db_statement_foreach_row (seaf->db,
+    gboolean cached = route_cache_get (repo_id, &route);
+    if (!cached && seaf_db_statement_foreach_row (seaf->db,
             "SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"
             "COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "
             "FROM (SELECT ? AS repo_id) i "
@@ -169,9 +275,9 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
 out:
     if (!result)
         seaf_warning ("V2 refused unresolved storage for %.36s.\n", repo_id);
-    g_free (route.storage_id);
-    g_free (route.legacy_key);
-    g_free (route.legacy_state);
+    else if (!cached)
+        route_cache_put (repo_id, &route);
+    route_clear (&route);
     g_free (root);
     g_free (key_dir);
     g_free (obj_type);
@@ -229,6 +335,7 @@ cf_v2_storage_reserve (const char *repo_id)
         goto close;
     }
     ret = 0;
+    route_cache_forget (repo_id);
     goto close;
 rollback:
     if (trans)
@@ -252,9 +359,12 @@ cf_v2_storage_retire (const char *repo_id)
 {
     if (!cf_v2_storage_enabled ())
         return 0;
-    return seaf_db_statement_query (seaf->db,
+    int ret = seaf_db_statement_query (seaf->db,
         "UPDATE cf_library_storage SET state='retired' WHERE repo_id=?",
         1, "string", repo_id);
+    if (ret >= 0)
+        route_cache_forget (repo_id);
+    return ret;
 }
 
 /* Preserve native hardlinks on one volume; stage on the destination volume

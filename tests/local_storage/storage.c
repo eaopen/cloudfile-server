@@ -21,7 +21,7 @@ struct SeafDBRow { const char *cell[5]; };
 struct SeafDBTrans { int unused; };
 static struct SeafDBTrans fake_trans;
 static const char *row_cells[5];
-static int fail_insert, fail_commit, sql_inserts, commits, rollbacks;
+static int fail_insert, fail_commit, sql_inserts, commits, rollbacks, route_selects;
 
 const char *
 seaf_db_row_get_column_text (SeafDBRow *row, guint32 col)
@@ -35,6 +35,7 @@ seaf_db_statement_foreach_row (SeafDB *db, const char *sql,
                                SeafDBRowFunc fn, void *data, int n, ...)
 {
     g_assert_nonnull (strstr (sql, "RepoStorageId"));
+    route_selects++;
     /* A folder-share sub-library writes its first commit while only the
      * VirtualRepo row exists; the native-existence join must include it. */
     g_assert_nonnull (strstr (sql, "VirtualRepo"));
@@ -100,6 +101,8 @@ route_row (const char *storage, const char *legacy_key, const char *state,
     row_cells[2] = legacy_key;
     row_cells[3] = state;
     row_cells[4] = native_exists ? uuid : NULL;
+    /* Changes to the fake immutable route model are explicit invalidations. */
+    route_cache_forget (uuid);
 }
 
 static void
@@ -129,6 +132,34 @@ test_uuid_v2_and_legacy_routes (const char *base)
     g_free (actual);
     g_free (expected);
 
+    /* Thousands of FS/block operations in one library use one positive
+     * route lookup. A second library has its own slot and never evicts it. */
+    int first_lookups = route_selects;
+    for (int i = 0; i < 40; ++i) {
+        actual = cf_v2_store_dir (native, repo);
+        g_assert_nonnull (actual);
+        g_free (actual);
+    }
+    g_assert_cmpint (route_selects, ==, first_lookups);
+    const char *other_repo = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    actual = cf_v2_store_dir (native, other_repo);
+    g_assert_nonnull (actual);
+    g_free (actual);
+    g_assert_cmpint (route_selects, ==, first_lookups + 1);
+    actual = cf_v2_store_dir (native, repo);
+    g_assert_nonnull (actual);
+    g_free (actual);
+    g_assert_cmpint (route_selects, ==, first_lookups + 1);
+    g_mutex_lock (&route_cache_mutex);
+    CachedRoute *cached = g_hash_table_lookup (route_cache_index, repo);
+    g_assert_nonnull (cached);
+    cached->expires_at = 0;
+    g_mutex_unlock (&route_cache_mutex);
+    actual = cf_v2_store_dir (native, repo);
+    g_assert_nonnull (actual);
+    g_free (actual);
+    g_assert_cmpint (route_selects, ==, first_lookups + 2);
+
     route_row ("auto-local:historical-key", NULL, NULL, TRUE, FALSE);
     actual = cf_v2_store_dir (native, repo);
     expected = g_build_filename (historical, "storage", "commits", repo, NULL);
@@ -148,7 +179,10 @@ test_uuid_v2_and_legacy_routes (const char *base)
     g_assert_cmpstr (actual, ==, expected);
     g_free (actual);
     route_row (NULL, NULL, NULL, FALSE, FALSE);
+    int failed_lookups = route_selects;
     g_assert_null (cf_v2_store_dir (native, repo));
+    g_assert_null (cf_v2_store_dir (native, repo));
+    g_assert_cmpint (route_selects, ==, failed_lookups + 2);
     route_row (NULL, "historical-key", "active", FALSE, TRUE);
     g_assert_null (cf_v2_store_dir (native, repo));
     route_row (NULL, repo, "active", FALSE, TRUE);

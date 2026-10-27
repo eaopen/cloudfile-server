@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func v2Fixture(t *testing.T, objType string) (*v2StorageBackend, string) {
@@ -50,6 +51,7 @@ func TestV2StorageBytesAndNativeIsolation(t *testing.T) {
 				t.Fatal("routed bytes leaked into native storage")
 			}
 			b.lookup = func(string) (string, string, string, error) { return "", "", "", nil }
+			b.invalidateRoute(repoID) // Simulate an explicit offline route change.
 			if err := b.write(repoID, objID, strings.NewReader("native"), true); err != nil {
 				t.Fatal(err)
 			}
@@ -151,6 +153,7 @@ func TestV2RegisteredNativeLibraryUsesOriginalObjects(t *testing.T) {
 		b.lookup = func(string) (string, string, string, error) {
 			return broken[0], broken[1], broken[2], nil
 		}
+		b.invalidateRoute(repoID)
 		if _, err := b.resolve(repoID); err == nil {
 			t.Fatalf("accepted inconsistent historical binding: %v", broken)
 		}
@@ -196,5 +199,109 @@ func TestV2RetiredNativeRemainsAddressableForColdGC(t *testing.T) {
 	}
 	if resolved, err := b.resolve(repoID); err != nil || resolved != b.native {
 		t.Fatalf("retired native object path must remain for GC: %v", err)
+	}
+}
+
+func TestV2StorageRouteCachePerLibrary(t *testing.T) {
+	b, root := v2Fixture(t, "fs")
+	other := "a2222222-2222-4222-8222-222222222222"
+	if err := os.Mkdir(filepath.Join(root, other), 0700); err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]int{}
+	b.lookup = func(id string) (string, string, string, error) {
+		calls[id]++
+		return "auto-local:" + id, "", "", nil
+	}
+	for i := 0; i < 30; i++ {
+		for _, id := range []string{repoID, other} {
+			if _, err := b.resolve(id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if calls[repoID] != 1 || calls[other] != 1 {
+		t.Fatalf("per-object lookup was not eliminated: %v", calls)
+	}
+	b.invalidateRoute(repoID)
+	if _, err := b.resolve(repoID); err != nil || calls[repoID] != 2 || calls[other] != 1 {
+		t.Fatalf("library-specific invalidation lost isolation: %v %v", calls, err)
+	}
+	b.cacheMu.Lock()
+	b.cacheIndex[repoID].Value.(*v2CachedRoute).expires = time.Now().Add(-time.Second)
+	b.cacheMu.Unlock()
+	if _, err := b.resolve(repoID); err != nil || calls[repoID] != 3 || calls[other] != 1 {
+		t.Fatalf("expired route not rechecked per library: %v %v", calls, err)
+	}
+	// Cache hits must still validate the physical root; no silent remount.
+	if err := os.Remove(filepath.Join(root, other)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.resolve(other); err == nil {
+		t.Fatal("cached managed route ignored a removed directory")
+	}
+}
+
+func TestV2StorageFailuresNeverCached(t *testing.T) {
+	b, _ := v2Fixture(t, "blocks")
+	calls := 0
+	b.lookup = func(string) (string, string, string, error) {
+		calls++
+		if calls <= 2 {
+			return "", "", "", errors.New("route database unavailable")
+		}
+		return "auto-local:" + repoID, "", "", nil
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := b.resolve(repoID); err == nil {
+			t.Fatal("failed lookup accepted")
+		}
+	}
+	if _, err := b.resolve(repoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.resolve(repoID); err != nil || calls != 3 {
+		t.Fatalf("route failures should not stick; successful lookup should: %d %v", calls, err)
+	}
+}
+
+func TestV2StorageSlowLibraryDoesNotLockOtherRoutes(t *testing.T) {
+	b, root := v2Fixture(t, "fs")
+	other := "a2222222-2222-4222-8222-222222222222"
+	if err := os.Mkdir(filepath.Join(root, other), 0700); err != nil {
+		t.Fatal(err)
+	}
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	b.lookup = func(id string) (string, string, string, error) {
+		if id == repoID {
+			close(blocked)
+			<-release
+		}
+		return "auto-local:" + id, "", "", nil
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := b.resolve(repoID)
+		first <- err
+	}()
+	<-blocked
+	second := make(chan error, 1)
+	go func() {
+		_, err := b.resolve(other)
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("slow library held global cache lock during lookup")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
 	}
 }

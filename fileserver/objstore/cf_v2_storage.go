@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"container/list"
 	"context"
 	"database/sql"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,10 +21,80 @@ var v2StorageDB *sql.DB
 
 func InitV2Storage(db *sql.DB) { v2StorageDB = db }
 
+// Repository storage routes are immutable during normal service life. Keep only
+// verified positive mappings, with a short TTL for offline repair/GC changes.
+// This is a physical-path cache, never an authorization or object-content cache.
+const (
+	v2RouteCacheCapacity  = 1024
+	v2RouteCacheTTL       = 10 * time.Second
+	v2NativeRouteCacheTTL = time.Second
+)
+
+type v2CachedRoute struct {
+	repoID      string
+	route       string
+	legacyKey   string
+	legacyState string
+	expires     time.Time
+}
+
 type v2StorageBackend struct {
 	native *fsBackend
 	root   string
 	lookup func(string) (string, string, string, error)
+
+	cacheMu    sync.Mutex
+	cacheIndex map[string]*list.Element
+	cacheLRU   list.List
+}
+
+func (b *v2StorageBackend) cachedRoute(repoID string) (string, string, string, bool) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if elem := b.cacheIndex[repoID]; elem != nil {
+		entry := elem.Value.(*v2CachedRoute)
+		if time.Now().Before(entry.expires) {
+			b.cacheLRU.MoveToFront(elem)
+			return entry.route, entry.legacyKey, entry.legacyState, true
+		}
+		b.cacheLRU.Remove(elem)
+		delete(b.cacheIndex, repoID)
+	}
+	return "", "", "", false
+}
+
+func (b *v2StorageBackend) rememberRoute(repoID, route, legacyKey, legacyState string) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if b.cacheIndex == nil {
+		b.cacheIndex = make(map[string]*list.Element)
+	}
+	if elem := b.cacheIndex[repoID]; elem != nil {
+		b.cacheLRU.Remove(elem)
+	}
+	ttl := v2RouteCacheTTL
+	if route == "" { // CE/VirtualRepo lifecycle facts are not immutable.
+		ttl = v2NativeRouteCacheTTL
+	}
+	entry := &v2CachedRoute{repoID, route, legacyKey, legacyState, time.Now().Add(ttl)}
+	b.cacheIndex[repoID] = b.cacheLRU.PushFront(entry)
+	if b.cacheLRU.Len() > v2RouteCacheCapacity {
+		oldest := b.cacheLRU.Remove(b.cacheLRU.Back()).(*v2CachedRoute)
+		delete(b.cacheIndex, oldest.repoID)
+	}
+}
+
+// Test seam for an injected out-of-band route change. No production
+// management API invokes this: live physical routes are immutable, and offline
+// repair requires stopped writers and process restart. The TTL only limits
+// incidental staleness; it is not an online migration protocol.
+func (b *v2StorageBackend) invalidateRoute(repoID string) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if elem := b.cacheIndex[repoID]; elem != nil {
+		b.cacheLRU.Remove(elem)
+		delete(b.cacheIndex, repoID)
+	}
 }
 
 func v2KeyValid(key string) bool {
@@ -126,13 +198,28 @@ func (b *v2StorageBackend) resolve(repoID string) (*fsBackend, error) {
 	if _, err := uuid.Parse(repoID); err != nil || len(repoID) != 36 {
 		return nil, fmt.Errorf("invalid V2 storage repository ID")
 	}
-	route, legacyKey, legacyState, err := b.lookup(repoID)
+	route, legacyKey, legacyState, cached := b.cachedRoute(repoID)
+	if !cached {
+		var err error
+		route, legacyKey, legacyState, err = b.lookup(repoID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	child, err := b.resolveRoute(repoID, route, legacyKey, legacyState)
 	if err != nil {
 		return nil, err
 	}
+	if !cached {
+		b.rememberRoute(repoID, route, legacyKey, legacyState)
+	}
+	return child, nil
+}
+
+func (b *v2StorageBackend) resolveRoute(repoID, route, legacyKey, legacyState string) (*fsBackend, error) {
 	if route == "" {
-		// Existing CE repos (including Trash/GC) remain on their original
-		// filesystem. Production lookup has already checked real CE facts.
+		// Native CE and virtual libraries remain on their original filesystem.
+		// A lost managed route must never turn into a native fallback.
 		if legacyKey == "" || (legacyKey == "native-"+repoID &&
 			(legacyState == "active" || legacyState == "retired")) {
 			return b.native, nil
@@ -146,11 +233,11 @@ func (b *v2StorageBackend) resolve(repoID string) (*fsBackend, error) {
 	if !v2KeyValid(key) {
 		return nil, fmt.Errorf("invalid V2 storage directory key")
 	}
+	// Validate the mount on every object operation, including cache hits.
+	// A missing or replaced mount must not redirect writes into a new tree.
 	if err := v2RealDirectory(b.root); err != nil {
 		return nil, err
 	}
-	// Current V2 writes UUID as the key. A previously created V2 repo may
-	// still have a custom physical key encoded in its immutable native route.
 	keyDir := filepath.Join(b.root, key)
 	if err := v2RealDirectory(keyDir); err != nil {
 		return nil, err
