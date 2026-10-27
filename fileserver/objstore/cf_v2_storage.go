@@ -84,8 +84,10 @@ func (b *v2StorageBackend) rememberRoute(repoID, route, legacyKey, legacyState s
 	}
 }
 
-// Used when an operator explicitly changes an existing route (not part of
-// ordinary object I/O). Never cache failed lookups or unverified fallbacks.
+// Test seam for an injected out-of-band route change. No production
+// management API invokes this: live physical routes are immutable, and offline
+// repair requires stopped writers and process restart. The TTL only limits
+// incidental staleness; it is not an online migration protocol.
 func (b *v2StorageBackend) invalidateRoute(repoID string) {
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
