@@ -97,6 +97,7 @@ typedef struct {
  * Bounds protect other libraries' memory; never hold this mutex over I/O. */
 #define ROUTE_CACHE_MAX 1024
 #define ROUTE_CACHE_TTL_USEC (10 * G_USEC_PER_SEC)
+#define ROUTE_CACHE_NATIVE_TTL_USEC (1 * G_USEC_PER_SEC)
 
 typedef struct {
     char *repo_id;
@@ -174,7 +175,10 @@ route_cache_put (const char *repo_id, const Route *route)
     CachedRoute *entry = g_new0 (CachedRoute, 1);
     entry->repo_id = g_strdup (repo_id);
     route_copy (&entry->route, route);
-    entry->expires_at = g_get_monotonic_time () + ROUTE_CACHE_TTL_USEC;
+    /* Native CE/VirtualRepo lifecycle can change more often than immutable
+     * V2 RepoStorageId; recheck these short-lived positive facts sooner. */
+    entry->expires_at = g_get_monotonic_time () +
+        (route->route_row_present ? ROUTE_CACHE_TTL_USEC : ROUTE_CACHE_NATIVE_TTL_USEC);
     entry->link = g_list_alloc ();
     entry->link->data = entry;
     g_queue_push_head_link (&route_cache_lru, entry->link);
