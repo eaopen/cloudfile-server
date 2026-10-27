@@ -48,6 +48,9 @@ func TestV2ObjectStoreSelectsManagedRoute(t *testing.T) {
 				routed.lookup = func(string) (string, string, string, error) {
 					return "auto-local:invalid", repoID, "active", nil
 				}
+				// The fake route registry changed out of band: clear the prior
+				// positive route as an offline maintenance/restart would do.
+				routed.invalidateRoute(repoID)
 				if err := backend.write(repoID, objID, strings.NewReader("incorrect"), false); err == nil {
 					t.Fatal("invalid binding was not rejected")
 				}
