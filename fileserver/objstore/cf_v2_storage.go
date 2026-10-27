@@ -26,7 +26,8 @@ func InitV2Storage(db *sql.DB) { v2StorageDB = db }
 // This is a physical-path cache, never an authorization or object-content cache.
 const (
 	v2RouteCacheCapacity = 1024
-	v2RouteCacheTTL      = 10 * time.Second
+	v2RouteCacheTTL       = 10 * time.Second
+	v2NativeRouteCacheTTL = time.Second
 )
 
 type v2CachedRoute struct {
@@ -71,7 +72,11 @@ func (b *v2StorageBackend) rememberRoute(repoID, route, legacyKey, legacyState s
 	if elem := b.cacheIndex[repoID]; elem != nil {
 		b.cacheLRU.Remove(elem)
 	}
-	entry := &v2CachedRoute{repoID, route, legacyKey, legacyState, time.Now().Add(v2RouteCacheTTL)}
+	ttl := v2RouteCacheTTL
+	if route == "" { // CE/VirtualRepo lifecycle facts are not immutable.
+		ttl = v2NativeRouteCacheTTL
+	}
+	entry := &v2CachedRoute{repoID, route, legacyKey, legacyState, time.Now().Add(ttl)}
 	b.cacheIndex[repoID] = b.cacheLRU.PushFront(entry)
 	if b.cacheLRU.Len() > v2RouteCacheCapacity {
 		oldest := b.cacheLRU.Remove(b.cacheLRU.Back()).(*v2CachedRoute)
