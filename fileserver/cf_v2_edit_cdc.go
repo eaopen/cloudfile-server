@@ -226,7 +226,7 @@ func cfCDCPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		cfEditFail(w, 503, "NATIVE_FS")
 		return
 	}
-	cfEditCommit(w, r, c, repo, action, m.Base, proof, f.FileID, m.Size, &gc)
+	cfEditCommit(w, r, c, repo, action, m.Base, proof, f.FileID, m.Size, gc)
 }
 
 type cfCDCBoundedWriter struct {

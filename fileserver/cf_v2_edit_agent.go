@@ -575,16 +575,23 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
+	// Capture before creating native blocks: full upload needs the same online
+	// GC fence as CDC, otherwise GC can remove data before Branch publication.
+	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	if err != nil {
+		cfEditFail(w, 503, "GC_UNAVAILABLE")
+		return
+	}
 	fileID, size, err := indexBlocks(ctx, repo.StoreID, repo.Version, tmp.Name(), nil, nil)
 	if err != nil || !cfEditHex(fileID, 40) || size != n {
 		cfEditFail(w, 503, "INDEX_FAILED")
 		return
 	}
-	cfEditCommit(w, r, c, repo, action, base, proof, fileID, size, nil)
+	cfEditCommit(w, r, c, repo, action, base, proof, fileID, size, gcID)
 }
 
 // Both transports share exactly one final ACL/CAS/Guard transaction.
-func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo, action, base string, proof cfEditProof, fileID string, size int64, gcID *string) {
+func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo, action, base string, proof cfEditProof, fileID string, size int64, gcID string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	// Phase A: ACL proof and the single Hub write decision happen before the
@@ -604,13 +611,15 @@ func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 	defer tx.Rollback()
 	// Follow native publication lock order: GCID before Branch. A changed epoch
 	// invalidates staged receipts rather than publishing references GC may remove.
-	if gcID != nil {
-		var current sql.NullString
-		e := tx.QueryRowContext(ctx, "SELECT gc_id FROM GCID WHERE repo_id=? FOR UPDATE", repo.StoreID).Scan(&current)
-		if (e != nil && e != sql.ErrNoRows) || current.String != *gcID {
-			cfEditFail(w, 409, "GC_CHANGED")
-			return
-		}
+	var current sql.NullString
+	e := tx.QueryRowContext(ctx, "SELECT gc_id FROM GCID WHERE repo_id=? FOR UPDATE", repo.StoreID).Scan(&current)
+	if e != nil && e != sql.ErrNoRows {
+		cfEditFail(w, 503, "GC_UNAVAILABLE")
+		return
+	}
+	if current.String != gcID {
+		cfEditFail(w, 409, "GC_CHANGED")
+		return
 	}
 	head, err := cfEditHead(ctx, tx, repo.ID)
 	if err != nil {
