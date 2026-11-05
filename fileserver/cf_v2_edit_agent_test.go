@@ -331,3 +331,21 @@ func TestCFEditReadOnlyDeniedBeforeAnyRepoOrCheckoutAction(t *testing.T) {
 		}
 	}
 }
+
+// Exercise the old failure boundary and the new inclusive limit without allocating large files.
+func TestCFEditLargeFileBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		size    uint64
+		allowed bool
+	}{
+		{128 << 20, true}, {(128 << 20) + 1, true}, {1 << 30, true}, {(1 << 30) + 1, false},
+	} {
+		w := httptest.NewRecorder()
+		if cfEditSizeAllowed(w, tc.size) != tc.allowed {
+			t.Fatalf("size %d", tc.size)
+		}
+		if !tc.allowed && (w.Code != 413 || !strings.Contains(w.Body.String(), "FILE_TOO_LARGE")) {
+			t.Fatal(w.Body.String())
+		}
+	}
+}

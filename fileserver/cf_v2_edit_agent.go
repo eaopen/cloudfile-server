@@ -33,7 +33,16 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/repomgr"
 )
 
-const cfEditMaxSize int64 = 128 << 20
+// Keep read, publish and recovery at one bounded limit so large files remain saveable.
+const cfEditMaxSize int64 = 1 << 30
+
+func cfEditSizeAllowed(w http.ResponseWriter, size uint64) bool {
+	if size <= uint64(cfEditMaxSize) {
+		return true
+	}
+	cfEditJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{"code": "FILE_TOO_LARGE", "size": size, "max_size": cfEditMaxSize})
+	return false
+}
 
 type cfEditClaims struct {
 	UID      string `json:"uid"`
@@ -263,8 +272,11 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 		return
 	}
 	f, err := fsmgr.GetSeafile(repo.StoreID, id)
-	if err != nil || f.FileSize > uint64(cfEditMaxSize) {
+	if err != nil {
 		cfEditFail(w, 503, "FILE_UNAVAILABLE")
+		return
+	}
+	if !cfEditSizeAllowed(w, f.FileSize) {
 		return
 	}
 	tmp, err := os.CreateTemp("", "cf-edit-read-*")
@@ -291,6 +303,7 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+	w.Header().Set("X-CF-Max-File-Size", strconv.FormatInt(cfEditMaxSize, 10))
 	w.Header().Set("X-CF-File-ID", id)
 	w.Header().Set("X-CF-Repo-ID", c.RepoID)
 	w.Header().Set("X-CF-Path-B64", base64.RawURLEncoding.EncodeToString([]byte(c.FilePath)))
@@ -469,8 +482,11 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 	// Recovery may need to confirm CONTENT even if another native commit advanced
 	// the File ID. Stream-hash only on explicit status, never on ordinary reads.
 	nativeFile, e := fsmgr.GetSeafile(repo.StoreID, id)
-	if e != nil || nativeFile.FileSize > uint64(cfEditMaxSize) {
+	if e != nil {
 		cfEditFail(w, 503, "STATUS_UNAVAILABLE")
+		return
+	}
+	if !cfEditSizeAllowed(w, nativeFile.FileSize) {
 		return
 	}
 	hasher := sha256.New()
@@ -505,8 +521,11 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 	cfEditJSON(w, 200, out)
 }
 func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo) {
-	if r.Method != "POST" || r.ContentLength < 0 || r.ContentLength > cfEditMaxSize {
+	if r.Method != "POST" || r.ContentLength < 0 {
 		cfEditFail(w, 400, "INVALID_LENGTH")
+		return
+	}
+	if !cfEditSizeAllowed(w, uint64(r.ContentLength)) {
 		return
 	}
 	action := r.Header.Get("X-CF-Action")
