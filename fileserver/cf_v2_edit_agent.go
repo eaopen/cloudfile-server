@@ -279,26 +279,23 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 	if !cfEditSizeAllowed(w, f.FileSize) {
 		return
 	}
-	tmp, err := os.CreateTemp("", "cf-edit-read-*")
-	if err != nil {
-		cfEditFail(w, 503, "IO_ERROR")
-		return
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	// Validate object sizes before sending headers, then stream native blocks.
+	// This avoids staging the complete large file on the fileserver's temp disk.
+	var n int64
 	for _, block := range f.BlkIDs {
-		if !cfEditHex(block, 40) || blockmgr.Read(repo.StoreID, block, tmp) != nil {
+		if !cfEditHex(block, 40) {
 			cfEditFail(w, 503, "BLOCK_UNAVAILABLE")
 			return
 		}
+		size, e := blockmgr.Stat(repo.StoreID, block)
+		if e != nil || size < 0 || size > cfEditMaxSize-n {
+			cfEditFail(w, 503, "BLOCK_UNAVAILABLE")
+			return
+		}
+		n += size
 	}
-	n, err := tmp.Seek(0, io.SeekCurrent)
-	if err != nil || uint64(n) != f.FileSize {
+	if uint64(n) != f.FileSize {
 		cfEditFail(w, 503, "BLOCK_MISMATCH")
-		return
-	}
-	if _, err = tmp.Seek(0, io.SeekStart); err != nil {
-		cfEditFail(w, 503, "IO_ERROR")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -310,7 +307,11 @@ func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *r
 	w.Header().Set("X-CF-Mode", c.Mode)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(200)
-	_, _ = io.Copy(w, tmp)
+	// After headers, an I/O failure must abort the response, never append JSON
+	// to file bytes or report a successful truncated download. Agent validates length.
+	if cfEditStreamBlocks(r, w, repo.StoreID, f.BlkIDs, n, blockmgr.Read) != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // cfEditPeerIP trusts proxy metadata ONLY from a loopback connection.
@@ -579,6 +580,13 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 		cfEditFail(w, 503, "INDEX_FAILED")
 		return
 	}
+	cfEditCommit(w, r, c, repo, action, base, proof, fileID, size, nil)
+}
+
+// Both transports share exactly one final ACL/CAS/Guard transaction.
+func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo, action, base string, proof cfEditProof, fileID string, size int64, gcID *string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
 	// Phase A: ACL proof and the single Hub write decision happen before the
 	// Branch transaction. cf-edit publication is a Branch(master) writer path;
 	// reviewed Hub ACL writers take the same lock, so a later ACL change makes
@@ -594,6 +602,16 @@ func cfEditPublish(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo
 		return
 	}
 	defer tx.Rollback()
+	// Follow native publication lock order: GCID before Branch. A changed epoch
+	// invalidates staged receipts rather than publishing references GC may remove.
+	if gcID != nil {
+		var current sql.NullString
+		e := tx.QueryRowContext(ctx, "SELECT gc_id FROM GCID WHERE repo_id=? FOR UPDATE", repo.StoreID).Scan(&current)
+		if (e != nil && e != sql.ErrNoRows) || current.String != *gcID {
+			cfEditFail(w, 409, "GC_CHANGED")
+			return
+		}
+	}
 	head, err := cfEditHead(ctx, tx, repo.ID)
 	if err != nil {
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
@@ -699,7 +717,8 @@ func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
 	if mode != "optimistic-edit" {
 		return false
 	}
-	return route == "read" || route == "status" ||
+	return route == "read" || route == "status" || route == "capabilities" || route == "cdc-plan" || route == "cdc-block" ||
+		(route == "cdc-publish" && action == "optimistic") ||
 		(route == "publish" && action == "optimistic")
 }
 
@@ -760,9 +779,38 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditGuardAction(w, r, c, repo, "release")
 	case "status":
 		cfEditStatus(w, r, c, repo)
+	case "capabilities":
+		if r.Method != "GET" {
+			cfEditFail(w, 405, "METHOD")
+			return
+		}
+		cfEditJSON(w, 200, map[string]interface{}{"cdc_v1": true, "max_file_size": cfEditMaxSize, "max_block_size": cfCDCMaxBlock, "max_blocks": cfCDCMaxBlocks})
+	case "cdc-plan":
+		cfCDCPlan(w, r, c, repo)
+	case "cdc-block":
+		cfCDCBlockUpload(w, r, c, repo)
+	case "cdc-publish":
+		cfCDCPublish(w, r, c, repo)
 	case "publish":
 		cfEditPublish(w, r, c, repo)
 	default:
 		cfEditFail(w, 404, "UNKNOWN_EDIT_ROUTE")
 	}
+}
+
+// Injectable reader keeps disconnect/truncation behavior testable without live storage.
+func cfEditStreamBlocks(r *http.Request, w io.Writer, store string, ids []string, size int64, read func(string, string, io.Writer) error) error {
+	bounded := &cfCDCBoundedWriter{w: w, remaining: size}
+	for _, id := range ids {
+		if e := r.Context().Err(); e != nil {
+			return e
+		}
+		if e := read(store, id, bounded); e != nil {
+			return e
+		}
+	}
+	if bounded.remaining != 0 {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
 }

@@ -398,8 +398,8 @@ func newHTTPRouter() *mux.Router {
 	r.Handle("/files/{.*}/{.*}", appHandler(accessCB))
 	r.Handle("/blks/{.*}/{.*}", appHandler(accessBlksCB))
 	r.Handle("/zip/{.*}", appHandler(accessZipCB))
-	// Optional scoped Rust edit transport; GET and writes are rejected when off.
-	r.HandleFunc("/cf-edit/v1/{operation:read|checkout|renew|release|status|publish}", cfEditAPI)
+	// All CDC operations share scoped V2 authorization and the native commit fence.
+	r.HandleFunc("/cf-edit/v1/{operation:read|checkout|renew|release|status|publish|capabilities|cdc-plan|cdc-block|cdc-publish}", cfEditAPI)
 	r.Handle("/upload-api/{.*}", appHandler(uploadAPICB))
 	r.Handle("/upload-aj/{.*}", appHandler(uploadAjaxCB))
 	r.Handle("/update-api/{.*}", appHandler(updateAPICB))
