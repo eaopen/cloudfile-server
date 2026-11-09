@@ -261,32 +261,6 @@ func cfEditPermissionPreflight(ctx context.Context, repoID, user, filePath strin
 	}
 	return proof, cfACLAuthorize(ctx, repoID, user, []cfACLCheck{{Path: filePath, Kind: "file", Action: "write"}})
 }
-// cfEditMeta 只回答「这个文件的当前版本是什么」，用于客户端判断本地副本是否已经是最新。
-// 大文件读一次要几十秒，而这里只查一次对象头 —— 命中时客户端可以完全不下载。
-func cfEditMeta(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo) {
-	if r.Method != "GET" {
-		cfEditFail(w, 405, "METHOD")
-		return
-	}
-	id, _, err := cfEditActual(repo, repo.HeadCommitID, c.FilePath)
-	if err != nil {
-		cfEditFail(w, 409, "VERSION_CHANGED")
-		return
-	}
-	f, err := fsmgr.GetSeafile(repo.StoreID, id)
-	if err != nil {
-		cfEditFail(w, 503, "FILE_UNAVAILABLE")
-		return
-	}
-	if !cfEditSizeAllowed(w, f.FileSize) {
-		return
-	}
-	cfEditJSON(w, 200, map[string]interface{}{
-		"file_id": id,
-		"size":    f.FileSize,
-	})
-}
-
 func cfEditRead(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo *repomgr.Repo) {
 	if r.Method != "GET" {
 		cfEditFail(w, 405, "METHOD")
@@ -740,7 +714,7 @@ func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 // ALSO happens to have write permission. Do not let it reach native Guard or
 // publish code even on installations that have a Checkout table.
 func cfEditReadOnlyRoute(mode, route string) bool {
-	return mode != "local-view" || route == "read" || route == "meta"
+	return mode != "local-view" || route == "read"
 }
 
 // Without Guard storage, local-view only reads and optimistic-edit can
@@ -752,7 +726,7 @@ func cfEditAllowedWithoutCheckout(mode, route, action string) bool {
 	if mode != "optimistic-edit" {
 		return false
 	}
-	return route == "read" || route == "status" || route == "meta" || route == "capabilities" || route == "cdc-plan" || route == "cdc-block" ||
+	return route == "read" || route == "status" || route == "capabilities" || route == "cdc-plan" || route == "cdc-block" ||
 		(route == "cdc-publish" && action == "optimistic") ||
 		(route == "publish" && action == "optimistic")
 }
@@ -797,7 +771,7 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
 		return
 	}
-	write := route != "read" && route != "status" && route != "meta"
+	write := route != "read" && route != "status"
 	repo, err := cfEditAuthorize(c, write)
 	if err != nil {
 		cfEditAuthFail(w, err)
@@ -814,8 +788,6 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditGuardAction(w, r, c, repo, "release")
 	case "status":
 		cfEditStatus(w, r, c, repo)
-	case "meta":
-		cfEditMeta(w, r, c, repo)
 	case "capabilities":
 		if r.Method != "GET" {
 			cfEditFail(w, 405, "METHOD")
