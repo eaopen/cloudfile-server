@@ -349,3 +349,22 @@ func TestCFEditLargeFileBoundary(t *testing.T) {
 		}
 	}
 }
+
+// meta 只是「问当前版本」，必须按只读路由放行：本地查看（local-view）也要能用它
+// 判断本地副本是否已是最新，否则第二次打开仍旧白白下载一遍大文件。
+func TestCFEditMetaIsAReadOnlyRoute(t *testing.T) {
+	for _, mode := range []string{"local-view", "optimistic-edit", "exclusive-edit"} {
+		if !cfEditReadOnlyRoute(mode, "meta") {
+			t.Fatalf("%s 也应该能查询版本", mode)
+		}
+	}
+	if cfEditReadOnlyRoute("local-view", "publish") {
+		t.Fatal("只读票据不能提交")
+	}
+	if !cfEditAllowedWithoutCheckout("optimistic-edit", "meta", "") {
+		t.Fatal("无 Checkout 的机器也要能查询版本")
+	}
+	if cfEditAllowedWithoutCheckout("exclusive-edit", "meta", "") {
+		t.Fatal("独占编辑仍必须走 Checkout")
+	}
+}
