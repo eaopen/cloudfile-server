@@ -631,6 +631,18 @@ func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		cfEditFail(w, 409, "VERSION_CHANGED")
 		return
 	}
+	// A pre-issued Agent ticket is never permission to overwrite a file
+	// protected since ticket issuance. Check under the current Branch lock.
+	if option.ProtectionEnabledForRepo(repo.ID) {
+		if e := cfProtectionPath(ctx, tx, repo.ID, c.FilePath); e != nil {
+			if errors.Is(e, errCFFileProtected) {
+				cfEditFail(w, http.StatusLocked, "FILE_PROTECTED")
+			} else {
+				cfEditFail(w, 503, "FILE_PROTECTION_UNAVAILABLE")
+			}
+			return
+		}
+	}
 	if action == "optimistic" {
 		// No persistent lock or Intent is allocated for an ordinary save.
 		// The Guard query is needed only on deployments with an installed Guard.

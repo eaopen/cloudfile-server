@@ -57,6 +57,15 @@ func parseCheckoutRepoIDs(raw string) (map[string]struct{}, error) {
 	return ids, nil
 }
 
+// An opt-in file-protection scope, independent of Checkout. Empty = no extra
+// SQL on ordinary libraries. Hub and native services must use matching IDs.
+var CloudFileProtectionRepos map[string]struct{}
+
+func ProtectionEnabledForRepo(repoID string) bool {
+	_, ok := CloudFileProtectionRepos[repoID]
+	return ok
+}
+
 // True only after enabled Checkout has a usable installed Guard table.
 var V2GuardAvailable bool
 
@@ -179,6 +188,7 @@ func LoadFileServerOptions(centralDir string) {
 	CloudFileTrustedTLSProxies = nil
 	CloudFileCheckoutEnabled = false
 	CloudFileCheckoutRepos = make(map[string]struct{})
+	CloudFileProtectionRepos = make(map[string]struct{})
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
 		// Reuse CF_ENABLE_CHECKOUT -> [cloudfile] checkout_enabled from Docker.
 		// Invalid values must not silently disable an explicitly requested fence.
@@ -194,6 +204,13 @@ func LoadFileServerOptions(centralDir string) {
 			CloudFileCheckoutRepos, parseErr = parseCheckoutRepoIDs(key.String())
 			if parseErr != nil {
 				log.Fatalf("Invalid CloudFile checkout_repo_ids: %v", parseErr)
+			}
+		}
+		if key, keyErr := section.GetKey("protection_repo_ids"); keyErr == nil {
+			var parseErr error
+			CloudFileProtectionRepos, parseErr = parseCheckoutRepoIDs(key.String())
+			if parseErr != nil {
+				log.Fatalf("Invalid CloudFile protection_repo_ids: %v", parseErr)
 			}
 		}
 		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {
