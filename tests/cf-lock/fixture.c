@@ -9,13 +9,22 @@ typedef int SeafDB;
 typedef int SeafDBRow;
 static SeafDB database;
 static gboolean checkout;
+struct _SeafileSession;
+static struct _SeafileSession *seaf;
+static int cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
+{
+    return checkout ? 1 : 0;
+}
 static int sql_calls, exact_rows, descendant_rows;
 static gboolean cf_ext_config_bool(const char *key)
 {
     /* A stale file_lock_enabled=true must not activate Checkout. */
     return !strcmp(key, "checkout_enabled") ? checkout : TRUE;
 }
-static char *cf_ext_config_string(const char *key) { return NULL; }
+static char *cf_ext_config_string(const char *key)
+{
+    return !strcmp(key, "checkout_repo_ids") && checkout ? g_strdup("fixture") : NULL;
+}
 static SeafDB *cf_ext_database(void) { return &database; }
 static int seaf_db_statement_foreach_row(SeafDB *db, const char *sql,
     gboolean (*callback)(SeafDBRow *, void *), void *data, int count, ...)
