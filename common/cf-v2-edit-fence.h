@@ -10,6 +10,9 @@ struct _SeafileSession;
  * Pure in-memory policy check; never queries Guard for OFF repositories. */
 int cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id);
 
+// Separate permanent file-protection scope; never interpreted as a Checkout.
+int cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_id);
+
 /* One candidate commit diff is calculated before acquiring Branch(master)
  * for OPTIONAL libraries. Recheck the current Guard rows under the short final
  * transaction, without traversing Seafile objects while holding Branch. */

@@ -69,6 +69,49 @@ canonical_repo_id(const char *id)
     return TRUE;
 }
 
+/* Repository allowlist parsed once; OFF libraries never query Protection.
+ * Protection has no lease and is independent of cf_edit_guard / Checkout. */
+static gsize protection_policy_state = 0;
+static GHashTable *protection_repo_ids;
+
+int
+cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_id)
+{
+    if (g_once_init_enter(&protection_policy_state)) {
+        gboolean valid = session && session->config;
+        GError *error = NULL;
+        char *raw = valid ? g_key_file_get_string(session->config, "cloudfile",
+                                                  "protection_repo_ids", &error) : NULL;
+        if (error) {
+            valid = error->domain == G_KEY_FILE_ERROR &&
+                (error->code == G_KEY_FILE_ERROR_KEY_NOT_FOUND ||
+                 error->code == G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
+            g_clear_error(&error);
+        }
+        protection_repo_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        if (raw && strlen(raw) > 8192)
+            valid = FALSE;
+        if (valid && raw && *g_strstrip(raw)) {
+            char **parts = g_strsplit(raw, ",", -1);
+            for (char **q = parts; *q && valid; ++q) {
+                char *id = g_strstrip(*q);
+                if (!canonical_repo_id(id) || g_hash_table_contains(protection_repo_ids, id))
+                    valid = FALSE;
+                else
+                    g_hash_table_add(protection_repo_ids, g_strdup(id));
+            }
+            g_strfreev(parts);
+        }
+        g_free(raw);
+        if (!valid)
+            seaf_warning("CloudFile: invalid file protection repository configuration; writes denied.\n");
+        g_once_init_leave(&protection_policy_state, valid ? 1 : 2);
+    }
+    if (protection_policy_state == 2) return -1;
+    if (!repo_id) return 0;
+    return g_hash_table_contains(protection_repo_ids, repo_id) ? 1 : 0;
+}
+
 int
 cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
 {
@@ -183,9 +226,12 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
     prepared->repo_id = g_strdup(repo_id);
     prepared->old_id = g_strdup(old_commit_id);
     prepared->new_id = g_strdup(new_commit_id);
-    if (policy == 0 || !strcmp(old_commit_id, new_commit_id))
+    int protection = cf_v2_file_protection_policy(session, repo_id);
+    if (policy < 0 || protection < 0)
+        goto fail;
+    if ((policy == 0 && protection == 0) || !strcmp(old_commit_id, new_commit_id))
         return prepared;
-    if (guard_available(session) <= 0)
+    if (policy == 1 && guard_available(session) <= 0)
         goto fail;
     SeafRepo *repo = seaf_repo_manager_get_repo(session->repo_mgr, repo_id);
     if (!repo)
@@ -212,6 +258,58 @@ fail:
     return NULL;
 }
 
+/* Exact key lookup for files, prefix lookup for removed/renamed directories.
+ * This runs after Branch(master) is locked and does not scan all protected rows.
+ * A failed query blocks the candidate, never silently unprotects the file. */
+static gboolean
+protection_found(SeafDBRow *row, void *data)
+{
+    (void)row;
+    (void)data;
+    return FALSE;
+}
+
+static char *
+protection_prefix(const char *path)
+{
+    GString *s = g_string_new("");
+    for (const char *c = path; *c; ++c) {
+        if (*c == '!' || *c == '%' || *c == '_')
+            g_string_append_c(s, '!');
+        g_string_append_c(s, *c);
+    }
+    g_string_append(s, "/%");
+    return g_string_free(s, FALSE);
+}
+
+static int
+protection_changed_path(SeafDBTrans *trans, const char *repo_id, const char *changed)
+{
+    if (!changed || !*changed)
+        return 0;
+    char *path = changed[0] == '/' ? g_strdup(changed) : g_strconcat("/", changed, NULL);
+    if (!strcmp(path, "/") || strlen(path) > 4096 || !g_utf8_validate(path, -1, NULL)) {
+        g_free(path);
+        return -1;
+    }
+    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, path, -1);
+    int n = seaf_db_trans_foreach_selected_row(trans,
+        "SELECT 1 FROM cf_file_protection WHERE repo_id=? "
+        "AND path_hash=UNHEX(?) AND path=? LIMIT 1 FOR UPDATE",
+        protection_found, NULL, 3,
+        "string", repo_id, "string", hash, "string", path);
+    g_free(hash);
+    if (n != 0) { g_free(path); return -1; }
+    char *prefix = protection_prefix(path);
+    n = seaf_db_trans_foreach_selected_row(trans,
+        "SELECT 1 FROM cf_file_protection FORCE INDEX (cf_file_protection_prefix) "
+        "WHERE repo_id=? AND path LIKE ? ESCAPE '!' LIMIT 1 FOR UPDATE",
+        protection_found, NULL, 2, "string", repo_id, "string", prefix);
+    g_free(prefix);
+    g_free(path);
+    return n == 0 ? 0 : -1;
+}
+
 int
 cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
                                  struct _SeafileSession *session,
@@ -225,31 +323,39 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         g_strcmp0(prepared->old_id, old_commit_id) ||
         g_strcmp0(prepared->new_id, new_commit_id))
         return -1;
-    int policy = cf_v2_edit_repo_checkout(session, repo_id);
-    if (policy <= 0)
-        return policy;
-    if (guard_available(session) <= 0)
-        return -1;
+    int checkout = cf_v2_edit_repo_checkout(session, repo_id);
+    int protection = cf_v2_file_protection_policy(session, repo_id);
+    if (checkout < 0 || protection < 0) return -1;
+    if (checkout == 0 && protection == 0) return 0;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
+    if (protection == 1) {
+        guint count = 0;
+        for (GList *entry = prepared->changes; entry; entry = entry->next) {
+            if (++count > 8192) return -1;
+            DiffEntry *delta = entry->data;
+            if (!delta || protection_changed_path(trans, repo_id, delta->name) ||
+                protection_changed_path(trans, repo_id, delta->new_name))
+                return -1;
+        }
+    }
+    if (checkout == 0) return 0;
+    if (guard_available(session) <= 0) return -1;
 
     GuardPaths guards = {g_ptr_array_new_with_free_func(g_free), FALSE};
-    int count = seaf_db_trans_foreach_selected_row(trans,
+    int n = seaf_db_trans_foreach_selected_row(trans,
         "SELECT path FROM cf_edit_guard FORCE INDEX (cf_edit_guard_active) "
         "WHERE repo_id=? AND guard_id IS NOT NULL "
         "AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE",
         read_guard_path, &guards, 1, "string", repo_id);
     int rc = -1;
-    if (count < 0 || guards.invalid)
-        goto done;
+    if (n < 0 || guards.invalid) goto done;
     rc = 0;
-    for (GList *entry = prepared->changes; entry != NULL && rc == 0;
-         entry = entry->next) {
+    for (GList *entry = prepared->changes; entry && rc == 0; entry = entry->next) {
         DiffEntry *delta = entry->data;
         for (guint i = 0; i < guards.paths->len; ++i) {
             const char *path = g_ptr_array_index(guards.paths, i);
-            if (path_touches(delta->name, path) ||
-                path_touches(delta->new_name, path)) {
+            if (path_touches(delta->name, path) || path_touches(delta->new_name, path)) {
                 rc = -1;
                 break;
             }

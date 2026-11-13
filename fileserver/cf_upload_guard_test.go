@@ -22,6 +22,8 @@ type uploadGuardFixture struct {
 	tableCount              int
 	currentSchema           bool
 	queries                 []string
+	protectionExact         bool
+	protectionDescendant    bool
 }
 type uploadGuardDriver struct{}
 
@@ -73,6 +75,17 @@ func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []d
 					rows.values = append(rows.values, []driver.Value{name, int64(i + 1), part.name, part.nonUnique, nil})
 				}
 			}
+		}
+	} else if strings.Contains(query, "FROM cf_file_protection") {
+		if c.fixture.failGuard {
+			return nil, errors.New("protection SQL unavailable")
+		}
+		if len(args) < 2 || args[0].Value != "repo" {
+			return nil, errors.New("wrong protected repository")
+		}
+		if (strings.Contains(query, "path LIKE") && c.fixture.protectionDescendant) ||
+			(strings.Contains(query, "path_hash") && c.fixture.protectionExact) {
+			rows.values = append(rows.values, []driver.Value{int64(1)})
 		}
 	} else {
 		if c.fixture.failGuard {

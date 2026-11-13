@@ -24,6 +24,7 @@
 #include "seaf-utils.h"
 #include "cf-storage.h"
 #include "cf-v2-storage.h"
+#include "cf-v2-edit-fence.h"
 
 #define REAP_TOKEN_INTERVAL 300 /* 5 mins */
 #define DECRYPTED_TOKEN_TTL 3600 /* 1 hour */
@@ -668,7 +669,15 @@ del_repo:
 int
 seaf_repo_manager_del_repo (SeafRepoManager *mgr, const char *repo_id, GError **error)
 {
-    /* CE owner/admin management is not a directory-content operation. */
+    /* V1: do not allow permanent file protection to be bypassed by deleting
+     * the entire repository outside the Branch publication seam. A protected
+     * library can be retired only by a coordinated configuration change after
+     * all protected originals are explicitly unprotected. */
+    if (cf_v2_file_protection_policy(mgr->seaf, repo_id) != 0) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                    "Library deletion is unavailable while file protection is enabled");
+        return -1;
+    }
     return del_repo_legacy (mgr, repo_id, error);
 }
 
