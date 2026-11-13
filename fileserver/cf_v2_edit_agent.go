@@ -358,6 +358,18 @@ func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, rep
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
 		return
 	}
+	// A ticket issued before protection must not acquire a new exclusive
+	// lease after the file was finalized. The current Branch is already locked.
+	if option.ProtectionEnabledForRepo(repo.ID) {
+		if checkErr := cfProtectionPath(ctx, tx, repo.ID, c.FilePath); checkErr != nil {
+			if errors.Is(checkErr, errCFFileProtected) {
+				cfEditFail(w, http.StatusLocked, "FILE_PROTECTED")
+			} else {
+				cfEditFail(w, 503, "FILE_PROTECTION_UNAVAILABLE")
+			}
+			return
+		}
+	}
 	current, _, err := cfEditActual(repo, head, c.FilePath)
 	if err != nil || current != c.BaseID {
 		cfEditFail(w, 409, "VERSION_CHANGED")
