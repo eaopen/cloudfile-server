@@ -16,6 +16,8 @@ import (
 // Exercise production SQL selection and row validation through database/sql.
 // This fixture does not certify MySQL lock behavior or a deployed upload.
 type uploadGuardFixture struct {
+	protectedRows           map[string]string
+	virtualPrefix           string
 	columns                 []string
 	paths                   []driver.Value
 	failMetadata, failGuard bool
@@ -76,12 +78,24 @@ func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []d
 				}
 			}
 		}
+	} else if strings.Contains(query, "FROM VirtualRepo") {
+		rows.names = []string{"origin", "path"}
+		rows.values = append(rows.values, []driver.Value{"repo", c.fixture.virtualPrefix})
+	} else if strings.Contains(query, "FROM Branch") {
+		rows.values = append(rows.values, []driver.Value{strings.Repeat("a", 40)})
 	} else if strings.Contains(query, "FROM cf_file_protection") {
 		if c.fixture.failGuard {
 			return nil, errors.New("protection SQL unavailable")
 		}
 		if len(args) < 2 || args[0].Value != "repo" {
 			return nil, errors.New("wrong protected repository")
+		}
+		if strings.Contains(query, "SELECT path,file_id") {
+			rows.names = []string{"path", "file_id"}
+			for p, id := range c.fixture.protectedRows {
+				rows.values = append(rows.values, []driver.Value{p, id})
+			}
+			return rows, nil
 		}
 		if (strings.Contains(query, "path LIKE") && c.fixture.protectionDescendant) ||
 			(strings.Contains(query, "path_hash") && c.fixture.protectionExact) {

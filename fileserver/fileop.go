@@ -2311,6 +2311,12 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	if err != nil {
 		return false, err
 	}
+	virtualCtx, virtualCancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	virtualProtection, err := cfPrepareVirtualProtection(virtualCtx, repoID, oldCommitID, newCommitID)
+	virtualCancel()
+	if err != nil {
+		return false, err
+	}
 	guardChanges, err := cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID)
 	if err != nil {
 		return false, err
@@ -2350,6 +2356,10 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		}
 	}
 
+	if err := virtualProtection.lockOrigin(ctx, trans); err != nil {
+		trans.Rollback()
+		return false, err
+	}
 	var commitID string
 	name := "master"
 	sqlStr = "SELECT commit_id FROM Branch WHERE name = ? AND repo_id = ? FOR UPDATE"
@@ -2369,6 +2379,10 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	// ACL rules are immutable during this final Branch transaction because
 	// reviewed writers also acquire Branch first. No HTTP or commit diff here.
 	if err := cfACLFinal(ctx, trans, repoID, proof); err != nil {
+		trans.Rollback()
+		return false, err
+	}
+	if err := virtualProtection.check(ctx, trans); err != nil {
 		trans.Rollback()
 		return false, err
 	}
