@@ -23,6 +23,9 @@ CfV2EditPrepared *cf_v2_edit_prepare_unscoped_branch(
 void cf_v2_edit_prepared_free(CfV2EditPrepared *prepared);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CfV2EditPrepared, cf_v2_edit_prepared_free)
 
+/* Lock origin before the virtual Branch; shared with Hub protect/unprotect. */
+int cf_v2_edit_lock_origin(SeafDBTrans *trans, const CfV2EditPrepared *prepared);
+
 /* Called only after Branch(master) FOR UPDATE, before updating Branch.
  * Zero: unscoped write does not touch a reserved file.
  * -1: guarded/conflicting/unverifiable; caller MUST rollback. */

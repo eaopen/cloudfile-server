@@ -558,6 +558,11 @@ test_and_update_branch (SeafBranchManager *mgr,
     default:
         g_return_val_if_reached (-1);
     }
+    if (cf_v2_edit_lock_origin(trans, guard_changes) < 0) {
+        seaf_db_rollback(trans);
+        seaf_db_trans_close(trans);
+        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+    }
     int head_rows = seaf_db_trans_foreach_selected_row (trans, sql,
                                                           get_commit_id, commit_id,
                                                           2, "string", branch->name,

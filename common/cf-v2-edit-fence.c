@@ -9,6 +9,7 @@
 #include "common.h"
 #include "commit-mgr.h"
 #include "diff-simple.h"
+#include "fs-mgr.h"
 #include "log.h"
 #include "repo-mgr.h"
 #include "seafile-session.h"
@@ -197,7 +198,109 @@ struct _CfV2EditPrepared {
     char *old_id;
     char *new_id;
     GList *changes;
+    char *origin;
+    char *prefix;
+    GHashTable *candidate_ids;
 };
+
+/* Immutable candidate proofs for origin-scoped virtual publications. */
+static char *protection_prefix(const char *path);
+
+static gboolean
+virtual_mapping(SeafDBRow *row, void *data)
+{
+    CfV2EditPrepared *p = data;
+    p->origin = g_strdup(seaf_db_row_get_column_text(row, 0));
+    p->prefix = g_strdup(seaf_db_row_get_column_text(row, 1));
+    return FALSE;
+}
+
+typedef struct {
+    CfV2EditPrepared *prepared;
+    struct _SeafileSession *session;
+    const char *root;
+    int version;
+    gboolean final;
+    gboolean invalid;
+    guint count;
+} VirtualProof;
+
+static gboolean
+virtual_protected_row(SeafDBRow *row, void *data)
+{
+    VirtualProof *proof = data;
+    CfV2EditPrepared *p = proof->prepared;
+    const char *path = seaf_db_row_get_column_text(row, 0);
+    const char *id = seaf_db_row_get_column_text(row, 1);
+    if (!path || !id || ++proof->count > 8192 ||
+        !g_str_has_prefix(path, p->prefix) || path[strlen(p->prefix)] != '/') {
+        proof->invalid = TRUE;
+        return FALSE;
+    }
+    if (proof->final) {
+        const char *candidate = g_hash_table_lookup(p->candidate_ids, path);
+        if (!candidate || !*candidate || strcmp(candidate, id)) {
+            proof->invalid = TRUE;
+            return FALSE;
+        }
+    } else if (!g_hash_table_contains(p->candidate_ids, path)) {
+        if (g_hash_table_size(p->candidate_ids) >= 8192) { proof->invalid = TRUE; return FALSE; }
+        GError *error = NULL;
+        char *candidate = seaf_fs_manager_get_seafile_id_by_path(
+            proof->session->fs_mgr, p->origin, proof->version, proof->root,
+            path + strlen(p->prefix), &error);
+        g_clear_error(&error);
+        g_hash_table_insert(p->candidate_ids, g_strdup(path), candidate ? candidate : g_strdup(""));
+    }
+    return TRUE;
+}
+
+static int
+virtual_rows(SeafDBTrans *trans, VirtualProof *proof, const char *changed)
+{
+    if (!changed || !*changed) return 0;
+    CfV2EditPrepared *p = proof->prepared;
+    char *path = g_strconcat(p->prefix, "/", changed[0] == '/' ? changed + 1 : changed, NULL);
+    char *pattern = protection_prefix(path);
+    const char *query = "SELECT path,file_id FROM cf_file_protection "
+        "WHERE repo_id=? AND (path=? OR path LIKE ? ESCAPE '!') LIMIT 8193";
+    char *sql = g_strconcat(query, trans ? " FOR UPDATE" : "", NULL);
+    proof->count = 0;
+    int n = trans ? seaf_db_trans_foreach_selected_row(trans, sql,
+        virtual_protected_row, proof, 3, "string", p->origin, "string", path, "string", pattern)
+        : seaf_db_statement_foreach_row(proof->session->db, sql,
+        virtual_protected_row, proof, 3, "string", p->origin, "string", path, "string", pattern);
+    g_free(sql); g_free(pattern); g_free(path);
+    return n < 0 || proof->invalid ? -1 : 0;
+}
+
+static gboolean
+virtual_origin_head(SeafDBRow *row, void *data)
+{
+    const char *head = seaf_db_row_get_column_text(row, 0);
+    *(gboolean *)data = head && strlen(head) == 40;
+    return FALSE;
+}
+
+int
+cf_v2_edit_lock_origin(SeafDBTrans *trans, const CfV2EditPrepared *prepared)
+{
+    if (!prepared) return -1;
+    if (!prepared->origin) return 0;
+    gboolean found = FALSE;
+    int n = seaf_db_trans_foreach_selected_row(trans,
+        "SELECT commit_id FROM Branch WHERE name='master' AND repo_id=? FOR UPDATE",
+        virtual_origin_head, &found, 1, "string", prepared->origin);
+    if (n != 1 || !found) return -1;
+    CfV2EditPrepared current = {0};
+    n = seaf_db_trans_foreach_selected_row(trans,
+        "SELECT origin_repo,path FROM VirtualRepo WHERE repo_id=? FOR UPDATE",
+        virtual_mapping, &current, 1, "string", prepared->repo_id);
+    int result = n == 1 && !g_strcmp0(current.origin, prepared->origin) &&
+        !g_strcmp0(current.prefix, prepared->prefix) ? 0 : -1;
+    g_free(current.origin); g_free(current.prefix);
+    return result;
+}
 
 void
 cf_v2_edit_prepared_free(CfV2EditPrepared *prepared)
@@ -205,6 +308,9 @@ cf_v2_edit_prepared_free(CfV2EditPrepared *prepared)
     if (!prepared)
         return;
     g_list_free_full(prepared->changes, (GDestroyNotify)diff_entry_free);
+    g_free(prepared->origin);
+    g_free(prepared->prefix);
+    if (prepared->candidate_ids) g_hash_table_destroy(prepared->candidate_ids);
     g_free(prepared->repo_id);
     g_free(prepared->old_id);
     g_free(prepared->new_id);
@@ -229,7 +335,24 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
     int protection = cf_v2_file_protection_policy(session, repo_id);
     if (policy < 0 || protection < 0)
         goto fail;
-    if ((policy == 0 && protection == 0) || !strcmp(old_commit_id, new_commit_id))
+    if (g_hash_table_size(protection_repo_ids)) {
+        int n = seaf_db_statement_foreach_row(session->db,
+            "SELECT origin_repo,path FROM VirtualRepo WHERE repo_id=?",
+            virtual_mapping, prepared, 1, "string", repo_id);
+        if (n < 0) goto fail;
+        if (n > 0) {
+            if (!canonical_repo_id(prepared->origin) || !prepared->prefix ||
+                prepared->prefix[0] != '/' || !strcmp(prepared->origin, repo_id) ||
+                strlen(prepared->prefix) < 2 || g_str_has_suffix(prepared->prefix, "/")) goto fail;
+            if (cf_v2_file_protection_policy(session, prepared->origin) == 0) {
+                g_clear_pointer(&prepared->origin, g_free);
+                g_clear_pointer(&prepared->prefix, g_free);
+            } else {
+                prepared->candidate_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+            }
+        }
+    }
+    if ((policy == 0 && protection == 0 && !prepared->origin) || !strcmp(old_commit_id, new_commit_id))
         return prepared;
     if (policy == 1 && guard_available(session) <= 0)
         goto fail;
@@ -245,6 +368,15 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
                             old_commit->root_id, new_commit->root_id,
                             &prepared->changes, FALSE)
         : -1;
+    if (result == 0 && prepared->origin) {
+        VirtualProof proof = {prepared, session, new_commit->root_id, repo->version, FALSE, FALSE, 0};
+        guint count = 0;
+        for (GList *entry = prepared->changes; entry; entry = entry->next) {
+            DiffEntry *delta = entry->data;
+            if (++count > 8192 || !delta || virtual_rows(NULL, &proof, delta->name) ||
+                virtual_rows(NULL, &proof, delta->new_name)) { result = -1; break; }
+        }
+    }
     if (old_commit)
         seaf_commit_unref(old_commit);
     if (new_commit)
@@ -326,6 +458,14 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
     int checkout = cf_v2_edit_repo_checkout(session, repo_id);
     int protection = cf_v2_file_protection_policy(session, repo_id);
     if (checkout < 0 || protection < 0) return -1;
+    if (prepared->origin) {
+        VirtualProof proof = {(CfV2EditPrepared *)prepared, session, NULL, 0, TRUE, FALSE, 0};
+        for (GList *entry = prepared->changes; entry; entry = entry->next) {
+            DiffEntry *delta = entry->data;
+            if (virtual_rows(trans, &proof, delta->name) || virtual_rows(trans, &proof, delta->new_name))
+                return -1;
+        }
+    }
     if (checkout == 0 && protection == 0) return 0;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
