@@ -42,6 +42,7 @@
  * Contract: fileop-lifecycle.md
  */
 #include "cf-fileop.h"
+#include "cf-v2-edit-fence.h"
 #include "cf-lock.h"
 #include "cf-path.h"
 
@@ -3847,6 +3848,17 @@ seaf_repo_manager_move_multiple_files (SeafRepoManager *mgr,
     } else {
         seaf_repo_ref (src_repo);
         dst_repo = src_repo;
+    }
+
+    /* Cross-repo moves publish the destination before deleting the source.
+     * An item-level precheck would race a concurrent protect on the source. */
+    if (strcmp(src_repo_id, dst_repo_id) != 0 &&
+        (cf_v2_file_protection_policy(seaf, src_repo_id) != 0 ||
+         cf_v2_file_protection_policy(seaf, src_repo->store_id) != 0)) {
+        g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_BAD_ARGS,
+                    "CROSS_REPO_MOVE_DISABLED: use copy for a protection-enabled source library");
+        ret = -1;
+        goto out;
     }
 
     src_canon_path = get_canonical_path (src_path);

@@ -1599,7 +1599,7 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 	newCommitID, err := genNewCommit(repo, headCommit, rootID, user, buf, true, gcID, true)
 	if err != nil {
 		cfFileOpAborted(cfFop)
-		err := fmt.Errorf("failed to generate new commit: %v", err)
+		err := fmt.Errorf("failed to generate new commit: %w", err)
 		return err
 	}
 
@@ -1947,7 +1947,7 @@ func postMultiFiles(rsp http.ResponseWriter, r *http.Request, repoID, parentDir,
 			// report that failure directly instead of a fabricated retry timeout.
 			return &appError{nil, "The server cannot verify the Checkout guard.", http.StatusServiceUnavailable}
 		} else {
-			err := fmt.Errorf("failed to post files and gen commit: %v", err)
+			err := fmt.Errorf("failed to post files and gen commit: %w", err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 	}
@@ -3156,7 +3156,7 @@ func updateDir(repoID, dirPath, newDirID, user, headID string) (string, error) {
 		}
 		newCommitID, err := genNewCommit(repo, headCommit, newDirID, user, commitDesc, true, "", false)
 		if err != nil {
-			err := fmt.Errorf("failed to generate new commit: %v", err)
+			err := fmt.Errorf("failed to generate new commit: %w", err)
 			return "", err
 		}
 		return newCommitID, nil
@@ -3203,7 +3203,7 @@ func updateDir(repoID, dirPath, newDirID, user, headID string) (string, error) {
 
 	newCommitID, err := genNewCommit(repo, headCommit, rootID, user, commitDesc, true, gcID, true)
 	if err != nil {
-		err := fmt.Errorf("failed to generate new commit: %v", err)
+		err := fmt.Errorf("failed to generate new commit: %w", err)
 		return "", err
 	}
 
@@ -3633,7 +3633,7 @@ func putFile(rsp http.ResponseWriter, r *http.Request, repoID, parentDir, user, 
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
-			err := fmt.Errorf("failed to generate new commit: %v", err)
+			err := fmt.Errorf("failed to generate new commit: %w", err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 	}
@@ -3916,7 +3916,7 @@ func commitFileBlocks(repoID, parentDir, fileName, blockIDsJSON, user string, fi
 		if errors.Is(err, ErrGCConflict) {
 			return "", &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
-			err := fmt.Errorf("failed to generate new commit: %v", err)
+			err := fmt.Errorf("failed to generate new commit: %w", err)
 			return "", &appError{err, "", http.StatusInternalServerError}
 		}
 	}
