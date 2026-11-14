@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -476,6 +477,12 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 
 func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if e := fn(w, r); e != nil {
+		if errors.Is(e.Error, errCFFileProtected) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusLocked)
+			_, _ = w.Write([]byte(`{"error":"FILE_PROTECTED"}`))
+			return
+		}
 		if e.Error != nil && e.Code == http.StatusInternalServerError {
 			log.Errorf("path %s internal server error: %v\n", r.URL.Path, e.Error)
 		}
