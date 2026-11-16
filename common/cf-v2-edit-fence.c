@@ -6,7 +6,6 @@
  * This is a fail-closed fence, NOT an authorization path for Commit/Checkin.
  */
 #include "cf-v2-edit-fence.h"
-#include "cf-ext.h"
 #include "common.h"
 #include "commit-mgr.h"
 #include "diff-simple.h"
@@ -90,11 +89,28 @@ cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_i
     return repo_feature(session, NULL, repo_id, "protection");
 }
 
+static int
+checkout_policy(struct _SeafileSession *session, SeafDBTrans *trans, const char *repo_id)
+{
+    /* C and Go read the same deployment switch from seafile.conf. Only the
+     * per-repo selection is dynamic; a malformed switch cannot disable a fence. */
+    if (!session || !session->config)
+        return -1;
+    if (!g_key_file_has_key(session->config, "cloudfile", "checkout_enabled", NULL))
+        return 0;
+    GError *error = NULL;
+    gboolean enabled = g_key_file_get_boolean(session->config, "cloudfile", "checkout_enabled", &error);
+    if (error) {
+        g_clear_error(&error);
+        return -1;
+    }
+    return enabled ? repo_feature(session, trans, repo_id, "checkout") : 0;
+}
+
 int
 cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
 {
-    if (!cf_ext_config_bool("checkout_enabled")) return 0;
-    return repo_feature(session, NULL, repo_id, "checkout");
+    return checkout_policy(session, NULL, repo_id);
 }
 
 /* Schema is validated on guarded paths only. Its absence is a failure for an
@@ -394,8 +410,7 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         g_strcmp0(prepared->old_id, old_commit_id) ||
         g_strcmp0(prepared->new_id, new_commit_id))
         return -1;
-    int checkout = cf_ext_config_bool("checkout_enabled") ?
-        repo_feature(session, trans, repo_id, "checkout") : 0;
+    int checkout = checkout_policy(session, trans, repo_id);
     int protection = repo_feature(session, trans, repo_id, "protection");
     if (checkout != prepared->checkout || protection != prepared->protection ||
         (prepared->origin && repo_feature(session, trans, prepared->origin, "protection") !=
