@@ -17,7 +17,7 @@
 - C/Go 最终 Branch(master) 提交事务内检查稀疏保护状态，并拒绝覆盖/删除、目录结构影响及提交失败后的回退绕过。
 - FileOp PREPARE 是提前提示，不是并发最终授权。
 - Agent2 已签出的编辑凭证同样需要通过原生 cfEditCommit 的最终状态检查。
-- Repo 删除走独立管理链路，不经文件 Branch。V1 为避免竞态，**启用了 protection 的资料库一律禁止整库删除**；需要退库时，先解除该库全部定版、确认 `cf_file_protection` 已无该库残留行，再通过管理接口关闭该库的 protection，之后才能删除。
+- Repo 删除走独立管理链路，不经文件 Branch。V1 为避免竞态，**启用了 protection 的资料库一律禁止整库删除**；需要退库时，先解除该库全部定版、确认 `cf_file_protection` 已无该库残留行，再通过管理接口关闭该库的 protection（残留未清时接口返回 409），之后才能删除。
 - 每次 Branch 发布都会读取 `cf_repo_feature`（旧版"未选定库跳过 SQL"的优化已随策略入库取消）；该表或保护表读取失败必须拒绝写入，不得当作"未启用"处理。
 - SQL 按 path_hash 精确检查，并按路径的安全前缀检查受影响后代。最长 8192 Diff 项，超限拒绝，不能无限长时间持有 Branch 锁。
 
@@ -66,13 +66,13 @@ Server/Hub/Docker 组合 -> 启动 -> 验收。
 Hub 通过权限校验、文件存在及版本 HEAD CAS，持有 native Branch(master) 锁，原子写入保护表和已有 cf_audit_event。
 列表状态通过批量读取投影，不向原生 CE 标签写入 SYS_FILE_PROTECTED；普通标签复制不能传播不可变状态。
 
-## 已知缺陷（V1 未修复）
+## 缺陷记录
 
-### D1：关闭库级 protection 不校验残留定版记录
+### D1：关闭库级 protection 未校验残留定版记录（2026-11-16 已修复）
 
-`POST /api/v2.1/admin/cloudfile/repos/<uuid>/features/` 收到 `{"protection": false}` 时，只删除
-`cf_repo_feature` 中该库的 `protection` 行，**不检查 `cf_file_protection` 是否仍有该库的记录**
-（Hub `cloudfile_ext/v2/http.py` 的 `RepoFeatures.post`）。
+修复前，`POST /api/v2.1/admin/cloudfile/repos/<uuid>/features/` 收到 `{"protection": false}` 时
+只删除 `cf_repo_feature` 中该库的 `protection` 行，**不检查 `cf_file_protection` 是否仍有该库的
+记录**（Hub `cloudfile_ext/v2/http.py` 的 `RepoFeatures.post`）。
 
 影响：
 
@@ -86,12 +86,16 @@ Hub 通过权限校验、文件存在及版本 HEAD CAS，持有 native Branch(m
 
 触发条件：仅平台管理员显式关闭；单个文件的 protect/unprotect 不受影响。
 
-运维临时约束（接口层未强制）：关闭前必须确认无残留行，查到结果就不许关闭。
+修复：`RepoFeatures.post` 在删除能力行之前、于同一事务与同一把 Branch(master) 锁内查询
+`cf_file_protection`，存在残留行即返回 409
+`Protected files must be unprotected before disabling protection for this library.` 并保持原状。
+校验位于所有写操作之前，因此同一请求里若还带 `checkout` 变更，不会出现"checkout 已落库、
+protection 被拒"的部分应用。
+
+运维顺序不变：关闭某库保护前仍须逐文件解除定版；接口只在还有残留行时拒绝，不会替人解除。
+未升级到含此修复的 Hub 时，该缺陷仍存在，必须人工自检：
 
     SELECT 1 FROM cf_file_protection WHERE repo_id = '<uuid>' LIMIT 1;
-
-待修复方式：在 `protection=false` 分支内、删除能力行之前执行上述校验，存在残留行即返回 409 并
-保持原状；校验与删除必须在同一事务、同一把 Branch(master) 锁内完成。
 
 ## 合并前必须通过
 
