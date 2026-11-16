@@ -166,9 +166,9 @@ func loadSeafileDB() {
 // Guard schema is checked once at startup regardless of selected repositories.
 // Runtime feature changes never require a restart once this schema is installed.
 func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
-    if db == nil {
-        return false, fmt.Errorf("Checkout schema database unavailable")
-    }
+	if db == nil {
+		return false, fmt.Errorf("Checkout schema database unavailable")
+	}
 	var count int
 	if err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard'").Scan(&count); err != nil {
