@@ -21,6 +21,7 @@
 #include "seafile-error.h"
 
 #include "seaf-db.h"
+#include "cf-v2-storage.h"
 #include "diff-simple.h"
 
 #define MAX_RUNNING_TASKS 5
@@ -50,15 +51,27 @@ save_virtual_repo_info (SeafRepoManager *mgr,
                         const char *path,
                         const char *base_commit)
 {
-    int ret = 0;
+    const char *sql = "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) "
+                      "VALUES (?, ?, ?, ?)";
+    SeafDB *db = mgr->seaf->db;
+    if (!cf_v2_storage_enabled())
+        return seaf_db_statement_query(db, sql, 4, "string", repo_id,
+                   "string", origin_repo_id, "string", path, "string", base_commit);
 
-    if (seaf_db_statement_query (mgr->seaf->db,
-                       "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, ?, ?)",
-                       4, "string", repo_id, "string", origin_repo_id,
-                       "string", path, "string", base_commit) < 0)
-        ret = -1;
-
-    return ret;
+    /* VirtualRepo is removed before cold GC. Keep the native commit route
+     * for the view in the same transaction as its mapping. */
+    SeafDBTrans *trans = seaf_db_begin_transaction(db);
+    if (!trans) return -1;
+    int rc = seaf_db_trans_query(trans, sql, 4, "string", repo_id,
+                   "string", origin_repo_id, "string", path, "string", base_commit);
+    if (rc == 0)
+        rc = seaf_db_trans_query(trans,
+            "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,'cf-native')",
+            1, "string", repo_id);
+    if (rc == 0) rc = seaf_db_commit(trans);
+    if (rc < 0) seaf_db_rollback(trans);
+    seaf_db_trans_close(trans);
+    return rc;
 }
 
 static int

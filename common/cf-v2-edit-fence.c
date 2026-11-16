@@ -49,11 +49,6 @@ path_touches(const char *changed, const char *guarded)
     return touches;
 }
 
-/* Two policies only: OFF (default) and OPTIONAL (listed repository). Parse the
- * startup configuration once; never query SQL for an OFF repository. */
-static gsize checkout_policy_state = 0;  /* 0=unread, 1=valid, 2=invalid */
-static GHashTable *checkout_repo_ids;
-
 static gboolean
 canonical_repo_id(const char *id)
 {
@@ -70,94 +65,52 @@ canonical_repo_id(const char *id)
     return TRUE;
 }
 
-/* Repository allowlist parsed once; OFF libraries never query Protection.
- * Protection has no lease and is independent of cf_edit_guard / Checkout. */
-static gsize protection_policy_state = 0;
-static GHashTable *protection_repo_ids;
+/* A final locking read serializes a feature change with publication. Never
+ * retain process-wide allowlists or interpret an unavailable policy as OFF. */
+static int
+repo_feature(struct _SeafileSession *session, SeafDBTrans *trans,
+             const char *repo_id, const char *feature)
+{
+    gboolean error = FALSE;
+    if (!session || !session->db || !canonical_repo_id(repo_id))
+        return -1;
+    gboolean present = trans ? seaf_db_trans_check_for_existence(trans,
+        "SELECT 1 FROM cf_repo_feature WHERE repo_id=? AND feature=? LOCK IN SHARE MODE",
+        &error, 2, "string", repo_id, "string", feature) :
+        seaf_db_statement_exists(session->db,
+        "SELECT 1 FROM cf_repo_feature WHERE repo_id=? AND feature=?",
+        &error, 2, "string", repo_id, "string", feature);
+    return error ? -1 : present;
+}
 
 int
 cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_id)
 {
-    if (g_once_init_enter(&protection_policy_state)) {
-        gboolean valid = session && session->config;
-        GError *error = NULL;
-        char *raw = valid ? g_key_file_get_string(session->config, "cloudfile",
-                                                  "protection_repo_ids", &error) : NULL;
-        if (error) {
-            valid = error->domain == G_KEY_FILE_ERROR &&
-                (error->code == G_KEY_FILE_ERROR_KEY_NOT_FOUND ||
-                 error->code == G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
-            g_clear_error(&error);
-        }
-        protection_repo_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        if (raw && strlen(raw) > 8192)
-            valid = FALSE;
-        if (valid && raw && *g_strstrip(raw)) {
-            char **parts = g_strsplit(raw, ",", -1);
-            for (char **q = parts; *q && valid; ++q) {
-                char *id = g_strstrip(*q);
-                if (!canonical_repo_id(id) || g_hash_table_contains(protection_repo_ids, id))
-                    valid = FALSE;
-                else
-                    g_hash_table_add(protection_repo_ids, g_strdup(id));
-            }
-            g_strfreev(parts);
-        }
-        g_free(raw);
-        if (!valid)
-            seaf_warning("CloudFile: invalid file protection repository configuration; writes denied.\n");
-        g_once_init_leave(&protection_policy_state, valid ? 1 : 2);
+    return repo_feature(session, NULL, repo_id, "protection");
+}
+
+static int
+checkout_policy(struct _SeafileSession *session, SeafDBTrans *trans, const char *repo_id)
+{
+    /* C and Go read the same deployment switch from seafile.conf. Only the
+     * per-repo selection is dynamic; a malformed switch cannot disable a fence. */
+    if (!session || !session->config)
+        return -1;
+    if (!g_key_file_has_key(session->config, "cloudfile", "checkout_enabled", NULL))
+        return 0;
+    GError *error = NULL;
+    gboolean enabled = g_key_file_get_boolean(session->config, "cloudfile", "checkout_enabled", &error);
+    if (error) {
+        g_clear_error(&error);
+        return -1;
     }
-    if (protection_policy_state == 2) return -1;
-    if (!repo_id) return 0;
-    return g_hash_table_contains(protection_repo_ids, repo_id) ? 1 : 0;
+    return enabled ? repo_feature(session, trans, repo_id, "checkout") : 0;
 }
 
 int
 cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
 {
-    if (g_once_init_enter(&checkout_policy_state)) {
-        gboolean valid = TRUE;
-        GError *error = NULL;
-        gboolean enabled = session && session->config &&
-            g_key_file_get_boolean(session->config, "cloudfile",
-                                   "checkout_enabled", &error);
-        if (error) {
-            /* Missing setting means OFF; an explicitly invalid setting fails closed. */
-            valid = error->domain == G_KEY_FILE_ERROR &&
-                (error->code == G_KEY_FILE_ERROR_KEY_NOT_FOUND ||
-                 error->code == G_KEY_FILE_ERROR_GROUP_NOT_FOUND);
-            g_clear_error(&error);
-        }
-        checkout_repo_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        if (valid && enabled) {
-            char *raw = g_key_file_get_string(session->config, "cloudfile",
-                                              "checkout_repo_ids", NULL);
-            if (raw && strlen(raw) > 8192)
-                valid = FALSE;
-            if (raw && *g_strstrip(raw)) {
-                char **parts = g_strsplit(raw, ",", -1);
-                for (char **p = parts; *p && valid; ++p) {
-                    char *id = g_strstrip(*p);
-                    if (!canonical_repo_id(id) ||
-                        g_hash_table_contains(checkout_repo_ids, id))
-                        valid = FALSE;
-                    else
-                        g_hash_table_add(checkout_repo_ids, g_strdup(id));
-                }
-                g_strfreev(parts);
-            }
-            g_free(raw);
-        }
-        if (!valid)
-            seaf_warning("CloudFile: invalid per-repo Checkout configuration; writes denied.\n");
-        g_once_init_leave(&checkout_policy_state, valid ? 1 : 2);
-    }
-    if (checkout_policy_state == 2)
-        return -1;
-    if (!repo_id)
-        return 0;
-    return g_hash_table_contains(checkout_repo_ids, repo_id) ? 1 : 0;
+    return checkout_policy(session, NULL, repo_id);
 }
 
 /* Schema is validated on guarded paths only. Its absence is a failure for an
@@ -198,6 +151,7 @@ struct _CfV2EditPrepared {
     char *old_id;
     char *new_id;
     GList *changes;
+    int checkout, protection, origin_protection;
     char *origin;
     char *prefix;
     GHashTable *candidate_ids;
@@ -335,7 +289,9 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
     int protection = cf_v2_file_protection_policy(session, repo_id);
     if (policy < 0 || protection < 0)
         goto fail;
-    if (g_hash_table_size(protection_repo_ids)) {
+    prepared->checkout = policy;
+    prepared->protection = protection;
+    {
         int n = seaf_db_statement_foreach_row(session->db,
             "SELECT origin_repo,path FROM VirtualRepo WHERE repo_id=?",
             virtual_mapping, prepared, 1, "string", repo_id);
@@ -344,15 +300,14 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
             if (!canonical_repo_id(prepared->origin) || !prepared->prefix ||
                 prepared->prefix[0] != '/' || !strcmp(prepared->origin, repo_id) ||
                 strlen(prepared->prefix) < 2 || g_str_has_suffix(prepared->prefix, "/")) goto fail;
-            if (cf_v2_file_protection_policy(session, prepared->origin) == 0) {
-                g_clear_pointer(&prepared->origin, g_free);
-                g_clear_pointer(&prepared->prefix, g_free);
-            } else {
+            prepared->origin_protection = cf_v2_file_protection_policy(session, prepared->origin);
+            if (prepared->origin_protection < 0) goto fail;
+            if (prepared->origin_protection) {
                 prepared->candidate_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
             }
         }
     }
-    if ((policy == 0 && protection == 0 && !prepared->origin) || !strcmp(old_commit_id, new_commit_id))
+    if ((policy == 0 && protection == 0 && !prepared->origin_protection) || !strcmp(old_commit_id, new_commit_id))
         return prepared;
     if (policy == 1 && guard_available(session) <= 0)
         goto fail;
@@ -368,7 +323,7 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
                             old_commit->root_id, new_commit->root_id,
                             &prepared->changes, FALSE)
         : -1;
-    if (result == 0 && prepared->origin) {
+    if (result == 0 && prepared->origin_protection) {
         VirtualProof proof = {prepared, session, new_commit->root_id, repo->version, FALSE, FALSE, 0};
         guint count = 0;
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
@@ -455,10 +410,12 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         g_strcmp0(prepared->old_id, old_commit_id) ||
         g_strcmp0(prepared->new_id, new_commit_id))
         return -1;
-    int checkout = cf_v2_edit_repo_checkout(session, repo_id);
-    int protection = cf_v2_file_protection_policy(session, repo_id);
-    if (checkout < 0 || protection < 0) return -1;
-    if (prepared->origin) {
+    int checkout = checkout_policy(session, trans, repo_id);
+    int protection = repo_feature(session, trans, repo_id, "protection");
+    if (checkout != prepared->checkout || protection != prepared->protection ||
+        (prepared->origin && repo_feature(session, trans, prepared->origin, "protection") !=
+         prepared->origin_protection)) return -1;
+    if (prepared->origin_protection) {
         VirtualProof proof = {(CfV2EditPrepared *)prepared, session, NULL, 0, TRUE, FALSE, 0};
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
             DiffEntry *delta = entry->data;

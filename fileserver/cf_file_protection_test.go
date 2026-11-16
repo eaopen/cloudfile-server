@@ -39,8 +39,16 @@ func TestFileProtectionOffRepoHasNoSQL(t *testing.T) {
 	old := option.CloudFileProtectionRepos
 	defer func() { option.CloudFileProtectionRepos = old }()
 	option.CloudFileProtectionRepos = map[string]struct{}{}
-	if err := cfProtectionChanges(context.Background(), nil, "repo", nil); err != nil {
-		t.Fatalf("OFF repo required protection SQL: %v", err)
+	f := &uploadGuardFixture{}
+	db := sql.OpenDB(uploadGuardConnector{f})
+	defer db.Close()
+	tx, _ := db.Begin()
+	defer tx.Rollback()
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.queries) != 1 || !strings.Contains(f.queries[0], "cf_repo_feature") {
+		t.Fatal(f.queries)
 	}
 }
 
@@ -75,10 +83,10 @@ func TestFileProtectionExactAndParentDirectory(t *testing.T) {
 					t.Fatalf("result=%v want=%v", err, tc.expected)
 				}
 			})
-			if len(f.queries) < 1 || len(f.queries) > 2 {
+			if len(f.queries) < 2 || len(f.queries) > 3 {
 				t.Fatalf("expected 1-2 scoped Protection SQL checks, got %d", len(f.queries))
 			}
-			for _, query := range f.queries {
+			for _, query := range f.queries[1:] {
 				if !strings.Contains(query, "cf_file_protection") ||
 					!strings.Contains(query, "repo_id=?") || !strings.Contains(query, "FOR UPDATE") {
 					t.Fatalf("unsafe protection query: %s", query)

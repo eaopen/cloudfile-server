@@ -46,7 +46,15 @@ func (c *uploadGuardConn) Begin() (driver.Tx, error)           { return uploadGu
 func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.fixture.queries = append(c.fixture.queries, query)
 	rows := &uploadGuardRows{names: []string{"value"}}
-	if strings.Contains(query, "information_schema.TABLES") {
+	if strings.Contains(query, "FROM cf_repo_feature") {
+		rid := args[0].Value.(string)
+		if _, ok := option.CloudFileCheckoutRepos[rid]; ok {
+			rows.values = append(rows.values, []driver.Value{"checkout"})
+		}
+		if _, ok := option.CloudFileProtectionRepos[rid]; ok {
+			rows.values = append(rows.values, []driver.Value{"protection"})
+		}
+	} else if strings.Contains(query, "information_schema.TABLES") {
 		if c.fixture.failMetadata {
 			return nil, errors.New("database unavailable")
 		}
@@ -80,7 +88,9 @@ func (c *uploadGuardConn) QueryContext(_ context.Context, query string, args []d
 		}
 	} else if strings.Contains(query, "FROM VirtualRepo") {
 		rows.names = []string{"origin", "path"}
-		rows.values = append(rows.values, []driver.Value{"repo", c.fixture.virtualPrefix})
+		if c.fixture.virtualPrefix != "" {
+			rows.values = append(rows.values, []driver.Value{"repo", c.fixture.virtualPrefix})
+		}
 	} else if strings.Contains(query, "FROM Branch") {
 		rows.values = append(rows.values, []driver.Value{strings.Repeat("a", 40)})
 	} else if strings.Contains(query, "FROM cf_file_protection") {
@@ -157,10 +167,10 @@ func TestUploadGuardUsesReviewedPathQueryOnly(t *testing.T) {
 	}
 	// Startup already qualified the schema: the commit path issues exactly one
 	// Guard query, with no information_schema read and no cf_resource join.
-	if len(f.queries) != 1 {
+	if len(f.queries) != 2 || !strings.Contains(f.queries[0], "cf_repo_feature") {
 		t.Fatalf("expected one guard query, got %v", f.queries)
 	}
-	query := f.queries[0]
+	query := f.queries[1]
 	if strings.Contains(query, "information_schema") || strings.Contains(query, "cf_resource") {
 		t.Fatalf("legacy or repeated metadata query on commit path: %s", query)
 	}
@@ -205,12 +215,16 @@ func TestUploadCheckoutDisabledNeverQueriesGuard(t *testing.T) {
 	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
 		t.Fatalf("disabled capability touched the database: %v", err)
 	}
-	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "repo", "old", "new"); err != nil {
-		t.Fatalf("disabled upload queried Guard: %v", err)
+	db := sql.OpenDB(uploadGuardConnector{&uploadGuardFixture{}})
+	defer db.Close()
+	tx, _ := db.Begin()
+	defer tx.Rollback()
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", nil); err != nil {
+		t.Fatal(err)
 	}
 	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = true, false
-	if !errors.Is(cfV2EditCheckUnscopedBranch(context.Background(), nil, "repo", "old", "new"), errCFEditGuard) {
-		t.Fatal("enabled but unavailable Guard was bypassed")
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", []*diff.DiffEntry{}); !errors.Is(err, errCFEditGuard) {
+		t.Fatal(err)
 	}
 }
 
@@ -219,12 +233,6 @@ func TestUploadEnabledCheckoutRequiresInstalledGuard(t *testing.T) {
 	option.CloudFileCheckoutEnabled = true
 	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
 	defer func() { option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = enabled, repos }()
-	// Global switch alone selects no repository: zero Guard discovery and no DB.
-	option.CloudFileCheckoutRepos = map[string]struct{}{}
-	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
-		t.Fatalf("empty allowlist must be all OFF without a database: %v", err)
-	}
-	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
 	for _, f := range []*uploadGuardFixture{{tableCount: 1, currentSchema: true}, {tableCount: 1}, {tableCount: 0}, {failMetadata: true}} {
 		db := sql.OpenDB(uploadGuardConnector{f})
 		available, err := loadV2GuardCapability(context.Background(), db)
@@ -237,4 +245,10 @@ func TestUploadEnabledCheckoutRequiresInstalledGuard(t *testing.T) {
 		}
 		db.Close()
 	}
+}
+
+func usePolicyFixture(t *testing.T) {
+	previous := seafileDB
+	seafileDB = sql.OpenDB(uploadGuardConnector{&uploadGuardFixture{}})
+	t.Cleanup(func() { seafileDB.Close(); seafileDB = previous })
 }

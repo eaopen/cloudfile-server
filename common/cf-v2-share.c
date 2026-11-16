@@ -149,7 +149,7 @@ v2_share_schema_present (void)
         seaf->db,
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema=DATABASE() AND table_name IN "
-        "('cf_library_storage','cf_dir_acl','cf_sso_group_map') "
+        "('cf_repo_feature','cf_dir_acl','cf_sso_group_map') "
         "GROUP BY table_schema HAVING COUNT(DISTINCT table_name)=3",
         &error, 0);
     if (error)

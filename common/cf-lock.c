@@ -142,10 +142,8 @@ cf_lock_init (void)
     char *backend = cf_ext_config_string ("lock_backend");
     /* Checkout is unfinished and opt-in. A legacy file-lock switch alone
      * must not make normal uploads depend on Guard or the retired ledger. */
-    char *repos = cf_ext_config_string("checkout_repo_ids");
-    lock_on = cf_ext_config_bool("checkout_enabled") && repos && repos[0] &&
+    lock_on = cf_ext_config_bool("checkout_enabled") &&
               (!backend || strcmp(backend, "cloudfile") == 0);
-    g_free(repos);
     if (backend && strcmp (backend, "cloudfile") != 0)
         seaf_warning ("CloudFile: unsupported lock backend '%s'.\n", backend);
     g_free (backend);

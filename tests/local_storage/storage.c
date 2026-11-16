@@ -98,7 +98,7 @@ route_row (const char *storage, const char *legacy_key, const char *state,
     static const char *uuid = "11111111-1111-4111-8111-111111111111";
     row_cells[0] = storage;
     row_cells[1] = row_exists ? uuid : NULL;
-    row_cells[2] = legacy_key;
+    row_cells[2] = native_exists && !legacy_key ? uuid : NULL;
     row_cells[3] = state;
     row_cells[4] = native_exists ? uuid : NULL;
     /* Changes to the fake immutable route model are explicit invalidations. */
@@ -173,8 +173,7 @@ test_uuid_v2_and_legacy_routes (const char *base)
     g_assert_cmpstr (actual, ==, expected);
     g_free (actual);
 
-    route_row (NULL, "native-11111111-1111-4111-8111-111111111111",
-               "retired", FALSE, TRUE);
+    route_row ("cf-native", NULL, NULL, TRUE, FALSE);
     actual = cf_v2_store_dir (native, repo);
     g_assert_cmpstr (actual, ==, expected);
     g_free (actual);
@@ -229,15 +228,9 @@ test_uuid_allocation_faults (const char *base)
     const char *other_repo = "33333333-3333-4333-8333-333333333333";
     char *other = g_build_filename (root, other_repo, NULL);
     sql_inserts = commits = rollbacks = 0;
-    fail_insert = 2;
-    g_assert_cmpint (cf_v2_storage_reserve (other_repo), ==, -1);
-    g_assert_cmpint (sql_inserts, ==, 2);
-    g_assert_false (g_file_test (other, G_FILE_TEST_EXISTS));
-
-    sql_inserts = commits = rollbacks = 0;
     fail_insert = 0;
     g_assert_cmpint (cf_v2_storage_reserve (other_repo), ==, 0);
-    g_assert_cmpint (sql_inserts, ==, 2);
+    g_assert_cmpint (sql_inserts, ==, 1);
     g_assert_true (g_file_test (other, G_FILE_TEST_IS_DIR));
     g_free (other);
 

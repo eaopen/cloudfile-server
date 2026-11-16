@@ -27,7 +27,9 @@ func TestVirtualProtectionCandidateAndNewReservation(t *testing.T) {
 			defer db.Close()
 			tx, _ := db.Begin()
 			defer tx.Rollback()
-			v := &cfVirtualProtection{repo: "virtual", origin: "repo", prefix: "/design", paths: []string{"/design/original"}, candidate: map[string]string{"/design/original": tc.candidate}}
+			option.CloudFileProtectionRepos = map[string]struct{}{"repo": {}}
+			t.Cleanup(func() { option.CloudFileProtectionRepos = nil })
+			v := &cfVirtualProtection{enabled: true, repo: "virtual", origin: "repo", prefix: "/design", paths: []string{"/design/original"}, candidate: map[string]string{"/design/original": tc.candidate}}
 			if err := v.lockOrigin(context.Background(), tx); err != nil {
 				t.Fatal(err)
 			}
@@ -48,6 +50,7 @@ func TestVirtualProtectionDisabledDoesNotQuery(t *testing.T) {
 	old := option.CloudFileProtectionRepos
 	option.CloudFileProtectionRepos = nil
 	defer func() { option.CloudFileProtectionRepos = old }()
+	usePolicyFixture(t)
 	v, err := cfPrepareVirtualProtection(context.Background(), "repo", "old", "new")
 	if v != nil || err != nil {
 		t.Fatalf("disabled queried metadata: %v", err)
