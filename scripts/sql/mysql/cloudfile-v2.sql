@@ -1,13 +1,13 @@
 -- CloudFile V2 fresh schema. Native CE tables remain the authoritative facts.
 -- This file is independent of cloudfile.sql and the legacy migration chain.
 
-CREATE TABLE cf_library_storage (
-    repo_key VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+-- Store only explicitly enabled repository capabilities. Removing a row
+-- disables that capability without changing storage routing or the other flag.
+CREATE TABLE cf_repo_feature (
     repo_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    state VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    PRIMARY KEY (repo_key),
-    UNIQUE KEY library_storage_repo (repo_id),
-    CONSTRAINT library_storage_state CHECK (state IN ('reserved','active','retired'))
+    feature VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    PRIMARY KEY (repo_id, feature),
+    CONSTRAINT repo_feature_name CHECK (feature IN ('checkout', 'protection'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE cf_sso_group_map (

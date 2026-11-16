@@ -40,23 +40,19 @@ func TestCFV2OffRepoSkipsGuardSQL(t *testing.T) {
 	option.CloudFileCheckoutEnabled = true
 	option.CloudFileCheckoutRepos = map[string]struct{}{"11111111-1111-4111-8111-111111111111": {}}
 	option.V2GuardAvailable = false
-	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "22222222-2222-4222-8222-222222222222", "", ""); err != nil {
+	usePolicyFixture(t)
+	tx, _ := seafileDB.Begin()
+	defer tx.Rollback()
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "22222222-2222-4222-8222-222222222222", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "11111111-1111-4111-8111-111111111111", "", ""); err != errCFEditGuard {
-		t.Fatalf("selected repository should fail closed without Guard: %v", err)
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "11111111-1111-4111-8111-111111111111", []*diff.DiffEntry{}); err != errCFEditGuard {
+		t.Fatal(err)
 	}
 }
 
-func TestCFV2NoGuardNeedsNoDatabase(t *testing.T) {
-	oldAvailable, oldOn, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
-	defer func() {
-		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = oldAvailable, oldOn, oldRepos
-	}()
-	option.V2GuardAvailable = false
-	option.CloudFileCheckoutEnabled = true
-	option.CloudFileCheckoutRepos = map[string]struct{}{}
-	if err := cfV2EditCheckUnscopedBranch(context.Background(), nil, "", "", ""); err != nil {
-		t.Fatalf("absent Guard must make no database call: %v", err)
+func TestCFV2MissingPolicyTransactionRefusesPublish(t *testing.T) {
+	if err := cfV2EditCheckPreparedBranch(context.Background(), nil, "repo", nil); err == nil {
+		t.Fatal("missing policy read")
 	}
 }

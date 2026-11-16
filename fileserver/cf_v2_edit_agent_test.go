@@ -14,6 +14,7 @@ import (
 )
 
 func TestCFEditWithoutGuardStillChecksUserAuthorization(t *testing.T) {
+	usePolicyFixture(t)
 	prior := option.V2GuardAvailable
 	option.V2GuardAvailable = false
 	defer func() { option.V2GuardAvailable = prior }()
@@ -126,6 +127,7 @@ func TestCFEditLapsedGuardResumesOnlyOnUnchangedFile(t *testing.T) {
 }
 
 func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
+	usePolicyFixture(t)
 	oldFlag, oldSecret, oldEnabled := option.V2GuardAvailable, option.JWTPrivateKey, option.CloudFileCheckoutEnabled
 	option.V2GuardAvailable = false
 	option.JWTPrivateKey = "unit-test-secret"
@@ -168,6 +170,7 @@ func TestCFEditExclusiveUnavailableWithoutCheckoutSchema(t *testing.T) {
 }
 
 func TestCFEditOptionalRepoWithoutGuardRefusesWrites(t *testing.T) {
+	usePolicyFixture(t)
 	oldAvailable, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
 	oldSecret := option.JWTPrivateKey
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = false, true
@@ -209,6 +212,7 @@ func TestCFEditOptionalRepoWithoutGuardRefusesWrites(t *testing.T) {
 }
 
 func TestCFEditOptionalStatusUnknownGuardIsNotUnlocked(t *testing.T) {
+	usePolicyFixture(t)
 	oldAvailable, oldEnabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
 	oldSecret := option.JWTPrivateKey
 	option.V2GuardAvailable, option.CloudFileCheckoutEnabled = false, true
@@ -294,6 +298,7 @@ func TestCFEditReadOnlyNeverReachesWriteRoutesEvenWithGuard(t *testing.T) {
 }
 
 func TestCFEditReadOnlyDeniedBeforeAnyRepoOrCheckoutAction(t *testing.T) {
+	usePolicyFixture(t)
 	oldKey, oldGuard := option.JWTPrivateKey, option.V2GuardAvailable
 	defer func() {
 		option.JWTPrivateKey = oldKey

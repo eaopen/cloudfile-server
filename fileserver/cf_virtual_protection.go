@@ -10,11 +10,11 @@ import (
 	"github.com/haiwen/seafile-server/fileserver/commitmgr"
 	"github.com/haiwen/seafile-server/fileserver/diff"
 	"github.com/haiwen/seafile-server/fileserver/fsmgr"
-	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 type cfVirtualProtection struct {
 	repo, origin, prefix string
+	enabled              bool
 	paths                []string
 	candidate            map[string]string
 }
@@ -48,9 +48,6 @@ func cfVirtualProtectedRows(ctx context.Context, db cfProtectionReader, origin, 
 }
 
 func cfPrepareVirtualProtection(ctx context.Context, repo, oldID, newID string) (*cfVirtualProtection, error) {
-	if len(option.CloudFileProtectionRepos) == 0 {
-		return nil, nil
-	}
 	v := &cfVirtualProtection{repo: repo, candidate: make(map[string]string)}
 	err := seafileDB.QueryRowContext(ctx, "SELECT origin_repo,path FROM VirtualRepo WHERE repo_id=?", repo).Scan(&v.origin, &v.prefix)
 	if err == sql.ErrNoRows {
@@ -59,8 +56,13 @@ func cfPrepareVirtualProtection(ctx context.Context, repo, oldID, newID string) 
 	if err != nil {
 		return nil, errCFProtectionUnavailable
 	}
-	if !option.ProtectionEnabledForRepo(v.origin) {
-		return nil, nil
+	features, err := cfReadRepoFeatures(ctx, v.origin, nil)
+	if err != nil {
+		return nil, err
+	}
+	v.enabled = features.protection
+	if !v.enabled {
+		return v, nil
 	}
 	if v.origin == repo || v.prefix == "" || !strings.HasPrefix(v.prefix, "/") || strings.Contains(v.prefix, "//") || strings.HasSuffix(v.prefix, "/") {
 		return nil, errCFProtectionUnavailable
@@ -130,6 +132,10 @@ func (v *cfVirtualProtection) lockOrigin(ctx context.Context, tx *sql.Tx) error 
 func (v *cfVirtualProtection) check(ctx context.Context, tx *sql.Tx) error {
 	if v == nil {
 		return nil
+	}
+	features, err := cfReadRepoFeatures(ctx, v.origin, tx)
+	if err != nil || features.protection != v.enabled {
+		return errCFProtectionUnavailable
 	}
 	for _, path := range v.paths {
 		rows, err := cfVirtualProtectedRows(ctx, tx, v.origin, path, true)

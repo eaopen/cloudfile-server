@@ -86,10 +86,8 @@ key_valid (const char *key)
  * second routing source or a parallel Repo/Branch lifecycle. */
 typedef struct {
     char *storage_id;
-    char *legacy_key;
-    char *legacy_state;
     gboolean route_row_present;
-    gboolean native_repo_present;
+    gboolean virtual_repo_present;
 } Route;
 
 
@@ -114,8 +112,6 @@ static void
 route_clear (Route *route)
 {
     g_free (route->storage_id);
-    g_free (route->legacy_key);
-    g_free (route->legacy_state);
     memset (route, 0, sizeof(*route));
 }
 
@@ -123,10 +119,8 @@ static void
 route_copy (Route *dst, const Route *src)
 {
     dst->storage_id = g_strdup (src->storage_id);
-    dst->legacy_key = g_strdup (src->legacy_key);
-    dst->legacy_state = g_strdup (src->legacy_state);
     dst->route_row_present = src->route_row_present;
-    dst->native_repo_present = src->native_repo_present;
+    dst->virtual_repo_present = src->virtual_repo_present;
 }
 
 /* Caller holds route_cache_mutex. */
@@ -203,9 +197,7 @@ read_route (SeafDBRow *row, void *data)
     Route *route = data;
     route->storage_id = g_strdup (seaf_db_row_get_column_text (row, 0));
     route->route_row_present = seaf_db_row_get_column_text (row, 1) != NULL;
-    route->legacy_key = g_strdup (seaf_db_row_get_column_text (row, 2));
-    route->legacy_state = g_strdup (seaf_db_row_get_column_text (row, 3));
-    route->native_repo_present = seaf_db_row_get_column_text (row, 4) != NULL;
+    route->virtual_repo_present = seaf_db_row_get_column_text (row, 2) != NULL;
     return TRUE;
 }
 
@@ -231,28 +223,17 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
      * even though it belongs in the native tree, exactly like CE. */
     gboolean cached = route_cache_get (repo_id, &route);
     if (!cached && seaf_db_statement_foreach_row (seaf->db,
-            "SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"
-            "COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "
-            "FROM (SELECT ? AS repo_id) i "
+            "SELECT s.storage_id,s.repo_id,v.repo_id FROM (SELECT ? AS repo_id) i "
             "LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "
-            "LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "
-            "LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "
-            "LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "
-            "LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL "
             "LEFT JOIN VirtualRepo v ON v.repo_id=i.repo_id AND s.repo_id IS NULL",
             read_route, &route, 1, "string", repo_id) != 1)
         goto out;
 
-    if (!route.route_row_present) {
-        char *expected = g_strconcat ("native-", repo_id, NULL);
-        gboolean recognized = route.native_repo_present &&
-            (!route.legacy_key ||
-             (g_strcmp0 (route.legacy_key, expected) == 0 &&
-              (g_strcmp0 (route.legacy_state, "active") == 0 ||
-               g_strcmp0 (route.legacy_state, "retired") == 0)));
-        g_free (expected);
-        if (recognized)
-            result = g_build_filename (native_obj_dir, repo_id, NULL);
+    /* Explicit native routes distinguish migrated CE libraries from a lost
+     * managed route. A virtual repo owns native commits, never origin bytes. */
+    if (!route.route_row_present || g_strcmp0(route.storage_id, "cf-native") == 0) {
+        if (route.route_row_present || route.virtual_repo_present)
+            result = g_build_filename(native_obj_dir, repo_id, NULL);
         goto out;
     }
 
@@ -317,11 +298,6 @@ cf_v2_storage_reserve (const char *repo_id)
             "SELECT 1 FROM GarbageRepos WHERE repo_id=?", &db_error,
             4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) ||
         db_error ||
-        /* Immutable safety marker, not a second route or lifecycle engine.
-         * Prevent an accidentally lost RepoStorageId from looking like CE. */
-        seaf_db_trans_query (trans,
-            "INSERT INTO cf_library_storage (repo_key,repo_id,state) VALUES (?,?,'active')",
-            2, "string", repo_id, "string", repo_id) < 0 ||
         seaf_db_trans_query (trans,
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
             2, "string", repo_id, "string", storage_id) < 0)
@@ -357,14 +333,9 @@ out:
 int
 cf_v2_storage_retire (const char *repo_id)
 {
-    if (!cf_v2_storage_enabled ())
-        return 0;
-    int ret = seaf_db_statement_query (seaf->db,
-        "UPDATE cf_library_storage SET state='retired' WHERE repo_id=?",
-        1, "string", repo_id);
-    if (ret >= 0)
-        route_cache_forget (repo_id);
-    return ret;
+    /* RepoStorageId survives trash removal so cold GC uses the same key. */
+    route_cache_forget(repo_id);
+    return 0;
 }
 
 /* Preserve native hardlinks on one volume; stage on the destination volume

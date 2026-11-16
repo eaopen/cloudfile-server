@@ -166,7 +166,7 @@ func loadSeafileDB() {
 // A capability change requires restarting Hub and native services. Disabled
 // Checkout never queries a Guard table, even when the baseline DDL includes it.
 func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
-	if !option.CloudFileCheckoutEnabled || len(option.CloudFileCheckoutRepos) == 0 {
+	if !option.CloudFileCheckoutEnabled {
 		return false, nil
 	}
 	var count int

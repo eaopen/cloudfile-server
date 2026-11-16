@@ -127,43 +127,23 @@ func v2Lookup(repoID string) (string, string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// RepoStorageId alone selects the physical route. Look at the legacy
-	// registry and Seafile native lifecycle only if there is NO route:
-	// otherwise a missing historical auto-local mapping could silently write
-	// to the wrong (native) path. New UUID V2 carries a native route plus an
-	// immutable safety marker, never a second routing source.
-	//
-	// VirtualRepo is a native resource too: its row exists before the initial
-	// commit while the Repo row is written afterwards, so folder-share
-	// sub-libraries must still resolve to the native tree.
-	var route, routeOwner, legacyKey, legacyState, nativeRepo sql.NullString
+	// A missing managed route must never redirect writes into native storage.
+	// Migrated CE stores carry an explicit native route; virtual commits are native.
+	var route, owner, virtual sql.NullString
 	err := v2StorageDB.QueryRowContext(ctx,
-		"SELECT s.storage_id,s.repo_id,c.repo_key,c.state,"+
-			"COALESCE(r.repo_id,t.repo_id,g.repo_id,v.repo_id) "+
-			"FROM (SELECT ? AS repo_id) i "+
+		"SELECT s.storage_id,s.repo_id,v.repo_id FROM (SELECT ? AS repo_id) i "+
 			"LEFT JOIN RepoStorageId s ON s.repo_id=i.repo_id "+
-			"LEFT JOIN cf_library_storage c ON c.repo_id=i.repo_id AND s.repo_id IS NULL "+
-			"LEFT JOIN Repo r ON r.repo_id=i.repo_id AND s.repo_id IS NULL "+
-			"LEFT JOIN RepoTrash t ON t.repo_id=i.repo_id AND s.repo_id IS NULL "+
-			"LEFT JOIN GarbageRepos g ON g.repo_id=i.repo_id AND s.repo_id IS NULL "+
-			"LEFT JOIN VirtualRepo v ON v.repo_id=i.repo_id AND s.repo_id IS NULL", repoID).
-		Scan(&route, &routeOwner, &legacyKey, &legacyState, &nativeRepo)
+			"LEFT JOIN VirtualRepo v ON v.repo_id=i.repo_id AND s.repo_id IS NULL", repoID).Scan(&route, &owner, &virtual)
 	if err != nil {
 		return "", "", "", err
 	}
-	if routeOwner.Valid {
-		if !route.Valid || route.String == "" {
-			return "", "", "", fmt.Errorf("V2 route row has no storage ID")
-		}
+	if owner.Valid && route.Valid && route.String != "" {
 		return route.String, "", "", nil
 	}
-	nativeMarker := !legacyKey.Valid ||
-		(legacyKey.String == "native-"+repoID &&
-			(legacyState.String == "active" || legacyState.String == "retired"))
-	if !nativeRepo.Valid || !nativeMarker {
-		return "", "", "", fmt.Errorf("unresolved native Seafile library")
+	if !owner.Valid && virtual.Valid {
+		return "", "", "", nil
 	}
-	return "", legacyKey.String, legacyState.String, nil
+	return "", "", "", fmt.Errorf("unresolved repository storage route")
 }
 
 func newV2StorageBackend(confPath string, native *fsBackend) (storageBackend, error) {
@@ -217,7 +197,7 @@ func (b *v2StorageBackend) resolve(repoID string) (*fsBackend, error) {
 }
 
 func (b *v2StorageBackend) resolveRoute(repoID, route, legacyKey, legacyState string) (*fsBackend, error) {
-	if route == "" {
+	if route == "" || route == "cf-native" {
 		// Native CE and virtual libraries remain on their original filesystem.
 		// A lost managed route must never turn into a native fallback.
 		if legacyKey == "" || (legacyKey == "native-"+repoID &&

@@ -360,7 +360,16 @@ func cfEditCheckout(w http.ResponseWriter, r *http.Request, c *cfEditClaims, rep
 	}
 	// A ticket issued before protection must not acquire a new exclusive
 	// lease after the file was finalized. The current Branch is already locked.
-	if option.ProtectionEnabledForRepo(repo.ID) {
+	features, policyErr := cfReadRepoFeatures(ctx, repo.ID, tx)
+	if policyErr != nil {
+		cfEditFail(w, 503, "POLICY_UNAVAILABLE")
+		return
+	}
+	if !features.checkout || !option.V2GuardAvailable {
+		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
+		return
+	}
+	if features.protection {
 		if checkErr := cfProtectionPath(ctx, tx, repo.ID, c.FilePath); checkErr != nil {
 			if errors.Is(checkErr, errCFFileProtected) {
 				cfEditFail(w, http.StatusLocked, "FILE_PROTECTED")
@@ -481,7 +490,12 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		cfEditFail(w, 405, "METHOD")
 		return
 	}
-	if option.CheckoutEnabledForRepo(repo.ID) && !option.V2GuardAvailable {
+	features, policyErr := cfReadRepoFeatures(r.Context(), repo.ID, nil)
+	if policyErr != nil {
+		cfEditFail(w, 503, "POLICY_UNAVAILABLE")
+		return
+	}
+	if features.checkout && !option.V2GuardAvailable {
 		// Unknown is not "unlocked": recovery must not decide from a false negative.
 		cfEditFail(w, 503, "GUARD_UNAVAILABLE")
 		return
@@ -510,7 +524,7 @@ func cfEditStatus(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 		}
 	}
 	out["sha256"] = hex.EncodeToString(hasher.Sum(nil))
-	if option.CheckoutEnabledForRepo(repo.ID) && option.V2GuardAvailable {
+	if features.checkout && option.V2GuardAvailable {
 		// Checkout is explicitly enabled and its Guard is installed.
 		// Disabled Checkout leaves ordinary optimistic editing independent of Guard SQL.
 		var gID, owner sql.NullString
@@ -645,7 +659,16 @@ func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 	}
 	// A pre-issued Agent ticket is never permission to overwrite a file
 	// protected since ticket issuance. Check under the current Branch lock.
-	if option.ProtectionEnabledForRepo(repo.ID) {
+	features, policyErr := cfReadRepoFeatures(ctx, repo.ID, tx)
+	if policyErr != nil {
+		cfEditFail(w, 503, "POLICY_UNAVAILABLE")
+		return
+	}
+	if (action != "optimistic" && !features.checkout) || (features.checkout && !option.V2GuardAvailable) {
+		cfEditFail(w, 409, "CHECKOUT_UNAVAILABLE")
+		return
+	}
+	if features.protection {
 		if e := cfProtectionPath(ctx, tx, repo.ID, c.FilePath); e != nil {
 			if errors.Is(e, errCFFileProtected) {
 				cfEditFail(w, http.StatusLocked, "FILE_PROTECTED")
@@ -658,7 +681,7 @@ func cfEditCommit(w http.ResponseWriter, r *http.Request, c *cfEditClaims, repo 
 	if action == "optimistic" {
 		// No persistent lock or Intent is allocated for an ordinary save.
 		// The Guard query is needed only on deployments with an installed Guard.
-		if option.CheckoutEnabledForRepo(repo.ID) && option.V2GuardAvailable {
+		if features.checkout && option.V2GuardAvailable {
 			var held int
 			err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cf_edit_guard WHERE repo_id=? AND path_hash=? AND guard_id IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", repo.ID, cfEditHash(c.FilePath)).Scan(&held)
 			if err != nil || held != 0 {
@@ -782,7 +805,12 @@ func cfEditAPI(w http.ResponseWriter, r *http.Request) {
 		cfEditFail(w, 403, "READ_ONLY_TICKET")
 		return
 	}
-	selected := option.CheckoutEnabledForRepo(c.RepoID)
+	features, policyErr := cfReadRepoFeatures(r.Context(), c.RepoID, nil)
+	if policyErr != nil {
+		cfEditFail(w, 503, "POLICY_UNAVAILABLE")
+		return
+	}
+	selected := features.checkout
 	if !selected && !cfEditAllowedWithoutCheckout(c.Mode, route, r.Header.Get("X-CF-Action")) {
 		cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
 		return

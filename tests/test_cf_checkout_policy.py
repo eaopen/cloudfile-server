@@ -31,12 +31,11 @@ class CheckoutPolicyContract(unittest.TestCase):
         # guard_available() must not report an absent schema as usable.
         self.assertIn('return guard_schema_state == 2 ? 1 : -1;', source)
 
-    def test_policy_parser_rejects_noncanonical_and_duplicate_uuids(self):
+    def test_dynamic_policy_uses_locked_read_for_final_publication(self):
         source = (ROOT / 'common/cf-v2-edit-fence.c').read_text()
-        self.assertIn('canonical_repo_id', source)
-        self.assertIn('g_hash_table_contains(checkout_repo_ids, id)', source)
-        self.assertIn('checkout_policy_state == 2', source)
-
+        self.assertIn('SELECT 1 FROM cf_repo_feature', source)
+        self.assertIn('LOCK IN SHARE MODE', source)
+        self.assertIn('checkout != prepared->checkout', source)
 
     def test_native_branch_cas_calls_the_guard_fence_before_update(self):
         source = (ROOT / 'common/branch-mgr.c').read_text()

@@ -35,10 +35,14 @@ func cfV2EditTouchesPath(entry *diff.DiffEntry, guardPath string) bool {
 // transaction. OFF libraries do nothing. OPTIONAL repositories must be
 // verifiable; a malformed candidate fails closed without acquiring a lock.
 func cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID string) ([]*diff.DiffEntry, error) {
-	if !option.CheckoutEnabledForRepo(repoID) && !option.ProtectionEnabledForRepo(repoID) {
+	features, err := cfReadRepoFeatures(context.Background(), repoID, nil)
+	if err != nil {
+		return nil, errCFProtectionUnavailable
+	}
+	if !features.checkout && !features.protection {
 		return nil, nil
 	}
-	if option.CheckoutEnabledForRepo(repoID) && !option.V2GuardAvailable {
+	if features.checkout && !option.V2GuardAvailable {
 		return nil, errCFEditGuard
 	}
 	if oldCommitID == newCommitID {
@@ -65,16 +69,25 @@ func cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID string) ([]*
 // The final native transaction only inspects the current Guard rows and
 // precomputed candidate changes; it never loads commits or redoes the diff.
 func cfV2EditCheckPreparedBranch(ctx context.Context, tx *sql.Tx, repoID string, changes []*diff.DiffEntry) error {
-	if !option.CheckoutEnabledForRepo(repoID) && !option.ProtectionEnabledForRepo(repoID) {
+	if tx == nil {
+		return errCFProtectionUnavailable
+	}
+	features, err := cfReadRepoFeatures(ctx, repoID, tx)
+	if err != nil {
+		return errCFProtectionUnavailable
+	}
+	if !features.checkout && !features.protection {
 		return nil
 	}
 	if changes == nil || tx == nil {
 		return errCFProtectionUnavailable
 	}
-	if err := cfProtectionChanges(ctx, tx, repoID, changes); err != nil {
-		return err
+	if features.protection {
+		if err := cfProtectionChanges(ctx, tx, repoID, changes); err != nil {
+			return err
+		}
 	}
-	if !option.CheckoutEnabledForRepo(repoID) {
+	if !features.checkout {
 		return nil
 	}
 	if !option.V2GuardAvailable {
@@ -119,12 +132,6 @@ func cfV2EditCheckPreparedBranch(ctx context.Context, tx *sql.Tx, repoID string,
 // Retained for the isolated Guard SQL tests. All production Branch update
 // callers must prepare first and use cfV2EditCheckPreparedBranch.
 func cfV2EditCheckUnscopedBranch(ctx context.Context, tx *sql.Tx, repoID, oldCommitID, newCommitID string) error {
-	if !option.CheckoutEnabledForRepo(repoID) && !option.ProtectionEnabledForRepo(repoID) {
-		return nil
-	}
-	if option.CheckoutEnabledForRepo(repoID) && !option.V2GuardAvailable {
-		return errCFEditGuard
-	}
 	changes, err := cfV2EditPrepareUnscopedBranch(repoID, oldCommitID, newCommitID)
 	if err != nil {
 		return err

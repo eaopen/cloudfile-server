@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/haiwen/seafile-server/fileserver/diff"
-	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 var errCFFileProtected = errors.New("FILE_PROTECTED")
@@ -55,9 +54,6 @@ func cfProtectionPath(ctx context.Context, tx *sql.Tx, repoID, changed string) e
 }
 
 func cfProtectionChanges(ctx context.Context, tx *sql.Tx, repoID string, changes []*diff.DiffEntry) error {
-	if !option.ProtectionEnabledForRepo(repoID) {
-		return nil
-	}
 	if tx == nil || changes == nil || len(changes) > 8192 {
 		return errCFProtectionUnavailable
 	}

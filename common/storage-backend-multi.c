@@ -628,7 +628,6 @@ multi_obj_copy (ObjBackend *bend,
 static int
 prepare_auto_gc (MultiPriv *priv, const char *repo_id)
 {
-    char *key = NULL;
     char *storage_id;
     void *backend;
     int ret;
@@ -636,8 +635,7 @@ prepare_auto_gc (MultiPriv *priv, const char *repo_id)
         return 0;
     /* Cold GC must reopen the recorded physical backend, including historical
      * custom keys. Resolve the immutable store itself, never a virtual origin.
-     * Older deletions may already have removed the route; retain their marker
-     * fallback until all pending GC work has been reconciled. */
+     * Migration restores any missing historical GC route before cutover. */
     storage_id = NULL;
     ret = seaf_db_statement_foreach_row (priv->db,
         "SELECT storage_id FROM RepoStorageId WHERE repo_id = ?",
@@ -649,18 +647,9 @@ prepare_auto_gc (MultiPriv *priv, const char *repo_id)
         g_free (storage_id);
         return backend ? 0 : -1;
     }
-    ret = seaf_db_statement_foreach_row (priv->db,
-        "SELECT repo_key FROM cf_library_storage WHERE repo_id = ?",
-        read_storage_id, &key, 1, "string", repo_id);
-    if (ret < 0)
-        return -1;
-    if (!key)
-        return 0;
-    storage_id = g_strconcat (CF_AUTO_STORAGE_PREFIX, key, NULL);
-    backend = backend_for_id (priv, storage_id);
-    g_free (storage_id);
-    g_free (key);
-    return backend ? 0 : -1;
+    /* Native multi-backend libraries without a route are swept across the
+     * configured backends by the caller. Managed routes survive until GC. */
+    return 0;
 }
 
 static int
