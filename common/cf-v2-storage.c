@@ -80,10 +80,8 @@ key_valid (const char *key)
     return TRUE;
 }
 
-/* RepoStorageId is the only physical route. The historical CloudFile registry
- * is consulted solely if the native route is absent, to avoid interpreting a
- * lost auto-local mapping as an old CE repo. The allocation marker is not a
- * second routing source or a parallel Repo/Branch lifecycle. */
+/* Explicit native and managed routes make a missing allocation fail closed.
+ * Cache virtual existence only for the short native lifecycle interval. */
 typedef struct {
     char *storage_id;
     gboolean route_row_present;
@@ -213,14 +211,6 @@ cf_v2_store_dir (const char *native_obj_dir, const char *repo_id)
     if (!seaf->db || !repo_id || !is_uuid_valid (repo_id))
         return NULL;
 
-    /* The route itself is the only object location selector. Native lookup
-     * and historical markers are needed only when RepoStorageId is absent.
-     * A legacy V2 row with a missing route must NEVER become a native write.
-     *
-     * VirtualRepo counts as an existing native resource: its row is inserted
-     * before its initial commit, while the Repo row is written afterwards.
-     * Without that fact a folder-share (sub-library) commit would be refused
-     * even though it belongs in the native tree, exactly like CE. */
     gboolean cached = route_cache_get (repo_id, &route);
     if (!cached && seaf_db_statement_foreach_row (seaf->db,
             "SELECT s.storage_id,s.repo_id,v.repo_id FROM (SELECT ? AS repo_id) i "
@@ -265,9 +255,8 @@ out:
     return result;
 }
 
-/* New libraries have one native route and one immutable UUID safety marker.
- * Seafile owns Repo/Branch/Owner/Trash/GC: no extra activate state machine.
- * Existing V2 custom-directory rows remain readable without migration. */
+/* mkdir and the durable native allocation jointly prevent adopting another
+ * store, including a historical custom key equal to this new repo UUID. */
 int
 cf_v2_storage_reserve (const char *repo_id)
 {
@@ -292,11 +281,11 @@ cf_v2_storage_reserve (const char *repo_id)
     if (!trans)
         goto rollback;
     if (seaf_db_trans_check_for_existence (trans,
-            "SELECT 1 FROM RepoStorageId WHERE repo_id=? UNION ALL "
+            "SELECT 1 FROM RepoStorageId WHERE repo_id=? OR storage_id=? UNION ALL "
             "SELECT 1 FROM Repo WHERE repo_id=? UNION ALL "
             "SELECT 1 FROM RepoTrash WHERE repo_id=? UNION ALL "
             "SELECT 1 FROM GarbageRepos WHERE repo_id=?", &db_error,
-            4, "string", repo_id, "string", repo_id, "string", repo_id, "string", repo_id) ||
+            5, "string", repo_id, "string", storage_id, "string", repo_id, "string", repo_id, "string", repo_id) ||
         db_error ||
         seaf_db_trans_query (trans,
             "INSERT INTO RepoStorageId (repo_id,storage_id) VALUES (?,?)",
