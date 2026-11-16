@@ -634,6 +634,21 @@ prepare_auto_gc (MultiPriv *priv, const char *repo_id)
     int ret;
     if (!priv->auto_root)
         return 0;
+    /* Cold GC must reopen the recorded physical backend, including historical
+     * custom keys. Resolve the immutable store itself, never a virtual origin.
+     * Older deletions may already have removed the route; retain their marker
+     * fallback until all pending GC work has been reconciled. */
+    storage_id = NULL;
+    ret = seaf_db_statement_foreach_row (priv->db,
+        "SELECT storage_id FROM RepoStorageId WHERE repo_id = ?",
+        read_storage_id, &storage_id, 1, "string", repo_id);
+    if (ret < 0)
+        return -1;
+    if (storage_id) {
+        backend = backend_for_id (priv, storage_id);
+        g_free (storage_id);
+        return backend ? 0 : -1;
+    }
     ret = seaf_db_statement_foreach_row (priv->db,
         "SELECT repo_key FROM cf_library_storage WHERE repo_id = ?",
         read_storage_id, &key, 1, "string", repo_id);
