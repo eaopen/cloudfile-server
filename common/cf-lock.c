@@ -1,5 +1,5 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* CloudFile Server Barrier for the unified cf_edit_guard. Default off. */
+/* CloudFile Server Barrier for cf_edit_guard, scoped by live repository policy. */
 #include <string.h>
 
 #include "common.h"
@@ -110,7 +110,10 @@ cf_lock_prepare (const CfFileOp *fop, GError **error)
         return 0;
     const char *source_repo = fop->src_repo_id ? fop->src_repo_id : fop->repo_id;
     int dest = cf_v2_edit_repo_checkout(seaf, fop->repo_id);
-    int source = cf_v2_edit_repo_checkout(seaf, source_repo);
+    /* Most file operations stay within a single library. Dynamic policy is
+     * a database read, so do not query the same repository twice. */
+    int source = !strcmp(source_repo, fop->repo_id)
+        ? dest : cf_v2_edit_repo_checkout(seaf, source_repo);
     if (dest < 0 || source < 0) {
         g_set_error(error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                     "CloudFile per-repo Checkout policy invalid");
@@ -140,15 +143,15 @@ void
 cf_lock_init (void)
 {
     char *backend = cf_ext_config_string ("lock_backend");
-    /* Checkout is unfinished and opt-in. A legacy file-lock switch alone
-     * must not make normal uploads depend on Guard or the retired ledger. */
-    lock_on = cf_ext_config_bool("checkout_enabled") &&
-              (!backend || strcmp(backend, "cloudfile") == 0);
+    /* Register at startup even with no selected repositories. A subsequent
+     * CloudFile feature API call can enable Checkout without process restart.
+     * The per-repository policy is read from SQL on every FileOp and the final
+     * Branch transaction; an OFF repository never scans cf_edit_guard. */
     if (backend && strcmp (backend, "cloudfile") != 0)
-        seaf_warning ("CloudFile: unsupported lock backend '%s'.\n", backend);
+        seaf_warning ("CloudFile: Checkout uses the native cloudfile barrier; "
+                      "legacy lock backend '%s' is ignored.\n", backend);
     g_free (backend);
-    if (lock_on) {
-        cf_fileop_register ("file-lock", cf_lock_prepare, NULL, NULL);
-        seaf_message ("CloudFile: V2 Checkout write barrier enabled.\n");
-    }
+    lock_on = TRUE;
+    cf_fileop_register ("file-lock", cf_lock_prepare, NULL, NULL);
+    seaf_message ("CloudFile: V2 Checkout FileOp barrier ready for dynamic scope.\n");
 }

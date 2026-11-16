@@ -163,12 +163,12 @@ func loadSeafileDB() {
 	seafileDB.SetMaxIdleConns(8)
 }
 
-// A capability change requires restarting Hub and native services. Disabled
-// Checkout never queries a Guard table, even when the baseline DDL includes it.
+// Guard schema is checked once at startup regardless of selected repositories.
+// Runtime feature changes never require a restart once this schema is installed.
 func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
-	if !option.CloudFileCheckoutEnabled {
-		return false, nil
-	}
+    if db == nil {
+        return false, fmt.Errorf("Checkout schema database unavailable")
+    }
 	var count int
 	if err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='cf_edit_guard'").Scan(&count); err != nil {
@@ -180,8 +180,8 @@ func loadV2GuardCapability(ctx context.Context, db *sql.DB) (bool, error) {
 	// Modification: validate the installed column/index contract before serving.
 	// Reason: a present table is not a usable schema. A legacy resource-keyed
 	// table or a missing cf_edit_guard_active index previously failed every
-	// upload with SQL 1176; fail once at startup with an operator instruction
-	// instead, without making disabled Checkout read Guard metadata at all.
+	// upload with SQL 1176; fail once at startup with an operator instruction.
+	// Non-selected libraries never scan individual Guard rows.
 	if err := cfV2GuardRequireCurrent(ctx, db); err != nil {
 		return false, fmt.Errorf("CF_EDIT_SCHEMA_MISMATCH: installed cf_edit_guard is not the reviewed V2 layout (%v); "+
 			"archive the legacy rows and apply the reviewed database/v2 SQL package before enabling Checkout", err)
@@ -195,7 +195,8 @@ func detectV2Guard() {
 	available, err := loadV2GuardCapability(ctx, seafileDB)
 	if err != nil {
 		// OFF repositories remain available on a Guard schema failure. Selected
-		// repositories refuse unsafe writes until the next controlled restart.
+		// repositories refuse guarded writes. Schema changes still require a
+		// controlled release, but repository feature changes do not.
 		log.Errorf("CloudFile optional Checkout unavailable: %v; selected repositories refuse guarded writes", err)
 		option.V2GuardAvailable = false
 		return
