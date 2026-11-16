@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-
-	"github.com/haiwen/seafile-server/fileserver/option"
 )
 
 type cfRepoFeatures struct{ checkout, protection bool }
@@ -35,7 +33,7 @@ func cfReadRepoFeatures(ctx context.Context, repo string, tx *sql.Tx) (features 
 		case "protection":
 			features.protection = true
 		case "checkout":
-			features.checkout = option.CloudFileCheckoutEnabled
+			features.checkout = true
 		default:
 			return features, errCFProtectionUnavailable
 		}

@@ -16,11 +16,6 @@ static int cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char 
     return checkout ? 1 : 0;
 }
 static int sql_calls, exact_rows, descendant_rows;
-static gboolean cf_ext_config_bool(const char *key)
-{
-    /* A stale file_lock_enabled=true must not activate Checkout. */
-    return !strcmp(key, "checkout_enabled") ? checkout : TRUE;
-}
 static char *cf_ext_config_string(const char *key)
 {
     return !strcmp(key, "checkout_repo_ids") && checkout ? g_strdup("fixture") : NULL;
@@ -50,11 +45,12 @@ int main(void)
 {
     GError *error = NULL;
     checkout=FALSE; cf_lock_init();
-    g_assert_false(cf_lock_enabled());
+    g_assert_true(cf_lock_enabled());
     g_assert_cmpint(write_path("/file",&error),==,0);
     g_assert_cmpint(sql_calls,==,0);
-    checkout=TRUE; cf_lock_init();
-    g_assert_true(cf_lock_enabled());
+    /* Enabling the SQL feature dynamically must work without reinitializing
+     * the dispatcher or restarting the native server. */
+    checkout=TRUE;
     g_assert_cmpint(write_path("/file",&error),==,0);
     g_assert_cmpint(sql_calls,==,2);
     exact_rows=1;

@@ -118,19 +118,10 @@ cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_i
 static int
 checkout_policy(struct _SeafileSession *session, SeafDBTrans *trans, const char *repo_id)
 {
-    /* C and Go read the same deployment switch from seafile.conf. Only the
-     * per-repo selection is dynamic; a malformed switch cannot disable a fence. */
-    if (!session || !session->config)
-        return -1;
-    if (!g_key_file_has_key(session->config, "cloudfile", "checkout_enabled", NULL))
-        return 0;
-    GError *error = NULL;
-    gboolean enabled = g_key_file_get_boolean(session->config, "cloudfile", "checkout_enabled", &error);
-    if (error) {
-        g_clear_error(&error);
-        return -1;
-    }
-    return enabled ? repo_feature(session, trans, repo_id, "checkout") : 0;
+    /* Dynamic Checkout is authorized exclusively by cf_repo_feature.
+     * The former global startup switch is a migration hint, not a security
+     * gate; final reads still serialize under the Branch(master) lock. */
+    return repo_feature(session, trans, repo_id, "checkout");
 }
 
 int

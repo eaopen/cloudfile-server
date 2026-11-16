@@ -453,6 +453,21 @@ func cfEditGuardAction(w http.ResponseWriter, r *http.Request, c *cfEditClaims, 
 		cfEditFail(w, 503, "SQL_UNAVAILABLE")
 		return
 	}
+	// A renewal can race with an administrator disabling Checkout after the
+	// lease expired. The policy must be current under the same master Branch
+	// lock; an OFF repository must not acquire a new Guard lease. Release may
+	// proceed as a cleanup of an already-owned Guard.
+	if action == "renew" {
+		features, policyErr := cfReadRepoFeatures(ctx, repo.ID, tx)
+		if policyErr != nil {
+			cfEditFail(w, 503, "POLICY_UNAVAILABLE")
+			return
+		}
+		if !features.checkout || !option.V2GuardAvailable {
+			cfEditFail(w, 409, "CHECKOUT_UNSUPPORTED")
+			return
+		}
+	}
 	g, err := cfEditRow(ctx, tx, c)
 	if err != nil || !cfEditVerified(c, g, p.cfEditProof, true) {
 		cfEditFail(w, 409, "STALE_GUARD")

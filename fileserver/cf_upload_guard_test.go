@@ -204,27 +204,57 @@ func TestUploadGuardRefusesGuardFailures(t *testing.T) {
 	}
 }
 
-// Nil DB/transaction proves the disabled path performs no metadata or Guard SQL.
-func TestUploadCheckoutDisabledNeverQueriesGuard(t *testing.T) {
-	old, enabled, oldRepos := option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos
+// The old global bool cannot authorize or disable a dynamic repository.
+// OFF libraries read just one feature index; Checkout Guard is never scanned.
+func TestUploadCheckoutDynamicIgnoresGlobalFlag(t *testing.T) {
+	previousGlobal, previousGuard, previousRepos :=
+		option.CloudFileCheckoutEnabled, option.V2GuardAvailable, option.CloudFileCheckoutRepos
 	defer func() {
-		option.V2GuardAvailable, option.CloudFileCheckoutEnabled, option.CloudFileCheckoutRepos = old, enabled, oldRepos
+		option.CloudFileCheckoutEnabled, option.V2GuardAvailable, option.CloudFileCheckoutRepos =
+			previousGlobal, previousGuard, previousRepos
 	}()
-	option.CloudFileCheckoutRepos = map[string]struct{}{"repo": {}}
-	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = false, true
-	if available, err := loadV2GuardCapability(context.Background(), nil); err != nil || available {
-		t.Fatalf("disabled capability touched the database: %v", err)
-	}
-	db := sql.OpenDB(uploadGuardConnector{&uploadGuardFixture{}})
+	option.CloudFileCheckoutEnabled = false
+	option.V2GuardAvailable = true
+	option.CloudFileCheckoutRepos = map[string]struct{}{}
+	f := &uploadGuardFixture{}
+	db := sql.OpenDB(uploadGuardConnector{f})
 	defer db.Close()
-	tx, _ := db.Begin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer tx.Rollback()
 	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", nil); err != nil {
-		t.Fatal(err)
+		t.Fatalf("OFF repo changed behavior: %v", err)
 	}
-	option.CloudFileCheckoutEnabled, option.V2GuardAvailable = true, false
-	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", []*diff.DiffEntry{}); !errors.Is(err, errCFEditGuard) {
-		t.Fatal(err)
+	if len(f.queries) != 1 || !strings.Contains(f.queries[0], "cf_repo_feature") {
+		t.Fatalf("OFF repository unexpectedly scanned Guard: %v", f.queries)
+	}
+	// Enable via the database fixture, without any global restart/config flip.
+	option.CloudFileCheckoutRepos["repo"] = struct{}{}
+	f.queries = nil
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo", []*diff.DiffEntry{}); err != nil {
+		t.Fatalf("dynamic Checkout with a valid Guard was rejected: %v", err)
+	}
+	if len(f.queries) != 2 || !strings.Contains(f.queries[1], "cf_edit_guard") {
+		t.Fatalf("dynamic Checkout skipped the Guard fence: %v", f.queries)
+	}
+	// A previously selected repo must fail closed if Guard is unavailable.
+	option.V2GuardAvailable = false
+	if err := cfV2EditCheckPreparedBranch(context.Background(), tx, "repo",
+		[]*diff.DiffEntry{}); !errors.Is(err, errCFEditGuard) {
+		t.Fatalf("missing Guard allowed dynamically selected Checkout: %v", err)
+	}
+}
+
+func TestCheckoutGuardSchemaProbeIsNotGloballyDisabled(t *testing.T) {
+	old := option.CloudFileCheckoutEnabled
+	option.CloudFileCheckoutEnabled = false
+	defer func() { option.CloudFileCheckoutEnabled = old }()
+	db := sql.OpenDB(uploadGuardConnector{&uploadGuardFixture{tableCount: 1, currentSchema: true}})
+	defer db.Close()
+	if available, err := loadV2GuardCapability(context.Background(), db); err != nil || !available {
+		t.Fatalf("guard schema was skipped by deprecated global flag: %v", err)
 	}
 }
 
