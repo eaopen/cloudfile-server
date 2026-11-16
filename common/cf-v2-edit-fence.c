@@ -65,6 +65,31 @@ canonical_repo_id(const char *id)
     return TRUE;
 }
 
+/* 修改原因（2026-11-16）：Docker 引导仍会生成 protection_repo_ids /
+ * checkout_repo_ids，但运行期只查 cf_repo_feature。运维看到配置还在就会认为
+ * 功能已开启；这里在进程首次判定库级策略时告警一次，把静默失效变可见。
+ * 只告警，不阻断：配置项已无判定权，报错只会制造与功能无关的启动故障。 */
+static void
+warn_legacy_repo_scope (struct _SeafileSession *session)
+{
+    static gsize warned = 0;
+    if (!g_once_init_enter (&warned))
+        return;
+    const char *keys[] = { "protection_repo_ids", "checkout_repo_ids" };
+    for (guint i = 0; i < G_N_ELEMENTS (keys); ++i) {
+        char *raw = (session && session->config) ?
+            g_key_file_get_string (session->config, "cloudfile", keys[i], NULL) : NULL;
+        if (raw && *g_strstrip (raw))
+            seaf_warning ("CloudFile: %s is a legacy migration input and is IGNORED "
+                          "at runtime. Per-library capabilities are stored in "
+                          "cf_repo_feature; use POST "
+                          "/api/v2.1/admin/cloudfile/repos/<uuid>/features/.\n",
+                          keys[i]);
+        g_free (raw);
+    }
+    g_once_init_leave (&warned, 1);
+}
+
 /* A final locking read serializes a feature change with publication. Never
  * retain process-wide allowlists or interpret an unavailable policy as OFF. */
 static int
@@ -86,6 +111,7 @@ repo_feature(struct _SeafileSession *session, SeafDBTrans *trans,
 int
 cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_id)
 {
+    warn_legacy_repo_scope (session);
     return repo_feature(session, NULL, repo_id, "protection");
 }
 
