@@ -17,23 +17,38 @@
 - C/Go 最终 Branch(master) 提交事务内检查稀疏保护状态，并拒绝覆盖/删除、目录结构影响及提交失败后的回退绕过。
 - FileOp PREPARE 是提前提示，不是并发最终授权。
 - Agent2 已签出的编辑凭证同样需要通过原生 cfEditCommit 的最终状态检查。
-- Repo 删除走独立管理链路，不经文件 Branch。V1 为避免竞态，**保护范围内资料库一律禁止整库删除**；解除所有保护后，可在受控维护中从配置移除该库并完整重启，再删除。
-- 未选中的资料库跳过 Protection SQL；选中资料库的保护表 SQL 故障必须拒绝相关写入。
+- Repo 删除走独立管理链路，不经文件 Branch。V1 为避免竞态，**启用了 protection 的资料库一律禁止整库删除**；需要退库时，先解除该库全部定版、确认 `cf_file_protection` 已无该库残留行，再通过管理接口关闭该库的 protection，之后才能删除。
+- 每次 Branch 发布都会读取 `cf_repo_feature`（旧版"未选定库跳过 SQL"的优化已随策略入库取消）；该表或保护表读取失败必须拒绝写入，不得当作"未启用"处理。
 - SQL 按 path_hash 精确检查，并按路径的安全前缀检查受影响后代。最长 8192 Diff 项，超限拒绝，不能无限长时间持有 Branch 锁。
 
 ## 模型与部署
 
-新增第六张 V2 扩展表 cf_file_protection：主键为 (repo_id,path_hash)，索引为 (repo_id,path 前缀)。
+六张 V2 扩展表中，`cf_file_protection` 承载定版记录：主键为 (repo_id,path_hash)，索引为 (repo_id,path 前缀)。
 DDL 在 Server 仓 scripts/sql/mysql/cloudfile-v2-protection.sql；Hub Schema 验证需要使用同一份 DDL。
 
-在 C/Go/Hub 共用的 seafile.conf 的 [cloudfile] 节中添加：
+库级能力（哪些资料库启用 protection / checkout）存放在同库的 `cf_repo_feature`，主键 (repo_id,feature)，
+由 C/Go/Hub 在提交事务内读取。**这是运行期唯一事实源。**
 
-    protection_repo_ids = 11111111-1111-4111-8111-111111111111
+seafile.conf 的 `[cloudfile] protection_repo_ids` / `checkout_repo_ids` 已退化为一次性迁移输入：
+进程仍解析它们，非空时在启动日志打印 `legacy migration input and is IGNORED at runtime`，
+但不再据此判定任何写入。**只改这两行配置不会改变保护范围，也不会报错。**
 
-缺省未启用。不需要另外设置 Checkout 开关。
+库级开关通过管理接口修改，无需重启：
 
-上线顺序：审查 DB DDL 和受控 schema 安装 -> 部署匹配的 Server/Hub/Docker 源码组合 -> 配置完整一致的 repo allowlist -> 全部进程重启 -> 验收。
-不得在已有保护行的库撤掉 allowlist 或回滚旧版 Native Server。必要时先受控解除保护。数据库初始化不允许静默修改旧生产卷。
+    POST /api/v2.1/admin/cloudfile/repos/<uuid>/features/
+    {"protection": true}  /  {"protection": false}
+    {"checkout": true}    /  {"checkout": false}
+
+要求平台管理员且具备资料库管理权限；接口先锁 Branch(master) 再写表，返回提交后的实际状态。
+Checkout 另有部署级开关 `checkout_enabled`，库级行需在其开启时才生效。
+
+上线顺序：停写 -> 运行 tools/migrate/repo-features.py（可先不带 --apply 检查差异）-> 部署匹配的
+Server/Hub/Docker 组合 -> 启动 -> 验收。
+
+**不得跳过迁移**：`cf_repo_feature` 缺失时每一次 Branch 发布都 fail-closed，表现为该实例上所有
+资料库的写入失败（上传/删除/改名/移动），读取不受影响。先换二进制后迁移会造成全站写故障。
+
+不得回滚到不包含保护屏障的 Native Server。数据库初始化不允许静默修改旧生产卷。
 
 ## API 合同
 

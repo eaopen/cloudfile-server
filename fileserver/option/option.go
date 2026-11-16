@@ -57,6 +57,19 @@ func parseCheckoutRepoIDs(raw string) (map[string]struct{}, error) {
 	return ids, nil
 }
 
+// warnLegacyRepoScope 修改原因（2026-11-16）：Docker 引导仍会生成
+// *_repo_ids，运维看到配置存在就会认为功能已开启；而运行期只查
+// cf_repo_feature。这里在启动时明确说明"已忽略 + 正确用法"，
+// 把静默失效变成可见告警。
+func warnLegacyRepoScope(key, feature string, repos map[string]struct{}) {
+	if len(repos) == 0 {
+		return
+	}
+	log.Warnf("CloudFile: %s is a legacy migration input and is IGNORED at runtime. "+
+		"Per-library %s is stored in cf_repo_feature; change it via "+
+		"POST /api/v2.1/admin/cloudfile/repos/<uuid>/features/", key, feature)
+}
+
 // An opt-in file-protection scope, independent of Checkout. Empty = no extra
 // SQL on ordinary libraries. Hub and native services must use matching IDs.
 var CloudFileProtectionRepos map[string]struct{}
@@ -199,20 +212,28 @@ func LoadFileServerOptions(centralDir string) {
 				log.Fatal("Invalid CloudFile checkout_enabled")
 			}
 		}
+		// 修改原因（2026-11-16）：库级 Checkout/保护已改由 cf_repo_feature 表判定，
+		// 这两个键在运行期不再生效，只保留为一次性迁移（tools/migrate/repo-features.py）
+		// 的输入。失效的配置项不该再有让进程起不来的权力：解析失败降级为告警，
+		// 并清空范围，避免半份列表被后续诊断误读成"已配置"。
 		if key, keyErr := section.GetKey("checkout_repo_ids"); keyErr == nil {
 			var parseErr error
 			CloudFileCheckoutRepos, parseErr = parseCheckoutRepoIDs(key.String())
 			if parseErr != nil {
-				log.Fatalf("Invalid CloudFile checkout_repo_ids: %v", parseErr)
+				log.Warnf("CloudFile: ignoring invalid legacy checkout_repo_ids: %v", parseErr)
+				CloudFileCheckoutRepos = make(map[string]struct{})
 			}
 		}
 		if key, keyErr := section.GetKey("protection_repo_ids"); keyErr == nil {
 			var parseErr error
 			CloudFileProtectionRepos, parseErr = parseCheckoutRepoIDs(key.String())
 			if parseErr != nil {
-				log.Fatalf("Invalid CloudFile protection_repo_ids: %v", parseErr)
+				log.Warnf("CloudFile: ignoring invalid legacy protection_repo_ids: %v", parseErr)
+				CloudFileProtectionRepos = make(map[string]struct{})
 			}
 		}
+		warnLegacyRepoScope("checkout_repo_ids", "checkout", CloudFileCheckoutRepos)
+		warnLegacyRepoScope("protection_repo_ids", "protection", CloudFileProtectionRepos)
 		if key, keyErr := section.GetKey("trusted_tls_proxies"); keyErr == nil && key.String() != "" {
 			entries := strings.Split(key.String(), ",")
 			if len(key.String()) > 4096 || len(entries) > 32 {
