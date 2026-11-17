@@ -41,7 +41,8 @@ seafile.conf 的 `[cloudfile] protection_repo_ids` / `checkout_repo_ids` 已退�
     {"checkout": true}    /  {"checkout": false}
 
 要求平台管理员且具备资料库管理权限；接口先锁 Branch(master) 再写表，返回提交后的实际状态。
-Checkout 另有部署级开关 `checkout_enabled`，库级行需在其开启时才生效。
+Checkout 与 protection 走同一张表、同一接口：`checkout_enabled` 也已退化为迁移提示，不再参与
+判定，库级行写入即生效，不需要任何部署级开关前置。
 
 上线顺序：停写 -> 运行 tools/migrate/repo-features.py（可先不带 --apply 检查差异）-> 部署匹配的
 Server/Hub/Docker 组合 -> 启动 -> 验收。
