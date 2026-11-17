@@ -203,13 +203,20 @@ func LoadFileServerOptions(centralDir string) {
 	CloudFileCheckoutRepos = make(map[string]struct{})
 	CloudFileProtectionRepos = make(map[string]struct{})
 	if section, sectionErr := config.GetSection("cloudfile"); sectionErr == nil {
-		// Reuse CF_ENABLE_CHECKOUT -> [cloudfile] checkout_enabled from Docker.
-		// Invalid values must not silently disable an explicitly requested fence.
+		// 修改原因（2026-11-17）：Checkout 已完全由 cf_repo_feature 判定，本键
+		// 只由 Docker 引导写入作为迁移提示，运行期没有任何读取方。解析失败不再
+		// 阻断启动；值为 true 时明确告知已失效，避免运维以为"打开就等于启用"。
 		if key, keyErr := section.GetKey("checkout_enabled"); keyErr == nil {
 			var parseErr error
 			CloudFileCheckoutEnabled, parseErr = key.Bool()
 			if parseErr != nil {
-				log.Fatal("Invalid CloudFile checkout_enabled")
+				log.Warnf("CloudFile: ignoring invalid legacy checkout_enabled: %v", parseErr)
+				CloudFileCheckoutEnabled = false
+			}
+			if CloudFileCheckoutEnabled {
+				log.Warnf("CloudFile: checkout_enabled is a legacy hint and is IGNORED at runtime. " +
+					"Per-library Checkout is stored in cf_repo_feature; change it via " +
+					"POST /api/v2.1/admin/cloudfile/repos/<uuid>/features/")
 			}
 		}
 		// 修改原因（2026-11-16）：库级 Checkout/保护已改由 cf_repo_feature 表判定，

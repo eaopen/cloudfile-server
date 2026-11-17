@@ -636,6 +636,15 @@ retry:
             repo->store_id, &gc_conflict);
     if (published < 0)
     {
+        /* 修改原因（2026-11-17）：文件定版是永久拒绝，用户需要知道"原件被锁定"，
+         * 而不是"权限服务不可用"。专用错误码只在这一处映射成可读原因，
+         * Hub/前端原样透传 message，不涉及额外查询或重试。 */
+        if (published == SEAF_BRANCH_UPDATE_FILE_PROTECTED) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "FILE_PROTECTED: the original file is locked and cannot be modified");
+            ret = -1;
+            goto out;
+        }
         if (published == SEAF_BRANCH_UPDATE_ACL_DENIED) {
             g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
                          "CloudFile authority unavailable or fenced");

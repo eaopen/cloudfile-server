@@ -604,7 +604,11 @@ test_and_update_branch (SeafBranchManager *mgr,
     if (guard_result < 0) {
         seaf_db_rollback (trans);
         seaf_db_trans_close (trans);
-        return SEAF_BRANCH_UPDATE_ACL_DENIED;
+        /* 修改原因（2026-11-17）：定版拒绝单独回传，调用方才能给出可读原因。
+         * 其余拒绝仍归为 ACL_DENIED，与 HEAD_CONFLICT / GC 冲突的重试判断互不影响。 */
+        return guard_result == CF_V2_EDIT_DENIED_PROTECTED
+            ? SEAF_BRANCH_UPDATE_FILE_PROTECTED
+            : SEAF_BRANCH_UPDATE_ACL_DENIED;
     }
 
     sql = "UPDATE Branch SET commit_id = ? "
