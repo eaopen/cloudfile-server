@@ -6,8 +6,10 @@
 
 struct _SeafileSession;
 
+int cf_v2_writer_capabilities(GError **error);
+
 /* 0=OFF, 1=OPTIONAL, -1=invalid configuration (fail closed).
- * Pure in-memory policy check; never queries Guard for OFF repositories. */
+ * Indexed repository policy check; never queries Guard for OFF repositories. */
 int cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id);
 
 // Separate permanent file-protection scope; never interpreted as a Checkout.
