@@ -22,6 +22,7 @@
 #include <searpc-client.h>
 
 #include "seafile-session.h"
+#include "cf-v2-edit-fence.h"
 #include "seafile-rpc.h"
 #include "log.h"
 #include "utils.h"
@@ -716,6 +717,11 @@ static void start_rpc_service (const char *seafile_dir,
                                      seafile_cf_find_restricted_path,
                                      "cf_find_restricted_path",
                                      searpc_signature_string__string_string_string());
+
+    searpc_server_register_function ("seafserv-threaded-rpcserver",
+                                     cf_v2_writer_capabilities,
+                                     "cf_v2_writer_capabilities_v1",
+                                     searpc_signature_int__void());
 
     /* CloudFile write lifecycle */
     searpc_server_register_function ("seafserv-threaded-rpcserver",

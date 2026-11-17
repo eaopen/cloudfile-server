@@ -92,42 +92,56 @@ warn_legacy_repo_scope (struct _SeafileSession *session)
 
 /* A final locking read serializes a feature change with publication. Never
  * retain process-wide allowlists or interpret an unavailable policy as OFF. */
-static int
-repo_feature(struct _SeafileSession *session, SeafDBTrans *trans,
-             const char *repo_id, const char *feature)
+typedef struct {
+    gboolean checkout;
+    gboolean protection;
+    gboolean invalid;
+} CfRepoPolicy;
+
+static gboolean
+read_feature(SeafDBRow *row, void *data)
 {
-    gboolean error = FALSE;
+    CfRepoPolicy *policy = data;
+    const char *key = seaf_db_row_get_column_text(row, 0);
+    if (g_strcmp0(key, "checkout") == 0)
+        policy->checkout = TRUE;
+    else if (g_strcmp0(key, "protection") == 0)
+        policy->protection = TRUE;
+    else {
+        policy->invalid = TRUE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static gboolean
+read_repo_policy(struct _SeafileSession *session, SeafDBTrans *trans,
+                 const char *repo_id, CfRepoPolicy *policy)
+{
     if (!session || !session->db || !canonical_repo_id(repo_id))
-        return -1;
-    gboolean present = trans ? seaf_db_trans_check_for_existence(trans,
-        "SELECT 1 FROM cf_repo_feature WHERE repo_id=? AND feature=? LOCK IN SHARE MODE",
-        &error, 2, "string", repo_id, "string", feature) :
-        seaf_db_statement_exists(session->db,
-        "SELECT 1 FROM cf_repo_feature WHERE repo_id=? AND feature=?",
-        &error, 2, "string", repo_id, "string", feature);
-    return error ? -1 : present;
+        return FALSE;
+    warn_legacy_repo_scope(session);
+    const char sql[] = "SELECT feature FROM cf_repo_feature WHERE repo_id=?";
+    int rows = trans ? seaf_db_trans_foreach_selected_row(trans,
+        "SELECT feature FROM cf_repo_feature WHERE repo_id=? LOCK IN SHARE MODE",
+        read_feature, policy, 1, "string", repo_id) :
+        seaf_db_statement_foreach_row(session->db, sql, read_feature, policy,
+                                      1, "string", repo_id);
+    return rows >= 0 && !policy->invalid;
 }
 
 int
 cf_v2_file_protection_policy(struct _SeafileSession *session, const char *repo_id)
 {
-    warn_legacy_repo_scope (session);
-    return repo_feature(session, NULL, repo_id, "protection");
-}
-
-static int
-checkout_policy(struct _SeafileSession *session, SeafDBTrans *trans, const char *repo_id)
-{
-    /* Dynamic Checkout is authorized exclusively by cf_repo_feature.
-     * The former global startup switch is a migration hint, not a security
-     * gate; final reads still serialize under the Branch(master) lock. */
-    return repo_feature(session, trans, repo_id, "checkout");
+    CfRepoPolicy policy = {0};
+    return read_repo_policy(session, NULL, repo_id, &policy) ? policy.protection : -1;
 }
 
 int
 cf_v2_edit_repo_checkout(struct _SeafileSession *session, const char *repo_id)
 {
-    return checkout_policy(session, NULL, repo_id);
+    CfRepoPolicy policy = {0};
+    return read_repo_policy(session, NULL, repo_id, &policy) ? policy.checkout : -1;
 }
 
 /* Schema is validated on guarded paths only. Its absence is a failure for an
@@ -157,6 +171,20 @@ guard_available(struct _SeafileSession *session)
         g_once_init_leave(&guard_schema_state, count < 0 ? 3 : found ? 2 : 1);
     }
     return guard_schema_state == 2 ? 1 : -1;
+}
+
+/* Versioned local RPC. A mixed-version deployment cannot attest readiness. */
+int
+cf_v2_writer_capabilities(GError **error)
+{
+    if (!seaf || !seaf->db || seaf_db_type(seaf->db) != SEAF_DB_TYPE_MYSQL)
+        return 0;
+    gboolean db_error = FALSE;
+    seaf_db_statement_exists(seaf->db,
+        "SELECT repo_id,path_hash,path,file_id,protected_by,protected_at "
+        "FROM cf_file_protection FORCE INDEX (PRIMARY,cf_file_protection_prefix) LIMIT 0",
+        &db_error, 0);
+    return (guard_available(seaf) > 0 ? 1 : 0) | (db_error ? 0 : 2);
 }
 
 /* The Guard policy is OFF by default. For OPTIONAL libraries, resolve the
@@ -296,18 +324,15 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
 {
     if (!session || !repo_id || !old_commit_id || !new_commit_id)
         return NULL;
-    int policy = cf_v2_edit_repo_checkout(session, repo_id);
-    if (policy < 0)
+    CfRepoPolicy policy = {0};
+    if (!read_repo_policy(session, NULL, repo_id, &policy))
         return NULL;
     CfV2EditPrepared *prepared = g_new0(CfV2EditPrepared, 1);
     prepared->repo_id = g_strdup(repo_id);
     prepared->old_id = g_strdup(old_commit_id);
     prepared->new_id = g_strdup(new_commit_id);
-    int protection = cf_v2_file_protection_policy(session, repo_id);
-    if (policy < 0 || protection < 0)
-        goto fail;
-    prepared->checkout = policy;
-    prepared->protection = protection;
+    prepared->checkout = policy.checkout;
+    prepared->protection = policy.protection;
     {
         int n = seaf_db_statement_foreach_row(session->db,
             "SELECT origin_repo,path FROM VirtualRepo WHERE repo_id=?",
@@ -324,9 +349,9 @@ cf_v2_edit_prepare_unscoped_branch(struct _SeafileSession *session,
             }
         }
     }
-    if ((policy == 0 && protection == 0 && !prepared->origin_protection) || !strcmp(old_commit_id, new_commit_id))
+    if ((!policy.checkout && !policy.protection && !prepared->origin_protection) || !strcmp(old_commit_id, new_commit_id))
         return prepared;
-    if (policy == 1 && guard_available(session) <= 0)
+    if (policy.checkout && guard_available(session) <= 0)
         goto fail;
     SeafRepo *repo = seaf_repo_manager_get_repo(session->repo_mgr, repo_id);
     if (!repo)
@@ -427,11 +452,12 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         g_strcmp0(prepared->old_id, old_commit_id) ||
         g_strcmp0(prepared->new_id, new_commit_id))
         return -1;
-    int checkout = checkout_policy(session, trans, repo_id);
-    int protection = repo_feature(session, trans, repo_id, "protection");
-    if (checkout != prepared->checkout || protection != prepared->protection ||
-        (prepared->origin && repo_feature(session, trans, prepared->origin, "protection") !=
-         prepared->origin_protection)) return -1;
+    CfRepoPolicy policy = {0}, origin = {0};
+    if (!read_repo_policy(session, trans, repo_id, &policy) ||
+        policy.checkout != prepared->checkout || policy.protection != prepared->protection ||
+        (prepared->origin && (!read_repo_policy(session, trans, prepared->origin, &origin) ||
+                              origin.protection != prepared->origin_protection)))
+        return -1;
     if (prepared->origin_protection) {
         VirtualProof proof = {(CfV2EditPrepared *)prepared, session, NULL, 0, TRUE, FALSE, 0};
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
@@ -440,10 +466,10 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
                 return -1;
         }
     }
-    if (checkout == 0 && protection == 0) return 0;
+    if (!policy.checkout && !policy.protection) return 0;
     if (seaf_db_type(session->db) != SEAF_DB_TYPE_MYSQL)
         return -1;
-    if (protection == 1) {
+    if (policy.protection) {
         guint count = 0;
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
             if (++count > 8192) return -1;
@@ -453,7 +479,7 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
                 return -1;
         }
     }
-    if (checkout == 0) return 0;
+    if (!policy.checkout) return 0;
     if (guard_available(session) <= 0) return -1;
 
     GuardPaths guards = {g_ptr_array_new_with_free_func(g_free), FALSE};

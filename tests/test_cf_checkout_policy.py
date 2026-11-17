@@ -27,13 +27,13 @@ class CheckoutPolicyContract(unittest.TestCase):
 
     def test_optional_without_guard_fails_closed(self):
         source = (ROOT / 'common/cf-v2-edit-fence.c').read_text()
-        self.assertIn('policy = cf_v2_edit_repo_checkout', source)
+        self.assertIn('read_repo_policy(session, NULL, repo_id, &policy)', source)
         # guard_available() must not report an absent schema as usable.
         self.assertIn('return guard_schema_state == 2 ? 1 : -1;', source)
 
     def test_dynamic_policy_uses_locked_read_for_final_publication(self):
         source = (ROOT / 'common/cf-v2-edit-fence.c').read_text()
-        self.assertIn('SELECT 1 FROM cf_repo_feature', source)
+        self.assertIn('SELECT feature FROM cf_repo_feature', source)
         self.assertIn('LOCK IN SHARE MODE', source)
         self.assertIn('checkout != prepared->checkout', source)
 
