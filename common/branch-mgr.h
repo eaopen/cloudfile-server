@@ -57,6 +57,10 @@ seaf_branch_manager_update_branch (SeafBranchManager *mgr,
 #define SEAF_BRANCH_UPDATE_ERROR         (-1)
 #define SEAF_BRANCH_UPDATE_ACL_DENIED    (-2)
 #define SEAF_BRANCH_UPDATE_HEAD_CONFLICT (-3)
+/* 修改原因（2026-11-17）：文件定版是一种永久性拒绝，和 ACL/Guard/策略故障
+ * 的处置不同（重试无意义、面向用户要说明原因）。单独编码，避免调用方把它
+ * 笼统报成 "authority unavailable"。 */
+#define SEAF_BRANCH_UPDATE_FILE_PROTECTED (-4)
 /**
  * Atomically test whether the current head commit id on @branch
  * is the same as @old_commit_id and update branch in db.

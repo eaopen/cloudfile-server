@@ -242,7 +242,10 @@ virtual_rows(SeafDBTrans *trans, VirtualProof *proof, const char *changed)
         : seaf_db_statement_foreach_row(proof->session->db, sql,
         virtual_protected_row, proof, 3, "string", p->origin, "string", path, "string", pattern);
     g_free(sql); g_free(pattern); g_free(path);
-    return n < 0 || proof->invalid ? -1 : 0;
+    /* 修改原因（2026-11-17）：1=候选提交动了受保护原件，-1=SQL/遍历故障。
+     * 调用方据此区分"文件已定版"与"策略不可用"。 */
+    if (n < 0) return -1;
+    return proof->invalid ? 1 : 0;
 }
 
 static gboolean
@@ -403,7 +406,11 @@ protection_changed_path(SeafDBTrans *trans, const char *repo_id, const char *cha
         protection_found, NULL, 3,
         "string", repo_id, "string", hash, "string", path);
     g_free(hash);
-    if (n != 0) { g_free(path); return -1; }
+    /* 修改原因（2026-11-17）：命中与查询失败原先都返回 -1，调用方无法区分
+     * "文件已定版"和"SQL 不可用"，最终只能给用户一句 authority unavailable。
+     * 这里拆成 1=命中、-1=故障；判定仍然是同一批查询，不增加任何 I/O。 */
+    if (n < 0) { g_free(path); return -1; }
+    if (n > 0) { g_free(path); return 1; }
     char *prefix = protection_prefix(path);
     n = seaf_db_trans_foreach_selected_row(trans,
         "SELECT 1 FROM cf_file_protection FORCE INDEX (cf_file_protection_prefix) "
@@ -411,7 +418,8 @@ protection_changed_path(SeafDBTrans *trans, const char *repo_id, const char *cha
         protection_found, NULL, 2, "string", repo_id, "string", prefix);
     g_free(prefix);
     g_free(path);
-    return n == 0 ? 0 : -1;
+    if (n < 0) return -1;
+    return n > 0 ? 1 : 0;
 }
 
 int
@@ -436,8 +444,10 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         VirtualProof proof = {(CfV2EditPrepared *)prepared, session, NULL, 0, TRUE, FALSE, 0};
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
             DiffEntry *delta = entry->data;
-            if (virtual_rows(trans, &proof, delta->name) || virtual_rows(trans, &proof, delta->new_name))
-                return -1;
+            int hit = virtual_rows(trans, &proof, delta->name);
+            int renamed = virtual_rows(trans, &proof, delta->new_name);
+            if (hit < 0 || renamed < 0) return -1;
+            if (hit > 0 || renamed > 0) return CF_V2_EDIT_DENIED_PROTECTED;
         }
     }
     if (checkout == 0 && protection == 0) return 0;
@@ -448,9 +458,13 @@ cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
         for (GList *entry = prepared->changes; entry; entry = entry->next) {
             if (++count > 8192) return -1;
             DiffEntry *delta = entry->data;
-            if (!delta || protection_changed_path(trans, repo_id, delta->name) ||
-                protection_changed_path(trans, repo_id, delta->new_name))
-                return -1;
+            if (!delta) return -1;
+            int hit = protection_changed_path(trans, repo_id, delta->name);
+            int renamed = protection_changed_path(trans, repo_id, delta->new_name);
+            /* 修改原因（2026-11-17）：故障优先归为不可验证，不能被误报成
+             * "文件已定版"；只有真正命中保护行才回传专用原因码。 */
+            if (hit < 0 || renamed < 0) return -1;
+            if (hit > 0 || renamed > 0) return CF_V2_EDIT_DENIED_PROTECTED;
         }
     }
     if (checkout == 0) return 0;

@@ -28,7 +28,14 @@ int cf_v2_edit_lock_origin(SeafDBTrans *trans, const CfV2EditPrepared *prepared)
 
 /* Called only after Branch(master) FOR UPDATE, before updating Branch.
  * Zero: unscoped write does not touch a reserved file.
- * -1: guarded/conflicting/unverifiable; caller MUST rollback. */
+ * CF_V2_EDIT_DENIED_PROTECTED: the candidate diff touches a protected original
+ *   or one of its ancestor directories. Distinguished from other denials so the
+ *   caller can report "file is locked" instead of a generic authority failure.
+ * Any other negative value: guarded/conflicting/unverifiable; caller MUST rollback. */
+/* 取值刻意远离 -1/-2/-3，避免与 SEAF_BRANCH_UPDATE_* 的数值巧合；
+ * 两套常量在同一处调用点相邻出现，数值重叠会造成误读。 */
+#define CF_V2_EDIT_DENIED_PROTECTED (-100)
+
 int cf_v2_edit_check_unscoped_branch(SeafDBTrans *trans,
     struct _SeafileSession *session, const char *repo_id,
     const char *old_commit_id, const char *new_commit_id,
