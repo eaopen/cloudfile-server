@@ -55,8 +55,8 @@ CloudFile Server、Hub、Docker 共用以下规则：
 
 ## 当前数据库（未正式发布 V2）
 
-- 唯一扩展表为 `cf_library_storage`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`、`cf_audit_event`、`cf_file_protection`；新装一次创建全部六表，已有卷只校验。
-- 不迁移或追溯开发期旧数据。存储绑定从 Seafile 的 Repo/RepoStorageId 重新识别，ACL/共享和组织/角色从客户 Provider 重新同步，Guard/审计从空表开始；旧 `cf_tag`、Resource、Intent、Session、Outbox 不恢复。
+- 唯一扩展表为 `cf_repo_feature`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`、`cf_audit_event`、`cf_file_protection`；新装创建全部六表。已有卷仅缺 `cf_repo_feature`、其余五表结构匹配且无保护记录或活动 Guard 时，Docker 启动检查可锁内补建空表。旧注册表必须停写并离线迁移。
+- 存储路由的事实源为 Seafile 原生 `RepoStorageId`；旧 `cf_library_storage` 经显式离线迁移保存为 `retired_library_storage_v2`。升级默认不启用任何新库级特性，但保留已经显式启用的能力记录和保护/Guard 数据；旧 `cf_tag`、Resource、Intent、Session、Outbox 不恢复。
 - 绝不清除 CE 原生 Repo、Branch、文件内容、版本或原生 Tag，也不因为缺表自动建立旧扩展 DDL、迁移服务或产品级升级框架。
 
 ## Agent2 本地文件编辑
@@ -67,7 +67,7 @@ CloudFile Server、Hub、Docker 共用以下规则：
 
 ## SQL 表边界
 
-- 当前 Server V2 只允许 `cf_library_storage`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`、`cf_audit_event`、`cf_file_protection` 业务表。历史 `cf_library_storage_key` 的分配和冷 GC 账本不允许重新引入；存储依赖 `cf-v2-storage.c` 的预占与激活。
+- 当前 Server V2 只允许 `cf_repo_feature`、`cf_dir_acl`、`cf_sso_group_map`、`cf_edit_guard`、`cf_audit_event`、`cf_file_protection` 六张业务表。历史 `cf_library_storage` 和 `cf_library_storage_key` 不再作为运行时依赖；原生 `RepoStorageId` 和既有存储路径必须保留。
 - `scripts/sql/mysql/cloudfile.sql` 和 `scripts/sql/sqlite/cloudfile.sql` 属于未发行旧设计，已从产品源码删除。旧数据库迁移属于外置一次性工具，不属于构建/启动路径。
 
 ## 现行 V2 权限契约：禁止“托管库”复活（2026-10-21）
