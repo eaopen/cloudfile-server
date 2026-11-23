@@ -143,9 +143,25 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     /* Unbound native tickets cannot prove directory-level authority;
      * the path-bound V2 ticket flow remains available for the same repo. */
     if (!bound_path && cf_v2_acl_unscoped(seaf, repo_id) < 0) {
-        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
-                     "Path-qualified authorization required");
-        return NULL;
+        /* 修改原因（2026-11-23）：外链面向系统外用户，没有身份可查，
+         * 设计上不执行目录 ACL、一律只读。放行外链专用的操作类型：
+         *   share-link-view   外链预览/缩略图（Hub 2026-11-23 新增）
+         *   download-link     外链单文件下载
+         *   download-dir-link 外链目录下载
+         *   download-multi-link 外链多选下载
+         * 其余（view/download/upload 等）仍要求路径限定票据，
+         * 避免有身份的操作借无路径票据绕过目录授权。
+         * 不放行 upload-link：它同时用于普通上传，无法按 op 区分。 */
+        gboolean share_link_read =
+            strcmp(op, "share-link-view") == 0 ||
+            strcmp(op, "download-link") == 0 ||
+            strcmp(op, "download-dir-link") == 0 ||
+            strcmp(op, "download-multi-link") == 0;
+        if (!share_link_read) {
+            g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL,
+                         "Path-qualified authorization required");
+            return NULL;
+        }
     }
 #endif
     AccessInfo *info;
@@ -155,6 +171,7 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     SeafileWebAccess *webaccess;
 
     if (strcmp(op, "view") != 0 &&
+        strcmp(op, "share-link-view") != 0 &&
         strcmp(op, "download") != 0 &&
         strcmp(op, "downloadblks") != 0 &&
         strcmp(op, "download-dir") != 0 &&
@@ -184,7 +201,9 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     info = g_new0 (AccessInfo, 1);
     info->repo_id = g_strdup (repo_id);
     info->obj_id = g_strdup (obj_id);
-    info->op = g_strdup (op);
+    /* share-link-view 只用于本函数上方的放行判断；票据本身按原生 view 存储，
+     * 让文件服务看到的元数据与普通预览完全一致。 */
+    info->op = g_strdup (strcmp(op, "share-link-view") == 0 ? "view" : op);
     info->username = g_strdup (username);
     info->path = g_strdup (bound_path);
     info->expire_time = expire;
