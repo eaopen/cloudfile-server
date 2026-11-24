@@ -201,9 +201,9 @@ issue_access_token (SeafWebAccessTokenManager *mgr,
     info = g_new0 (AccessInfo, 1);
     info->repo_id = g_strdup (repo_id);
     info->obj_id = g_strdup (obj_id);
-    /* share-link-view 只用于本函数上方的放行判断；票据本身按原生 view 存储，
-     * 让文件服务看到的元数据与普通预览完全一致。 */
-    info->op = g_strdup (strcmp(op, "share-link-view") == 0 ? "view" : op);
+    /* 保留原始 op：查询时据它识别外链票据，否则会被无路径拦截二次拒绝。
+     * 文件服务侧对 share-link-view 按 view 处理。 */
+    info->op = g_strdup (op);
     info->username = g_strdup (username);
     info->path = g_strdup (bound_path);
     info->expire_time = expire;
@@ -411,7 +411,16 @@ seaf_web_at_manager_query_access_token (SeafWebAccessTokenManager *mgr,
 
     if (info != NULL) {
 #ifdef FULL_FEATURE
-        if (!info->path && cf_v2_acl_unscoped(seaf, info->repo_id) < 0) {
+        /* 修改原因（2026-11-23）：签发时已按外链专用 op 放行，查询时必须用同一
+         * 规则，否则 share-link-view 票据会被这里二次拒绝（表现为文件服务报
+         * Access token not found）。 */
+        gboolean share_link_ticket =
+            strcmp(info->op, "share-link-view") == 0 ||
+            strcmp(info->op, "download-link") == 0 ||
+            strcmp(info->op, "download-dir-link") == 0 ||
+            strcmp(info->op, "download-multi-link") == 0;
+        if (!info->path && !share_link_ticket &&
+            cf_v2_acl_unscoped(seaf, info->repo_id) < 0) {
             pthread_mutex_unlock (&mgr->priv->lock);
             return NULL;
         }

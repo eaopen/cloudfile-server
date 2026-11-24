@@ -169,7 +169,8 @@ func accessCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	user := accessInfo.user
 	objID := accessInfo.objID
 
-	if op != "view" && op != "download" && op != "download-link" {
+	// share-link-view：外链预览/缩略图，行为与 view 一致（内联展示）。
+	if op != "view" && op != "download" && op != "download-link" && op != "share-link-view" {
 		msg := "Operation does not match access token."
 		return &appError{nil, msg, http.StatusForbidden}
 	}
@@ -276,7 +277,8 @@ func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
 	fileName := filepath.Base(rpath)
 
 	op := r.URL.Query().Get("op")
-	if op != "view" && op != "download" {
+	// share-link-view：外链预览，语义同 view。
+	if op != "view" && op != "download" && op != "share-link-view" {
 		msg := "Operation is neither view or download\n"
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
