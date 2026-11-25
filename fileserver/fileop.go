@@ -3078,6 +3078,16 @@ func hasAuthorizedZipReadScope(op string, tokenInfo map[string]interface{}) bool
 	return (op == "download-dir" || op == "download-multi") && ok && cfACLCanonical(path)
 }
 
+// 外链专用 op：面向系统外的只读访问，签发时已按「不执行目录 ACL」放行，
+// 这里不再要求全库能力证明，否则受保护库的外链一律 403。
+func isShareLinkReadOp(op string) bool {
+	switch op {
+	case "share-link-view", "download-link", "download-dir-link", "download-multi-link":
+		return true
+	}
+	return false
+}
+
 func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 	webaccess, err := rpcclient.Call("seafile_web_query_access_token", token)
 	if err != nil {
@@ -3121,7 +3131,8 @@ func parseWebaccessInfo(token string) (*webaccessInfo, *appError) {
 
 	// Scoped native tickets were path-authorized at issue time. A repeated
 	// GET/HEAD/Range only needs the native token and its expiry, not ACL SQL.
-	if !hasAuthorizedFileReadScope(accessInfo.op, webaccessMap) &&
+	if !isShareLinkReadOp(accessInfo.op) &&
+		!hasAuthorizedFileReadScope(accessInfo.op, webaccessMap) &&
 		!hasAuthorizedZipReadScope(accessInfo.op, webaccessMap) &&
 		accessInfo.op != "upload" && accessInfo.op != "update" {
 		if denied := cfACLRequireRepoWideProof(repoID); denied != nil {
