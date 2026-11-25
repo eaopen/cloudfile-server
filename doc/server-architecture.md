@@ -9,17 +9,18 @@
 - **Go FileServer**：文件字节传输、Range、分块上传/提交、Scoped 下载/本地编辑与独占 Guard；CloudFile V2 要求启用 Go FileServer。上传提交必须验证 token 绑定的父目录及目标文件，不得因其他目录存在 ACL 而整库拒绝。
 - **Hub Authority**：统一计算当前用户、组织/角色、原生库资格、目录继承与 `share_mode` 共享根的有效权限。Server 通过内部鉴权接口消费同一裁决，不另造托管库分类器。
 
-## 五张扩展表（唯一现行契约）
+## 六张扩展表（唯一现行契约）
 
 | 表 | 职责 |
 | --- | --- |
-| `cf_library_storage` | 原生库与可选存储的绑定 |
+| `cf_repo_feature` | 每库明确启用 Checkout/Protection 的能力记录；没有记录即关闭 |
+| `cf_file_protection` | 已定版文件的不可变保护记录 |
 | `cf_dir_acl` | 当前目录路径/主体的 ACL 和共享根，默认继承、允许局部缩权与扩权 |
 | `cf_sso_group_map` | 外部组织/角色与 CE GroupUser 的映射 |
 | `cf_edit_guard` | 独占编辑 Guard |
 | `cf_audit_event` | 新产生的审计事件 |
 
-不需要 `cf_dir_admin`、`cf_managed_library`、`cf_managed_library_share`、`cf_library_share_revision`、旧 Resource/Session/Intent 等扩展表。无任何第五张表以外的迁移依赖；开发期旧数据不要求历史迁移。
+不需要 `cf_dir_admin`、`cf_managed_library`、`cf_managed_library_share`、`cf_library_share_revision`、旧 Resource/Session/Intent 等扩展表。不引入其他运行时扩展表。原生 `RepoStorageId` 决定存储路由，旧 `cf_library_storage` 经管理员停写后的离线迁移归档为 `retired_library_storage_v2`。升级默认不启用新能力，保留已经明确启用的记录；若已有保护文件或活动 Guard 且能力缺失，则拒绝静默关闭。
 
 ## 权限原则
 
